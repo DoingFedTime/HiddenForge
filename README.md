@@ -1,6 +1,21 @@
 # HiddenForge
 
+[![Docker Hub](https://img.shields.io/docker/pulls/doingfedtime/hiddenforge)](https://hub.docker.com/r/doingfedtime/hiddenforge)
+[![GitHub](https://img.shields.io/github/stars/DoingFedTime/HiddenForge)](https://github.com/DoingFedTime/HiddenForge)
+
+**Available on Docker Hub:** https://hub.docker.com/r/doingfedtime/hiddenforge
+
 A modern, lightweight Tor hidden service Docker image. Forge .onion services with the latest Tor (0.4.8.17) and minimal dependencies.
+
+## Quick Start
+
+```bash
+docker pull doingfedtime/hiddenforge
+docker run -d \
+  -v ./tor-data:/var/lib/tor/hidden_service \
+  -e SERVICE_TOR_SERVICE_HOSTS="80:nginx:80" \
+  doingfedtime/hiddenforge:latest
+```
 
 ## Features
 
@@ -10,18 +25,15 @@ A modern, lightweight Tor hidden service Docker image. Forge .onion services wit
 - **Easy Configuration**: Environment variable-based hidden service setup
 - **Secure**: Runs as non-root tor user with proper permissions
 
-## Usage
+## How It Works
 
-### Basic Usage
+The `entrypoint.py` script automatically:
+1. Reads your environment variables (like `SERVICE_TOR_SERVICE_HOSTS`)
+2. Generates the proper torrc configuration
+3. Creates hidden service directories with correct permissions
+4. Starts Tor securely as the tor user
 
-```bash
-docker run -d \
-  -v ./tor-data:/var/lib/tor/hidden_service \
-  -e SERVICE_TOR_SERVICE_HOSTS="80:nginx:80" \
-  hiddenforge:latest
-```
-
-### Environment Variables
+## Environment Variables
 
 The image uses the same environment variable format as goldy/tor-hidden-service:
 
@@ -29,13 +41,13 @@ The image uses the same environment variable format as goldy/tor-hidden-service:
   - Format: `"port:host:port,port2:host2:port2"`
   - Example: `"80:nginx:80,443:nginx:443"`
 
-### Docker Compose Example
+## Docker Compose Example
 
 ```yaml
 version: '3.8'
 services:
   tor:
-    image: hiddenforge:latest
+    image: doingfedtime/hiddenforge:latest
     environment:
       MYAPP_TOR_SERVICE_HOSTS: "80:web:80"
     volumes:
