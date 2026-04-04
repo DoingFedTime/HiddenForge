@@ -131,9 +131,10 @@ def generate_basic_torrc():
 # Generated at container startup. Do not edit by hand.
 
 # ── Control socket (required for Vanguards addon) ──────────────────────────
-# Unix socket, 0600 owned by tor — not reachable from other containers at all.
-# No password needed; file permissions are the access control boundary.
-ControlSocket /var/lib/tor/control.sock
+# Placed in /tmp so root can poll for it without CAP_DAC_OVERRIDE (needed for
+# rootless Podman where /var/lib/tor is tor:tor 0700 after startup).
+# Socket mode 0600 owned by tor — file permissions are the access boundary.
+ControlSocket /tmp/tor-control.sock
 
 # ── Network ────────────────────────────────────────────────────────────────
 SocksPort 0
