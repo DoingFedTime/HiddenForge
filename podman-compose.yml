@@ -87,6 +87,11 @@ services:
   #   - Only connect to tor-internal, not tor-external
   web:
     # <-- EDIT: replace with your actual image
+    # NOTE: Rootless Podman cannot bind ports < 1024 without NET_BIND_SERVICE.
+    # If your backend listens on port 80 or 443, either:
+    #   a) Add NET_BIND_SERVICE to cap_add below, OR
+    #   b) Configure your backend to listen on port >= 1024 (e.g. 8080) and
+    #      update the *_TOR_SERVICE_HOSTS mapping accordingly: "80:web:8080"
     image: nginx:alpine
     restart: unless-stopped
     cap_drop:
@@ -95,6 +100,7 @@ services:
       - CHOWN        # nginx needs these to set up its worker processes
       - SETUID
       - SETGID
+      - NET_BIND_SERVICE   # required for rootless Podman to bind port 80
       # DAC_OVERRIDE not needed in rootless: container root owns its own files
       # inside the user namespace.
     security_opt:
