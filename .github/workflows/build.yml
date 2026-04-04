@@ -45,7 +45,7 @@ jobs:
 
       - name: Verify vanguards imports cleanly
         run: |
-          docker run --rm --entrypoint python3 hiddenforge:ci \
+          docker run --rm --entrypoint /opt/vanguards-venv/bin/python3 hiddenforge:ci \
             -c "import vanguards; print('vanguards import ok')"
 
   publish:
