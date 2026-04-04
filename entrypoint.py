@@ -59,6 +59,14 @@ Log notice stdout
 # Hidden service configuration
 """
 
+    # Ensure the parent hidden_service directory is traversable by the tor user.
+    # In rootless podman the bind-mounted host dir may have restrictive permissions
+    # (e.g. 770 root:root inside the container) which prevents the tor user from
+    # entering it at all — even though it owns the 700 subdirs within.
+    parent_hs = Path('/var/lib/tor/hidden_service')
+    if parent_hs.exists():
+        os.chmod(parent_hs, 0o755)
+
     # Check for environment variables that define hidden services
     for env_var in os.environ:
         if not env_var.endswith('_TOR_SERVICE_HOSTS'):
