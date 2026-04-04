@@ -111,6 +111,7 @@ HeartbeatPeriod 0     # suppress periodic heartbeat log spam
 Sandbox {sandbox}             # seccomp-bpf syscall filter (needs --security-opt seccomp=unconfined)
 DisableDebuggerAttachment 1   # block ptrace / debugger attachment
 AvoidDiskWrites 1             # minimise forensic footprint on disk
+FetchUselessDescriptors 0     # do not fetch relay descriptors we won't use (default, explicit)
 
 # ── Hidden services ────────────────────────────────────────────────────────
 """
