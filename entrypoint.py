@@ -88,6 +88,29 @@ def validate_hostname(value, label):
     return v
 
 
+def resolve_to_ip(host, label):
+    """
+    Return an IPv4 address string for the given host.
+
+    If host is already a dotted-quad IP it is returned unchanged.
+    Otherwise Docker's embedded DNS is queried (this resolves Compose service
+    names like 'web' to their container IP at startup time, so Tor never sees
+    a hostname in HiddenServicePort — it only accepts IPs).
+    """
+    stripped = host.strip()
+    if re.fullmatch(r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}', stripped):
+        return stripped
+    try:
+        resolved = socket.gethostbyname(stripped)
+        print(f"Resolved '{stripped}' → {resolved}")
+        return resolved
+    except socket.gaierror as exc:
+        raise ValueError(
+            f"Cannot resolve '{stripped}' in {label}: {exc}. "
+            "Is the backend container running and on the same network?"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Tor configuration generation
 # ---------------------------------------------------------------------------
