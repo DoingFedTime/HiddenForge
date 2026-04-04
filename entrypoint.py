@@ -140,7 +140,9 @@ FetchUselessDescriptors 0     # do not fetch relay descriptors we won't use (def
             continue
 
         service_hosts = os.environ[env_var]
-        raw_name = env_var.replace('_TOR_SERVICE_HOSTS', '').lower()
+        # Underscores are valid in env var names but not in service directory names;
+        # convert them to hyphens so MY_APP_TOR_SERVICE_HOSTS → my-app.
+        raw_name = env_var.replace('_TOR_SERVICE_HOSTS', '').lower().replace('_', '-')
 
         try:
             service_name = validate_service_name(raw_name)
