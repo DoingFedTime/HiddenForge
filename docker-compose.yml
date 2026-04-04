@@ -1,26 +1,19 @@
 # HiddenForge — production-ready compose file
 #
 # USAGE:
-#   1. Copy this file and edit the lines marked with <-- EDIT
+#   1. Copy this file and edit the two lines marked with <-- EDIT
 #   2. mkdir -p ./tor-keys
 #   3. docker compose up -d
 #   4. docker compose exec tor cat /var/lib/tor/hidden_service/myapp/hostname
-#      (your .onion address will appear here once Tor has bootstrapped)
+#      (replace "myapp" with whatever you used in step 1)
 #
 # All security flags are pre-configured. Do not remove them.
 
 networks:
   # tor-internal: isolated network — only tor and your backend live here.
   # The backend has NO internet access and is NOT reachable from outside.
-  # Static IPs are required because Tor only accepts IP addresses (not
-  # hostnames) in HiddenServicePort — Docker DNS names will not work.
   tor-internal:
     internal: true
-    ipam:
-      config:
-        # Change this subnet if it conflicts with existing Docker networks on your host.
-        # Check with: ip route show | grep 172
-        - subnet: 172.20.0.0/24
 
   # tor-external: gives the tor container outbound internet so it can
   # reach the Tor network. Your backend never touches this network.
@@ -61,11 +54,11 @@ services:
       driver: none
 
     environment:
-      # <-- EDIT: change "MYAPP" to your service name (uppercase, hyphens ok)
-      # Format: "onion_port:backend_ip:backend_port"
-      # Use the static IP assigned to your backend in the networks section below.
-      # Multiple ports: "80:172.20.0.2:80,443:172.20.0.2:443"
-      MYAPP_TOR_SERVICE_HOSTS: "80:172.20.0.2:80"   # <-- EDIT (change MYAPP)
+      # <-- EDIT: change "MYAPP" to your service name (lowercase, hyphens ok)
+      # The entrypoint resolves Docker service names automatically — no static IPs needed.
+      # Format: "onion_port:service_name:backend_port"
+      # Multiple ports: "80:web:80,443:web:443"
+      MYAPP_TOR_SERVICE_HOSTS: "80:web:80"   # <-- EDIT (change MYAPP)
 
     volumes:
       # Hidden service keys persist here across container restarts.
@@ -83,7 +76,6 @@ services:
   # Replace this with your actual application. The key constraints:
   #   - NO 'ports:' mapping — the backend must never be internet-exposed
   #   - Only connect to tor-internal, not tor-external
-  #   - Keep the static IP; it must match the IP in MYAPP_TOR_SERVICE_HOSTS above
   web:
     # <-- EDIT: replace with your actual image
     image: nginx:alpine
@@ -103,5 +95,4 @@ services:
       - /var/cache/nginx:rw,noexec,nosuid,size=32m
       - /var/run:rw,noexec,nosuid,size=8m
     networks:
-      tor-internal:
-        ipv4_address: 172.20.0.2   # must match the IP in MYAPP_TOR_SERVICE_HOSTS
+      - tor-internal   # reachable by tor, NOT reachable from the internet
