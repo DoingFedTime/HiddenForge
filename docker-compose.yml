@@ -1,0 +1,86 @@
+# HiddenForge — production-ready compose file
+#
+# USAGE:
+#   1. Copy this file and edit the two lines marked with <-- EDIT
+#   2. mkdir -p ./tor-keys
+#   3. docker compose up -d
+#   4. docker compose exec tor cat /var/lib/tor/hidden_service/myapp/hostname
+#      (your .onion address will appear here once Tor has bootstrapped)
+#
+# All security flags are pre-configured. Do not remove them.
+
+networks:
+  # tor-internal: isolated network — only tor and your backend live here.
+  # The backend has NO internet access and is NOT reachable from outside.
+  tor-internal:
+    internal: true
+
+  # tor-external: gives the tor container outbound internet so it can
+  # reach the Tor network. Your backend never touches this network.
+  tor-external:
+
+services:
+  tor:
+    image: doingfedtime/hiddenforge:latest
+    restart: unless-stopped
+
+    # ── Security flags ────────────────────────────────────────────────────
+    cap_drop:
+      - ALL                        # drop every Linux capability
+    security_opt:
+      - no-new-privileges:true     # prevent privilege escalation via setuid
+      - seccomp=unconfined         # required for Tor's seccomp-bpf Sandbox 1
+    read_only: true                # container filesystem is read-only
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+
+    # ── Suppress host-side log file ───────────────────────────────────────
+    # Docker writes container stdout to a JSON file on the host by default.
+    # Setting driver: none prevents that log file from being written, which
+    # is consistent with Tor's AvoidDiskWrites setting inside the container.
+    # Remove this block if you need logs for debugging.
+    logging:
+      driver: none
+
+    environment:
+      # <-- EDIT: change "myapp" to your service name (lowercase, no spaces)
+      # Format: "onion_port:backend_service_name:backend_port"
+      # Multiple ports: "80:web:80,443:web:443"
+      MYAPP_TOR_SERVICE_HOSTS: "80:web:80"
+
+    volumes:
+      # Hidden service keys persist here across container restarts.
+      # Back this directory up — losing it means losing your .onion address.
+      - ./tor-keys:/var/lib/tor/hidden_service
+
+    networks:
+      - tor-internal   # to reach the backend
+      - tor-external   # to reach the Tor network
+
+    depends_on:
+      - web
+
+  # ── Your backend service ──────────────────────────────────────────────────
+  # Replace this with your actual application. The key constraint:
+  #   - NO 'ports:' mapping — the backend must never be internet-exposed
+  #   - Only connect to tor-internal, not tor-external
+  web:
+    # <-- EDIT: replace with your actual image
+    image: nginx:alpine
+    restart: unless-stopped
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN        # nginx needs these to set up its worker processes
+      - SETUID
+      - SETGID
+      - DAC_OVERRIDE
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m
+      - /var/cache/nginx:rw,noexec,nosuid,size=32m
+      - /var/run:rw,noexec,nosuid,size=8m
+    networks:
+      - tor-internal   # reachable by tor, NOT reachable from the internet

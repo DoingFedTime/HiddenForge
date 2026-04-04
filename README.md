@@ -8,175 +8,178 @@
 [![hiddenforge.png](https://i.postimg.cc/fR4BJ54k/hiddenforge.png)](https://postimg.cc/ykPFGm8z)
 
 A hardened Tor hidden service container. Runs Tor 0.4.9.6 with the Vanguards
-guard-protection addon on Alpine 3.23 with a minimal, telemetry-free runtime.
+guard-protection addon on Alpine 3.23. Every dependency is pinned and
+hash-verified at build time. Designed for a state-level adversary threat model.
 
-## Features
+---
 
-- **Tor 0.4.9.6** from Alpine 3.23 packages (digest-pinned base image)
-- **Vanguards addon** — bandguards (bandwidth side-channel detection) and
-  rendguard (rendezvous-point overuse detection) run alongside Tor's built-in
-  vanguards-lite guard rotation
-- **Proof-of-work DoS defense** enabled per service (`HiddenServicePoWDefensesEnabled`)
-- **seccomp-bpf sandbox** (`Sandbox 1`) — syscall filtering via Linux seccomp
-- **No telemetry surface** — pip, setuptools, urllib3, certifi, and requests
-  are stripped from the image; only vanguards, stem, and the standard library
-  remain at runtime
-- **Input validation** — all `*_TOR_SERVICE_HOSTS` env vars are validated
-  before being written to torrc; no shell injection possible
-- **ClientOnly** — will never volunteer as a relay or exit node
-- **Runs as non-root** — Tor and Vanguards both run as the `tor` user (UID 100)
-  via `su-exec`
-
-## Quick Start
+## Quick Start (3 steps)
 
 ```bash
-docker pull doingfedtime/hiddenforge
-docker run -d \
-  --cap-drop ALL \
-  --security-opt no-new-privileges:true \
-  --security-opt seccomp=unconfined \
-  --read-only \
-  --tmpfs /tmp:rw,noexec,nosuid,size=64m \
-  -v ./tor-data:/var/lib/tor/hidden_service \
-  -e SERVICE_TOR_SERVICE_HOSTS="80:nginx:80" \
-  doingfedtime/hiddenforge:latest
+# 1. Download the compose file
+curl -O https://raw.githubusercontent.com/DoingFedTime/HiddenForge/main/docker-compose.yml
+
+# 2. Edit the two lines marked <-- EDIT in docker-compose.yml
+#    (your service name and backend image)
+
+# 3. Start it
+mkdir -p ./tor-keys
+docker compose up -d
+
+# Your .onion address appears here once Tor bootstraps (~60s):
+docker compose exec tor cat /var/lib/tor/hidden_service/myapp/hostname
 ```
 
-> **`--security-opt seccomp=unconfined` is required** for `Sandbox 1` (Tor's
-> seccomp-bpf filter). If your platform cannot pass this flag, set
-> `TOR_SANDBOX=0` in the environment to disable Tor's internal sandbox and
-> remove `seccomp=unconfined`.
+All security flags are pre-configured in the compose file. The backend service
+is network-isolated and never exposed to the internet.
+
+---
+
+## What the Compose File Does
+
+The included `docker-compose.yml` is ready to use as-is. It handles everything:
+
+| What | How |
+|---|---|
+| Drops all Linux capabilities | `cap_drop: ALL` |
+| Prevents privilege escalation | `security_opt: no-new-privileges:true` |
+| Enables Tor's seccomp sandbox | `security_opt: seccomp=unconfined` |
+| Read-only container filesystem | `read_only: true` |
+| No host-side log file | `logging: driver: none` |
+| Network-isolated backend | `internal: true` network, no `ports:` on backend |
+| Key persistence | `./tor-keys` volume mount |
+
+The only two lines you need to edit are flagged with `<-- EDIT`.
+
+---
 
 ## Environment Variables
 
-- `{NAME}_TOR_SERVICE_HOSTS` — defines hidden service port mappings
-  - Format: `"hs_port:backend_host:backend_port"` (comma-separated for multiple ports)
-  - Three-part: `"80:nginx:80"` — route onion port 80 to `nginx:80`
+- `{NAME}_TOR_SERVICE_HOSTS` — hidden service port mappings
+  - Three-part: `"80:web:80"` — route onion port 80 to container `web:80`
   - Two-part: `"80:80"` — route onion port 80 to `127.0.0.1:80`
+  - Multiple ports: `"80:web:80,443:web:443"`
 - `TOR_SANDBOX` — set to `0` to disable `Sandbox 1` (default: `1`)
 
-## Docker Compose — Hardened Example
+---
 
-```yaml
-networks:
-  # Isolated internal network: Tor reaches the backend, nothing else can.
-  tor-internal:
-    internal: true   # no outbound internet access from this network
-  # Tor needs internet to reach the Tor network.
-  tor-external:
+## Supply Chain Security
 
-services:
-  tor:
-    image: doingfedtime/hiddenforge:latest
-    cap_drop:
-      - ALL
-    security_opt:
-      - no-new-privileges:true
-      - seccomp=unconfined     # required for Tor Sandbox 1
-    read_only: true
-    tmpfs:
-      - /tmp:rw,noexec,nosuid,size=64m
-    environment:
-      MYAPP_TOR_SERVICE_HOSTS: "80:web:80"
-    volumes:
-      - ./tor-data:/var/lib/tor/hidden_service
-    networks:
-      - tor-internal
-      - tor-external
-    depends_on:
-      - web
+Recent supply chain attacks (xz-utils, PyPI package hijacks, compromised npm
+packages) have made dependency pinning essential for any security-sensitive
+software. HiddenForge pins every dependency at every layer.
 
-  web:
-    image: nginx:alpine
-    # No 'ports:' — the backend is NOT exposed to the internet.
-    # Only the tor container on tor-internal can reach it.
-    networks:
-      - tor-internal
-```
+**What is pinned and why:**
 
-> The backend service has **no `ports:` mapping** and is on an `internal`
-> network. This means it is unreachable from the internet and unreachable from
-> any other Docker network — only the Tor container can talk to it.
+| Dependency | Pinned to | Why it matters |
+|---|---|---|
+| Alpine base image | `alpine:3.23.3@sha256:...` | Digest pinning means the exact OS bytes are locked — a tag like `latest` or even `3.23.3` can be silently updated on the registry |
+| `tor` apk | `0.4.9.6-r0` | A tampered Tor binary could de-anonymise every circuit |
+| `python3` apk | `3.12.12-r0` | The Python runtime executes the entrypoint and Vanguards |
+| `su-exec` apk | `0.3-r0` | This binary performs the privilege drop to the `tor` user |
+| `py3-pip` apk | `25.1.1-r1` | Build-only; pinned so it can't be updated to a version that silently ignores `--require-hashes` |
+| `vanguards` pip | `0.3.1` + SHA256 | Guard protection addon; a compromised version could leak circuit topology |
+| `stem` pip | `1.8.2` + SHA256 | Tor controller library; underpins all Vanguards communication |
+| `ipaddress` pip | `1.0.23` + SHA256 | Transitive dep of vanguards |
+| `setuptools` pip | `82.0.1` + SHA256 | Build dep for stem; uninstalled post-build but listed for hash verification completeness |
 
-## Offline Key Generation (Recommended)
+**How hash verification works:**
 
-By default the container generates new hidden service keys on first run. For a
-state-level adversary threat model, keys should be generated **offline** on an
-air-gapped machine and mounted in, so the private key never touches the
-production host in plaintext.
+pip's `--require-hashes` flag makes the build abort with a clear error if any
+downloaded file's SHA256 does not match what is recorded in `requirements.txt`.
+This means a compromised PyPI package — even one with the correct version number
+— cannot enter the image silently. The build simply fails.
 
-**Generate keys offline (using mkp224o or Tor itself):**
+**What is NOT protected:**
+
+apk packages are version-pinned but not hash-verified — Alpine does not expose
+per-package SHA256 hashes in a format easily consumable at build time. The
+digest-pinned base image mitigates this partially: the Alpine package index
+inside that specific image layer is fixed, so `apk add tor=0.4.9.6-r0` will
+always pull from that locked index.
+
+**Updating pinned versions:**
+
+When you want to upgrade, do not just change version numbers — verify the new
+hashes first:
 
 ```bash
-# Option A: use Tor on an air-gapped machine — start it once with the same
-# config, let it generate keys, then copy the directory out.
+# Get the new SHA256 for a pip package:
+pip download vanguards==0.3.2 -d /tmp/dl --no-deps
+sha256sum /tmp/dl/vanguards-0.3.2*.whl
 
-# Option B: use mkp224o to generate a vanity .onion address:
+# Then update requirements.txt with the new version and hash,
+# rebuild, and verify the build passes before deploying.
+```
+
+---
+
+## Offline Key Generation (Recommended for High-Risk Deployments)
+
+By default the container generates hidden service keys on first run on the
+production host. For a state-level adversary threat model, generate keys
+**offline** on an air-gapped machine so the private key never touches the
+production host in plaintext.
+
+```bash
+# Option A: mkp224o (generates vanity .onion addresses)
 #   https://github.com/cathugger/mkp224o
-mkp224o -d ./keys prefix1 prefix2
+mkp224o -d ./keys myprefix
+
+# Option B: run Tor once on an air-gapped machine, let it generate
+# keys, copy the service directory out, then wipe the machine.
 ```
 
 **Mount pre-generated keys:**
 
 ```bash
-# The service directory must contain:
-#   hostname              (the .onion address, text file)
-#   hs_ed25519_secret_key (binary, keep this secret)
-#   hs_ed25519_public_key (binary)
+# Service directory must contain:
+#   hostname                (your .onion address, plaintext)
+#   hs_ed25519_secret_key   (binary — keep offline backups, never share)
+#   hs_ed25519_public_key   (binary)
 
-mkdir -p ./tor-data/myapp
-cp /path/to/offline/keys/* ./tor-data/myapp/
-chmod 700 ./tor-data/myapp
-chmod 600 ./tor-data/myapp/hs_ed25519_secret_key
+mkdir -p ./tor-keys/myapp
+cp /path/to/offline/keys/* ./tor-keys/myapp/
+chmod 700 ./tor-keys/myapp
+chmod 600 ./tor-keys/myapp/hs_ed25519_secret_key
 
-# The container will use the existing keys instead of generating new ones.
-docker run -d \
-  --cap-drop ALL \
-  --security-opt no-new-privileges:true \
-  --security-opt seccomp=unconfined \
-  -v ./tor-data:/var/lib/tor/hidden_service \
-  -e MYAPP_TOR_SERVICE_HOSTS="80:web:80" \
-  doingfedtime/hiddenforge:latest
+docker compose up -d
 ```
 
-**Back up your keys before the container ever runs in production.** If you lose
-`hs_ed25519_secret_key` your .onion address is gone permanently.
+**Back up `hs_ed25519_secret_key` before the container runs.** Losing it means
+losing your .onion address permanently — there is no recovery.
+
+---
 
 ## Log Handling
 
-Tor logs to stdout with `SafeLogging 1` (IPs and .onion addresses are scrubbed
-from output). The container also sets `AvoidDiskWrites 1` inside Tor to
-minimise on-disk forensic footprint.
+Inside the container, Tor runs with `SafeLogging 1` (IPs and .onion addresses
+scrubbed from output) and `AvoidDiskWrites 1` (no log files written to disk).
 
-However, Docker and podman write stdout to a JSON log file on the host by
-default, which undermines `AvoidDiskWrites`. For production deployments,
-suppress host-side logging or use a non-persistent log driver:
+The compose file sets `logging: driver: none` so Docker does not write a JSON
+log file on the host either. Remove that block if you need logs for debugging:
 
-```bash
-# Discard all container logs (no log file written to host disk):
-docker run --log-driver none ...
-
-# Or use journald (in-memory, controlled retention):
-docker run --log-driver journald ...
+```yaml
+logging:
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "1"
 ```
+
+---
 
 ## Time Synchronisation
 
 Tor is sensitive to clock skew. If the host clock is more than ~30 minutes
 off, Tor will fail to build circuits. Ensure `ntpd` or `systemd-timesyncd` is
-running and synced on the host before starting the container. The container
-inherits the host's clock directly.
+running and synced on the host before starting the container.
 
-## Generated Files
-
-The container creates or expects under the mounted volume:
-
+```bash
+timedatectl status   # check sync status on systemd hosts
 ```
-{service_name}/
-  hostname                 — your .onion address (v3, 56 chars + .onion)
-  hs_ed25519_secret_key    — private key (keep offline backups, never share)
-  hs_ed25519_public_key    — public key
-```
+
+---
 
 ## Security Architecture
 
@@ -191,8 +194,9 @@ The container creates or expects under the mounted volume:
 | Circuit overload | `HiddenServiceMaxStreams 100`, `HiddenServiceMaxStreamsCloseCircuit 1` |
 | Guard protection | Vanguards addon (bandguards + rendguard) + built-in vanguards-lite |
 | No relay/exit | `ClientOnly 1`, `ExitPolicy reject *:*` |
-| No telemetry | pip/setuptools/urllib3 stripped from image |
+| No telemetry | pip/setuptools/urllib3 stripped from final image |
 | Input validation | All env vars validated before torrc write |
+| Supply chain | Every dep pinned by version + SHA256 hash |
 | Base image | Alpine 3.23.3 digest-pinned |
 
 **Tor version: 0.4.9.6**
