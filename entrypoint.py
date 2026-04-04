@@ -301,10 +301,15 @@ def main():
     # without CAP_DAC_OVERRIDE cannot traverse into it.
     data_dir = Path('/var/lib/tor')
     if data_dir.exists():
-        # In Podman rootless the tmpfs starts as root:root 0700.
-        # In Docker with uid=/gid= options it starts as tor:tor 0700.
-        # Either way the chmod is a no-op; the chown is what matters for Podman.
-        os.chmod(data_dir, 0o700)   # ensure 0700 before transferring ownership
+        # Podman does not support the uid=/gid=/mode= tmpfs mount options that
+        # Docker uses.  When running under Podman the tmpfs starts root-owned;
+        # we set the mode and transfer ownership here so Tor can access it.
+        #
+        # When running under Docker the tmpfs is already tor:tor 0700 via the
+        # mount options, so we skip chmod (root can't chmod a file it doesn't
+        # own without CAP_FOWNER) and the chown is a harmless no-op.
+        if os.stat(data_dir).st_uid == 0:
+            os.chmod(data_dir, 0o700)   # safe: we own the dir, no FOWNER needed
         os.chown(data_dir, tor_pw.pw_uid, tor_pw.pw_gid)
 
     # ── Start Tor ───────────────────────────────────────────────────────────
