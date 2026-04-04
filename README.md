@@ -65,15 +65,11 @@ The only two lines you need to edit are flagged with `<-- EDIT`.
 ## Environment Variables
 
 - `{NAME}_TOR_SERVICE_HOSTS` — hidden service port mappings
-
-  > **Important:** Tor requires IP addresses in port mappings — Docker service
-  > names (e.g. `web`) are not resolved. Use a static IP assigned in the
-  > compose `networks` section (see the included `docker-compose.yml`).
-
-  - Three-part: `"80:172.20.0.2:80"` — route onion port 80 to backend at `172.20.0.2:80`
-  - Two-part: `"80:8080"` — route onion port 80 to `127.0.0.1:8080` (same container only)
-  - Multiple ports: `"80:172.20.0.2:80,443:172.20.0.2:443"`
-  - `NAME` is lowercased and used as the service directory name (`hyphens ok, underscores converted`)
+  - Three-part: `"80:web:80"` — route onion port 80 to Docker service `web` on port 80
+  - Two-part: `"80:8080"` — route onion port 80 to `127.0.0.1:8080` (same-container only)
+  - Multiple ports: `"80:web:80,443:web:443"`
+  - `NAME` is lowercased and used as the service directory name (underscores converted to hyphens)
+  - Docker service names are resolved to IP addresses at startup — no static IPs required
 
 - `TOR_SANDBOX` — set to `0` to disable `Sandbox 1` (default: `1`)
 
