@@ -5,7 +5,7 @@
 
 **Available on Docker Hub:** https://hub.docker.com/r/doingfedtime/hiddenforge
 
- [![Docker Hub](https://img.shields.io/docker/pulls/doingfedtime/hiddenforge)](https://hub.docker.com/r/doingfedtime/hiddenforge)
+![HiddenForge Logo](https://i.ibb.co/7bSchz5/hiddenforge.png)
 
 A modern, lightweight Tor hidden service Docker image. Forge .onion services with the latest Tor (0.4.8.17) and minimal dependencies.
 
