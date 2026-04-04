@@ -278,20 +278,7 @@ def main():
     signal.signal(signal.SIGTERM, signal_handler)
     signal.signal(signal.SIGINT,  signal_handler)
 
-    # ── Fix DataDirectory ownership ─────────────────────────────────────────
-    # tmpfs uid=/gid= mount options are a Docker extension not supported by
-    # Podman.  We always set ownership explicitly so the same image works under
-    # both runtimes.  This is a no-op if the tmpfs was already mounted with the
-    # correct uid/gid (Docker path) — chown to the already-correct owner is
-    # harmless.
     tor_pw = pwd.getpwnam('tor')
-    data_dir = Path('/var/lib/tor')
-    if data_dir.exists():
-        # chmod BEFORE chown: root owns the fresh tmpfs so chmod works without
-        # CAP_FOWNER.  After chown, file uid = tor (100) ≠ process uid (0),
-        # which would require CAP_FOWNER to chmod.
-        os.chmod(data_dir, 0o700)
-        os.chown(data_dir, tor_pw.pw_uid, tor_pw.pw_gid)
 
     # ── Generate torrc ──────────────────────────────────────────────────────
     try:
@@ -303,6 +290,22 @@ def main():
         sys.exit(1)
 
     os.chown('/etc/tor/torrc', tor_pw.pw_uid, tor_pw.pw_gid)
+
+    # ── Fix DataDirectory ownership ─────────────────────────────────────────
+    # Docker's tmpfs uid=/gid= mount options pre-set ownership at mount time,
+    # but Podman does not support those options.  We explicitly chown the
+    # DataDirectory here so the same image works under both runtimes.
+    #
+    # This must happen AFTER generate_basic_torrc() creates hidden_service
+    # subdirs: once /var/lib/tor is owned by the tor user (mode 0700), root
+    # without CAP_DAC_OVERRIDE cannot traverse into it.
+    data_dir = Path('/var/lib/tor')
+    if data_dir.exists():
+        # In Podman rootless the tmpfs starts as root:root 0700.
+        # In Docker with uid=/gid= options it starts as tor:tor 0700.
+        # Either way the chmod is a no-op; the chown is what matters for Podman.
+        os.chmod(data_dir, 0o700)   # ensure 0700 before transferring ownership
+        os.chown(data_dir, tor_pw.pw_uid, tor_pw.pw_gid)
 
     # ── Start Tor ───────────────────────────────────────────────────────────
     print("Starting Tor...")
