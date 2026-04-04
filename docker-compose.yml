@@ -32,6 +32,12 @@ services:
     # ── Security flags ────────────────────────────────────────────────────
     cap_drop:
       - ALL                        # drop every Linux capability
+    cap_add:
+      - CHOWN        # transfer ownership of hidden_service dir to the tor user
+      - DAC_OVERRIDE # create service subdirs inside the host-owned bind mount
+      - FOWNER       # chmod service dirs that are owned by the host user
+      - SETUID       # su-exec: drop from root → tor to run the Tor daemon
+      - SETGID       # su-exec: drop from root → tor group to run the Tor daemon
     security_opt:
       - no-new-privileges:true     # prevent privilege escalation via setuid
       - seccomp=unconfined         # required for Tor's seccomp-bpf Sandbox 1
