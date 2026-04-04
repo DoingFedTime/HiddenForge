@@ -127,11 +127,9 @@ def generate_basic_torrc():
 # Generated at container startup. Do not edit by hand.
 
 # ── Control socket (required for Vanguards addon) ──────────────────────────
-# Directory /tmp/tor-socket is tor:tor 0711 — root can traverse (stat the
-# socket to poll for it) but cannot list or read.  Only the tor user can
-# connect to the socket itself (0600).  This works in rootless Podman where
-# root cannot traverse /var/lib/tor (tor:tor 0700, no CAP_DAC_OVERRIDE).
-ControlSocket /tmp/tor-socket/control.sock
+# Unix socket inside DataDirectory, 0600 owned by tor.  Not reachable from
+# other containers.  No password needed; file permissions are the boundary.
+ControlSocket /var/lib/tor/control.sock
 
 # ── Network ────────────────────────────────────────────────────────────────
 SocksPort 0
