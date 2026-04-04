@@ -6,6 +6,7 @@ monitors the Vanguards guard-protection addon alongside it.
 import os
 import pwd
 import re
+import socket
 import sys
 import subprocess
 import signal
