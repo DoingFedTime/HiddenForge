@@ -287,8 +287,11 @@ def main():
     tor_pw = pwd.getpwnam('tor')
     data_dir = Path('/var/lib/tor')
     if data_dir.exists():
-        os.chown(data_dir, tor_pw.pw_uid, tor_pw.pw_gid)
+        # chmod BEFORE chown: root owns the fresh tmpfs so chmod works without
+        # CAP_FOWNER.  After chown, file uid = tor (100) ≠ process uid (0),
+        # which would require CAP_FOWNER to chmod.
         os.chmod(data_dir, 0o700)
+        os.chown(data_dir, tor_pw.pw_uid, tor_pw.pw_gid)
 
     # ── Generate torrc ──────────────────────────────────────────────────────
     try:
