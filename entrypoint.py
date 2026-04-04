@@ -18,13 +18,7 @@ _tor_process = None
 _vanguards_process = None
 
 VANGUARDS_BIN    = '/opt/vanguards-venv/bin/vanguards'
-# Socket is placed in a dedicated directory owned by the tor user.
-# Mode 0711 (rwx--x--x) lets root traverse the directory to stat() the socket
-# (needed to poll for it in rootless Podman) while preventing anyone but tor
-# from listing or reading the directory contents.  The socket itself is 0600
-# so only the tor user can actually connect — file permissions are the
-# access-control boundary, no password is needed.
-CONTROL_SOCKET   = '/tmp/tor-socket/control.sock'
+CONTROL_SOCKET   = '/var/lib/tor/control.sock'
 VANGUARDS_STATE  = '/var/lib/tor/vanguards.state'
 
 
