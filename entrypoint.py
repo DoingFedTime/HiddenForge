@@ -179,7 +179,13 @@ FetchUselessDescriptors 0     # do not fetch relay descriptors we won't use (def
 
         hs_dir = f"/var/lib/tor/hidden_service/{service_name}"
         Path(hs_dir).mkdir(parents=True, exist_ok=True)
-        os.chmod(hs_dir, 0o700)
+        # chmod requires owning the directory (CAP_FOWNER not assumed).
+        # If the dir already exists from a previous run it will be owned by
+        # the tor user, so skip chmod — it will already be 0700 from when
+        # it was first created.  We always chown so newly-created dirs are
+        # transferred to the tor user regardless of the calling uid.
+        if os.stat(hs_dir).st_uid == 0:
+            os.chmod(hs_dir, 0o700)
         tor_pw = pwd.getpwnam('tor')
         _chown_r(hs_dir, tor_pw.pw_uid, tor_pw.pw_gid)
 
