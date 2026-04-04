@@ -16,6 +16,16 @@ def _guarded_run(args, **kw):
     return _orig_run(args, **kw)
 _sp.run = _guarded_run
 
+# Mock DNS resolution so the test works without a live Docker network.
+# backend → 192.0.2.1 (TEST-NET, RFC 5737 — not a real address)
+import socket as _socket
+_orig_gethostbyname = _socket.gethostbyname
+def _mock_gethostbyname(host):
+    if host == 'backend':
+        return '192.0.2.1'
+    return _orig_gethostbyname(host)
+_socket.gethostbyname = _mock_gethostbyname
+
 import entrypoint
 
 os.environ['SERVICE_TOR_SERVICE_HOSTS'] = '80:backend:8080,443:backend:8443'
@@ -36,8 +46,8 @@ checks = [
     ('HiddenServiceVersion 3',         'HiddenServiceVersion 3 missing'),
     ('HiddenServiceNumIntroductionPoints', 'NumIntroductionPoints missing'),
     ('HiddenServicePoWQueueRate',      'PoW queue rate missing'),
-    ('HiddenServicePort 80 backend:8080', 'Port 80 mapping missing or wrong'),
-    ('HiddenServicePort 443 backend:8443','Port 443 mapping missing or wrong'),
+    ('HiddenServicePort 80 192.0.2.1:8080',  'Port 80 mapping missing or wrong'),
+    ('HiddenServicePort 443 192.0.2.1:8443', 'Port 443 mapping missing or wrong'),
     ('ControlSocket',                  'ControlSocket missing — Vanguards cannot connect'),
     ('SocksPort 0',                    'SocksPort should be 0 — no SOCKS exposure'),
 ]
