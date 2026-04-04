@@ -52,7 +52,10 @@ services:
       - /etc/tor:rw,noexec,nosuid,size=8m
       # uid=100,gid=101: Tor process runs as the tor user (uid 100) after su-exec drops
       # privileges; the DataDirectory must be owned by that user or Tor refuses to start.
-      - /var/lib/tor:rw,noexec,nosuid,size=64m,uid=100,gid=101,mode=0700
+      # NOTE: uid=/gid=/mode= tmpfs options are Docker-specific and not supported
+      # by Podman.  The entrypoint explicitly chowns /var/lib/tor to the tor user
+      # at startup, so we just allocate the tmpfs here without those options.
+      - /var/lib/tor:rw,noexec,nosuid,size=64m
       # Note: the bind mount below overlays /var/lib/tor/hidden_service so keys persist.
 
     # ── Suppress host-side log file ───────────────────────────────────────
