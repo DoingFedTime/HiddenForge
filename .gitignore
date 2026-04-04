@@ -4,6 +4,7 @@ __pycache__/
 *.pyo
 
 # Local tooling state
+.local/
 
 # Hidden service keys — NEVER commit these
 # If you accidentally stage them: git rm --cached -r tor-keys/ tor-data/
