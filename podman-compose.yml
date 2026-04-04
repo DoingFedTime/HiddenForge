@@ -92,7 +92,7 @@ services:
     #   a) Add NET_BIND_SERVICE to cap_add below, OR
     #   b) Configure your backend to listen on port >= 1024 (e.g. 8080) and
     #      update the *_TOR_SERVICE_HOSTS mapping accordingly: "80:web:8080"
-    image: nginx:alpine
+    image: docker.io/library/nginx:alpine
     restart: unless-stopped
     cap_drop:
       - ALL
