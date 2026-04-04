@@ -278,6 +278,18 @@ def main():
     signal.signal(signal.SIGTERM, signal_handler)
     signal.signal(signal.SIGINT,  signal_handler)
 
+    # ── Fix DataDirectory ownership ─────────────────────────────────────────
+    # tmpfs uid=/gid= mount options are a Docker extension not supported by
+    # Podman.  We always set ownership explicitly so the same image works under
+    # both runtimes.  This is a no-op if the tmpfs was already mounted with the
+    # correct uid/gid (Docker path) — chown to the already-correct owner is
+    # harmless.
+    tor_pw = pwd.getpwnam('tor')
+    data_dir = Path('/var/lib/tor')
+    if data_dir.exists():
+        os.chown(data_dir, tor_pw.pw_uid, tor_pw.pw_gid)
+        os.chmod(data_dir, 0o700)
+
     # ── Generate torrc ──────────────────────────────────────────────────────
     try:
         print("Generating Tor configuration...")
