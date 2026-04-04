@@ -7,23 +7,32 @@ ENV PYTHONDONTWRITEBYTECODE=1
 # Silence the pip self-update check at build time
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# Install Tor and Python runtime.
-# py3-pip is a build-only dep — added as .build-deps and removed after venv
-# is bootstrapped so it leaves no HTTP-capable code in the final image.
+# Install Tor and Python runtime with pinned package versions.
+# py3-pip is a build-only dep — added as .build-deps and removed after the
+# venv is bootstrapped, leaving no HTTP-capable code in the final image.
 RUN apk add --no-cache \
-    tor \
-    python3 \
-    su-exec && \
-    apk add --no-cache --virtual .build-deps py3-pip
+    tor=0.4.9.6-r0 \
+    python3=3.12.12-r0 \
+    su-exec=0.3-r0 && \
+    apk add --no-cache --virtual .build-deps \
+    py3-pip=25.1.1-r1
 
 # Install Vanguards guard-protection addon in an isolated venv.
 # vanguards 0.3.1 (PyPI) uses the removed SafeConfigParser API from Python
 # 3.12 — upstream PR #105 has been unmerged since 2024, so we patch it here.
 #
+# All packages are installed with --require-hashes so pip will abort if any
+# downloaded file does not match the SHA256 recorded in requirements.txt.
+#
 # After install we strip pip, setuptools, and any test / cache artefacts from
 # the venv so no network-capable Python code remains in the final image.
+COPY requirements.txt /tmp/requirements.txt
 RUN python3 -m venv /opt/vanguards-venv && \
-    /opt/vanguards-venv/bin/pip install --no-cache-dir vanguards 'stem==1.8.2' && \
+    /opt/vanguards-venv/bin/pip install \
+      --no-cache-dir \
+      --no-deps \
+      --require-hashes \
+      -r /tmp/requirements.txt && \
     sed -i \
       's/from configparser import SafeConfigParser/from configparser import RawConfigParser as SafeConfigParser/' \
       /opt/vanguards-venv/lib/python3.12/site-packages/vanguards/config.py && \
@@ -33,6 +42,7 @@ RUN python3 -m venv /opt/vanguards-venv && \
     find /opt/vanguards-venv -type d -name '__pycache__' -exec rm -rf {} + 2>/dev/null || true && \
     find /opt/vanguards-venv -name '*.pyc' -delete && \
     find /opt/vanguards-venv -name '*.pyo' -delete && \
+    rm /tmp/requirements.txt && \
     apk del .build-deps
 
 # Set up Tor data directory and config directory.

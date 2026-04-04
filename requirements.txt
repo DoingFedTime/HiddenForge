@@ -1,0 +1,23 @@
+# Pinned dependencies for HiddenForge vanguards venv.
+# ALL packages (including transitive deps) must be listed when using
+# --require-hashes — pip will reject any package not in this file.
+#
+# To update: download each package with `pip download`, verify hashes,
+# update versions and hashes here, then rebuild the image.
+
+vanguards==0.3.1 \
+    --hash=sha256:ef3751d47263483a040486cff920841e937fdea4f892c1791191dfd8c9f20ebf
+
+# stem has no wheel — pip downloads and builds from sdist
+stem==1.8.2 \
+    --hash=sha256:83fb19ffd4c9f82207c006051480389f80af221a7e4783000aedec4e384eb582
+
+# ipaddress is a Python 2 backport; Python 3 has it built-in.
+# vanguards lists it as a dep but stem's runtime does not need the package.
+ipaddress==1.0.23 \
+    --hash=sha256:6e0f4a39e66cb5bb9a137b00276a2eff74f93b71dcbdad6f10ff7df9d3557fcc
+
+# setuptools is pulled in by vanguards as a build dep; it is uninstalled
+# from the venv after install but must be listed here for --require-hashes.
+setuptools==82.0.1 \
+    --hash=sha256:a59e362652f08dcd477c78bb6e7bd9d80a7995bc73ce773050228a348ce2e5bb
