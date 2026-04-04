@@ -14,5 +14,3 @@ docker-compose.override.yml
 # Environment files
 .env
 .env.*
-
-# Internal tooling
