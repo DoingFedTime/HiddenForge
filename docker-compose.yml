@@ -18,6 +18,8 @@ networks:
     internal: true
     ipam:
       config:
+        # Change this subnet if it conflicts with existing Docker networks on your host.
+        # Check with: ip route show | grep 172
         - subnet: 172.20.0.0/24
 
   # tor-external: gives the tor container outbound internet so it can
