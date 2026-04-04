@@ -240,10 +240,23 @@ FetchUselessDescriptors 0     # do not fetch relay descriptors we won't use (def
 # ---------------------------------------------------------------------------
 
 def wait_for_socket(timeout=120):
-    """Block until Tor's control Unix socket appears."""
+    """Block until Tor's control Unix socket appears.
+
+    The socket lives inside /var/lib/tor (tor:tor 0700).  Root without
+    CAP_DAC_OVERRIDE (rootless Podman) cannot traverse that directory, so
+    Path.exists() would raise PermissionError.  We instead poll by running
+    'test -S <socket>' as the tor user via su-exec, which has full access to
+    its own DataDirectory.
+    """
     print("Waiting for Tor control socket...")
     start = time.monotonic()
-    while not Path(CONTROL_SOCKET).exists():
+    while True:
+        result = subprocess.run(
+            ['su-exec', 'tor', 'test', '-S', CONTROL_SOCKET],
+            capture_output=True,
+        )
+        if result.returncode == 0:
+            break
         if time.monotonic() - start > timeout:
             raise TimeoutError(
                 f"Tor control socket not found after {timeout}s"
