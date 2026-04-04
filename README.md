@@ -19,19 +19,28 @@ hash-verified at build time. Designed for a state-level adversary threat model.
 # 1. Download the compose file
 curl -O https://raw.githubusercontent.com/DoingFedTime/HiddenForge/main/docker-compose.yml
 
-# 2. Edit the two lines marked <-- EDIT in docker-compose.yml
-#    (your service name and backend image)
+# 2. Edit the lines marked <-- EDIT in docker-compose.yml
+#    - Change MYAPP to your service name (e.g. BLOG, TIPSITE)
+#    - Replace nginx:alpine with your actual backend image
 
 # 3. Start it
 mkdir -p ./tor-keys
 docker compose up -d
 
-# Your .onion address appears here once Tor bootstraps (~60s):
+# Your .onion address appears here once Tor bootstraps (~60-90s):
+# Replace "myapp" with whatever you named your service in step 2
 docker compose exec tor cat /var/lib/tor/hidden_service/myapp/hostname
 ```
 
 All security flags are pre-configured in the compose file. The backend service
 is network-isolated and never exposed to the internet.
+
+> **Subnet conflict:** The compose file uses `172.20.0.0/24` for static IPs.
+> If that overlaps with another network on your host, change it:
+> ```bash
+> ip route show | grep 172   # see what's in use
+> # Then edit the subnet in docker-compose.yml and update the ipv4_address to match
+> ```
 
 ---
 
