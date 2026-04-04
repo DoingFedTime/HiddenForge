@@ -35,12 +35,6 @@ docker compose exec tor cat /var/lib/tor/hidden_service/myapp/hostname
 All security flags are pre-configured in the compose file. The backend service
 is network-isolated and never exposed to the internet.
 
-> **Subnet conflict:** The compose file uses `172.20.0.0/24` for static IPs.
-> If that overlaps with another network on your host, change it:
-> ```bash
-> ip route show | grep 172   # see what's in use
-> # Then edit the subnet in docker-compose.yml and update the ipv4_address to match
-> ```
 
 ---
 
