@@ -1,1 +1,18 @@
+# Python
 __pycache__/
+*.pyc
+*.pyo
+
+# Hidden service keys — NEVER commit these
+# If you accidentally stage them: git rm --cached -r tor-keys/ tor-data/
+tor-keys/
+tor-data/
+
+# Local compose overrides
+docker-compose.override.yml
+
+# Environment files
+.env
+.env.*
+
+# Internal tooling

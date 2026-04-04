@@ -1,0 +1,7 @@
+# Exclude everything by default, then whitelist only what the build needs.
+*
+
+# The files the Dockerfile COPYs into the image:
+!entrypoint.py
+!requirements.txt
+!tests/

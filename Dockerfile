@@ -52,8 +52,9 @@ RUN mkdir -p ${HOME}/.tor /etc/tor && \
     chown -R tor:tor ${HOME} && \
     chmod 700 ${HOME}
 
-# Copy entrypoint
+# Copy entrypoint and tests
 COPY entrypoint.py /usr/local/bin/entrypoint.py
+COPY tests/ /usr/local/bin/tests/
 RUN chmod +x /usr/local/bin/entrypoint.py
 
 # Persist hidden service keys across container restarts
