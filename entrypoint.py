@@ -299,7 +299,6 @@ def main():
         print(f"Error generating configuration: {e}")
         sys.exit(1)
 
-    tor_pw = pwd.getpwnam('tor')
     os.chown('/etc/tor/torrc', tor_pw.pw_uid, tor_pw.pw_gid)
 
     # ── Start Tor ───────────────────────────────────────────────────────────
