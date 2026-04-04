@@ -187,6 +187,47 @@ timedatectl status   # check sync status on systemd hosts
 
 ---
 
+## Rootless Podman (Recommended for High-Risk Deployments)
+
+Running with rootless Podman is the strongest isolation option available.
+In rootless mode, container uid 0 maps to your regular host user via Linux
+user namespaces. A container escape gives an attacker only your user account
+— not real root on the host.
+
+```bash
+# Prerequisites: Podman 4.0+ and podman-compose
+podman --version
+pip install podman-compose   # or: pipx install podman-compose
+
+# Same three steps as Docker, just use podman-compose.yml
+mkdir -p ./tor-keys
+podman-compose -f podman-compose.yml up -d
+
+# Read the .onion address once Tor bootstraps (~60-90s)
+podman-compose -f podman-compose.yml exec tor cat /var/lib/tor/hidden_service/myapp/hostname
+```
+
+**Why the Podman compose file drops two capabilities:**
+
+| Capability | Docker (rootful) | Podman (rootless) |
+|---|---|---|
+| `DAC_OVERRIDE` | Required — `./tor-keys` is owned by host uid 1000; container root (uid 0) is a different user | Not needed — inside the user namespace, container root = host uid 1000, so it already owns the bind mount |
+| `FOWNER` | Required — container root can't chmod files it doesn't own | Not needed — same user namespace reasoning |
+| `CHOWN` | Required | Required |
+| `SETUID` / `SETGID` | Required | Required |
+
+The `podman-compose.yml` is otherwise identical to `docker-compose.yml` — same
+seccomp, same read-only filesystem, same tmpfs mounts, same Tor hardening.
+
+**Verify your setup is actually rootless:**
+
+```bash
+podman info --format '{{.Host.Security.Rootless}}'
+# Expected output: true
+```
+
+---
+
 ## Security Architecture
 
 | Layer | Mechanism |
