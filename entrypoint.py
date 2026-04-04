@@ -4,6 +4,7 @@ HiddenForge entrypoint — generates a hardened torrc, starts Tor, and
 monitors the Vanguards guard-protection addon alongside it.
 """
 import os
+import pwd
 import re
 import sys
 import subprocess
@@ -18,6 +19,14 @@ _vanguards_process = None
 VANGUARDS_BIN    = '/opt/vanguards-venv/bin/vanguards'
 CONTROL_SOCKET   = '/var/lib/tor/control.sock'
 VANGUARDS_STATE  = '/var/lib/tor/vanguards.state'
+
+
+def _chown_r(path, uid, gid):
+    """Recursively chown path without shelling out to chown(1)."""
+    os.chown(path, uid, gid)
+    for root, dirs, files in os.walk(path):
+        for name in dirs + files:
+            os.chown(os.path.join(root, name), uid, gid)
 
 
 # ---------------------------------------------------------------------------
@@ -101,6 +110,8 @@ ControlSocket /var/lib/tor/control.sock
 # ── Network ────────────────────────────────────────────────────────────────
 SocksPort 0
 DataDirectory /var/lib/tor
+ClientOnly 1          # never volunteer as a relay or exit node
+ExitPolicy reject *:* # belt-and-suspenders: refuse all exit traffic
 
 # ── Logging ────────────────────────────────────────────────────────────────
 Log notice stdout
@@ -143,7 +154,8 @@ FetchUselessDescriptors 0     # do not fetch relay descriptors we won't use (def
         hs_dir = f"/var/lib/tor/hidden_service/{service_name}"
         Path(hs_dir).mkdir(parents=True, exist_ok=True)
         os.chmod(hs_dir, 0o700)
-        subprocess.run(['chown', '-R', 'tor:tor', hs_dir], check=True)
+        tor_pw = pwd.getpwnam('tor')
+        _chown_r(hs_dir, tor_pw.pw_uid, tor_pw.pw_gid)
 
         torrc_content += f"\n# ── Service: {service_name} ──\n"
         torrc_content += f"HiddenServiceDir     {hs_dir}\n"
@@ -248,7 +260,8 @@ def main():
         print(f"Error generating configuration: {e}")
         sys.exit(1)
 
-    subprocess.run(['chown', 'tor:tor', '/etc/tor/torrc'], check=True)
+    tor_pw = pwd.getpwnam('tor')
+    os.chown('/etc/tor/torrc', tor_pw.pw_uid, tor_pw.pw_gid)
 
     # ── Start Tor ───────────────────────────────────────────────────────────
     print("Starting Tor...")

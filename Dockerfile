@@ -23,7 +23,7 @@ RUN apk add --no-cache \
 # After install we strip pip, setuptools, and any test / cache artefacts from
 # the venv so no network-capable Python code remains in the final image.
 RUN python3 -m venv /opt/vanguards-venv && \
-    /opt/vanguards-venv/bin/pip install --no-cache-dir vanguards && \
+    /opt/vanguards-venv/bin/pip install --no-cache-dir vanguards 'stem==1.8.2' && \
     sed -i \
       's/from configparser import SafeConfigParser/from configparser import RawConfigParser as SafeConfigParser/' \
       /opt/vanguards-venv/lib/python3.12/site-packages/vanguards/config.py && \
@@ -56,4 +56,3 @@ HEALTHCHECK --interval=60s --timeout=10s --start-period=90s --retries=3 \
     CMD pidof tor || exit 1
 
 ENTRYPOINT ["python3", "/usr/local/bin/entrypoint.py"]
-CMD ["tor"]
