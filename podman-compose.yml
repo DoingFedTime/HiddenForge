@@ -1,0 +1,105 @@
+# HiddenForge — rootless Podman compose file
+#
+# USAGE:
+#   1. Copy this file and edit the two lines marked with <-- EDIT
+#   2. mkdir -p ./tor-keys
+#   3. podman-compose -f podman-compose.yml up -d
+#   4. podman-compose -f podman-compose.yml exec tor cat /var/lib/tor/hidden_service/myapp/hostname
+#      (replace "myapp" with whatever you used in step 1)
+#
+# WHY THIS FILE EXISTS (rootless security model):
+#   Running Podman rootless means container uid 0 maps to your host user (e.g.
+#   uid 1000) via Linux user namespaces.  A container escape gives an attacker
+#   only your regular user account — not real root on the host.
+#
+#   This also eliminates two capabilities that rootful Docker requires:
+#     DAC_OVERRIDE — rootful Docker needs this because the ./tor-keys bind mount
+#       is owned by host uid 1000, and container root (uid 0) is a different user.
+#       In rootless Podman the bind mount appears root-owned inside the container
+#       (uid 0 = uid 1000 in the user namespace), so DAC_OVERRIDE is not needed.
+#     FOWNER — same reasoning: container root owns the bind mount, so it can
+#       chmod without needing FOWNER.
+#
+#   All other security flags are identical to docker-compose.yml.
+
+networks:
+  tor-internal:
+    internal: true
+  tor-external:
+
+services:
+  tor:
+    image: doingfedtime/hiddenforge:latest
+    restart: unless-stopped
+
+    # ── Security flags ────────────────────────────────────────────────────
+    cap_drop:
+      - ALL                        # drop every Linux capability
+    cap_add:
+      - CHOWN        # transfer ownership of hidden_service dir to the tor user
+      - SETUID       # su-exec: drop from root → tor to run the Tor daemon
+      - SETGID       # su-exec: drop from root → tor group to run the Tor daemon
+      # NOTE: DAC_OVERRIDE and FOWNER are NOT listed here.
+      # In rootless Podman, container root (uid 0) maps to your host user via
+      # user namespaces, so the ./tor-keys bind mount appears root-owned inside
+      # the container. No extra capabilities are needed to write there.
+    security_opt:
+      - no-new-privileges:true     # prevent privilege escalation via setuid
+      - seccomp=unconfined         # required for Tor's seccomp-bpf Sandbox 1
+    read_only: true                # container filesystem is read-only
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+      - /etc/tor:rw,noexec,nosuid,size=8m
+      # uid=100,gid=101: Tor process runs as the tor user (uid 100) after su-exec drops
+      # privileges; the DataDirectory must be owned by that user or Tor refuses to start.
+      - /var/lib/tor:rw,noexec,nosuid,size=64m,uid=100,gid=101,mode=0700
+      # Note: the bind mount below overlays /var/lib/tor/hidden_service so keys persist.
+
+    # ── Suppress host-side log file ───────────────────────────────────────
+    logging:
+      driver: none
+
+    environment:
+      # <-- EDIT: change "MYAPP" to your service name (lowercase, hyphens ok)
+      # The entrypoint resolves Podman service names automatically — no static IPs needed.
+      # Format: "onion_port:service_name:backend_port"
+      # Multiple ports: "80:web:80,443:web:443"
+      MYAPP_TOR_SERVICE_HOSTS: "80:web:80"   # <-- EDIT (change MYAPP)
+
+    volumes:
+      # Hidden service keys persist here across container restarts.
+      # Back this directory up — losing it means losing your .onion address.
+      - ./tor-keys:/var/lib/tor/hidden_service
+
+    networks:
+      - tor-internal   # to reach the backend
+      - tor-external   # to reach the Tor network
+
+    depends_on:
+      - web
+
+  # ── Your backend service ──────────────────────────────────────────────────
+  # Replace this with your actual application. The key constraints:
+  #   - NO 'ports:' mapping — the backend must never be internet-exposed
+  #   - Only connect to tor-internal, not tor-external
+  web:
+    # <-- EDIT: replace with your actual image
+    image: nginx:alpine
+    restart: unless-stopped
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN        # nginx needs these to set up its worker processes
+      - SETUID
+      - SETGID
+      # DAC_OVERRIDE not needed in rootless: container root owns its own files
+      # inside the user namespace.
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m
+      - /var/cache/nginx:rw,noexec,nosuid,size=32m
+      - /var/run:rw,noexec,nosuid,size=8m
+    networks:
+      - tor-internal   # reachable by tor, NOT reachable from the internet
