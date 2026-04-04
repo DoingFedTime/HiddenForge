@@ -1,6 +1,7 @@
 FROM alpine:3.22@sha256:e0baf8c394150ac5a14925e179100519f5e37c53547f647acbd9f8eb3e5c4528
 
 ENV HOME /var/lib/tor
+ENV PYTHONUNBUFFERED=1
 
 # Install latest Tor from Alpine packages (automatically gets the latest stable version)
 RUN apk add --no-cache \
