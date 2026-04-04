@@ -202,6 +202,7 @@ FetchUselessDescriptors 0     # do not fetch relay descriptors we won't use (def
                 if len(parts) == 3:
                     hs_port     = validate_port(parts[0],     host_mapping)
                     target_host = validate_hostname(parts[1], host_mapping)
+                    target_host = resolve_to_ip(target_host,  host_mapping)
                     target_port = validate_port(parts[2],     host_mapping)
                     torrc_content += f"HiddenServicePort {hs_port} {target_host}:{target_port}\n"
                 elif len(parts) == 2:
