@@ -286,16 +286,6 @@ def main():
 
     tor_pw = pwd.getpwnam('tor')
 
-    # ── Create control socket directory ─────────────────────────────────────
-    # Mode 0711: tor user has full access; others (including root without
-    # CAP_DAC_OVERRIDE in rootless Podman) can traverse but not list.
-    # This lets the entrypoint poll Path(CONTROL_SOCKET).exists() without
-    # needing DAC_OVERRIDE, while keeping the actual socket (0600) restricted
-    # to the tor user only.
-    socket_dir = Path(CONTROL_SOCKET).parent
-    socket_dir.mkdir(mode=0o711, exist_ok=True)
-    os.chown(socket_dir, tor_pw.pw_uid, tor_pw.pw_gid)
-
     # ── Generate torrc ──────────────────────────────────────────────────────
     try:
         print("Generating Tor configuration...")
