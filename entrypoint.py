@@ -18,7 +18,11 @@ _tor_process = None
 _vanguards_process = None
 
 VANGUARDS_BIN    = '/opt/vanguards-venv/bin/vanguards'
-CONTROL_SOCKET   = '/var/lib/tor/control.sock'
+# /tmp is a fresh tmpfs on every container start — accessible to root AND to the
+# tor user after su-exec drops privileges.  Keeping the socket in /tmp means
+# the entrypoint can poll for it even in rootless Podman where root cannot
+# traverse /var/lib/tor (tor:tor 0700, no CAP_DAC_OVERRIDE).
+CONTROL_SOCKET   = '/tmp/tor-control.sock'
 VANGUARDS_STATE  = '/var/lib/tor/vanguards.state'
 
 
