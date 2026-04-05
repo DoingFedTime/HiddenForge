@@ -26,7 +26,7 @@ Verify with `docker compose ps` — the web service should list no port mappings
 
 ## Generating keys on the production host
 
-By default the container generates hidden service keys on first run. Those keys are created in plaintext on the production machine's disk. For a high-risk deployment, an attacker who gains read access to the host before you start the container can pre-record the key material.
+By default the container generates hidden service keys on first run. Those keys are created in plaintext on the production machine's disk. Any attacker who can read the host filesystem before the container runs can capture the key material.
 
 Generate keys offline instead:
 - Use mkp224o on an air-gapped machine if you want a vanity address
