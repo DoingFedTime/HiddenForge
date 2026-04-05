@@ -23,11 +23,11 @@ timedatectl status
 # If no: systemctl start systemd-timesyncd
 ```
 
-**Firewall blocking outbound 9001/9030** — Tor needs outbound TCP on ports 9001 and 9030 to reach the directory authorities and guard relays. If you're behind a restrictive firewall:
+**Firewall blocking outbound Tor ports** — Tor clients connect to relay ORPorts to reach the network. Relays commonly listen on 443, 9001, or both. If your firewall blocks outbound 443 and 9001, Tor won't build circuits. If it blocks only one, Tor will use the other. If both are blocked, you need bridges.
 ```bash
 # Test from the host
 curl -s https://check.torproject.org/api/ip
-# Or test outbound connectivity to a known relay
+# Or test outbound 443 to a known relay IP
 ```
 
 **No internet on the tor container** — The tor container must be on `tor-external` (the default bridge network). If you misconfigured networking and only have `tor-internal`, Tor has no outbound path.
