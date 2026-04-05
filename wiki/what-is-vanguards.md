@@ -1,6 +1,6 @@
 # What Is Vanguards
 
-HiddenForge runs the Vanguards addon alongside Tor. This page explains what it does and why it matters.
+HiddenForge runs the Vanguards addon alongside Tor.
 
 ---
 
