@@ -53,6 +53,9 @@ docker compose ps
 
 ```bash
 # Confirm the backend is not on tor-external
+# The network name is prefixed with your compose project name (default: directory name)
+docker network ls | grep tor-external
+# Then inspect the result — e.g. if your project is "hiddenforge":
 docker network inspect hiddenforge_tor-external
 # The "web" container should NOT appear in the Containers section
 # Only "tor" should be on this network
