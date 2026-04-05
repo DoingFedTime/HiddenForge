@@ -62,4 +62,4 @@ Vanguards does not protect against:
 - Host compromise — if the server is rooted, the .onion address is the least of your problems
 - Timing correlation attacks by an attacker who can observe both your server and the destination simultaneously (global passive adversary)
 
-For a state-level adversary threat model, Vanguards is a necessary but not sufficient protection layer. Pair it with: offline key generation, rootless Podman, a dedicated host, and operational discipline around what content and metadata you publish.
+Against a state-level adversary, Vanguards covers one attack surface. Pair it with offline key generation, rootless Podman, a dedicated host, and discipline around what metadata your content exposes.
