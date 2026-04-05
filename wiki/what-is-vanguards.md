@@ -40,7 +40,7 @@ The full Vanguards addon runs on top of vanguards-lite and adds the active monit
 
 ## How HiddenForge runs Vanguards
 
-The entrypoint starts Vanguards with one non-default flag: `--disable_vanguards`. This is not disabling Vanguards — it's disabling the guard-layer rotation inside Vanguards, because that function uses a Tor control command (`SETCONF NumEntryGuards`) that Tor's `Sandbox 1` blocks. Since vanguards-lite already handles guard-layer rotation inside the Tor process itself, this is the correct tradeoff: you get bandguards and rendguard from the addon, guard rotation from the built-in vanguards-lite, and Sandbox 1 stays active.
+The entrypoint starts Vanguards with one non-default flag: `--disable_vanguards`. The flag disables only the guard-layer rotation inside Vanguards, because that function uses a Tor control command (`SETCONF NumEntryGuards`) that Tor's `Sandbox 1` blocks. Since vanguards-lite already handles guard-layer rotation inside the Tor process itself, this is the correct tradeoff: you get bandguards and rendguard from the addon, guard rotation from the built-in vanguards-lite, and Sandbox 1 stays active.
 
 Vanguards runs as the `tor` user via `su-exec`, not as root. It communicates with Tor over a Unix control socket at `/var/lib/tor/control.sock`. The socket is only accessible inside the container.
 
