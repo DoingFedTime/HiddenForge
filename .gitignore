@@ -17,3 +17,7 @@ docker-compose.override.yml
 # Environment files
 .env
 .env.*
+
+# OS / IDE
+.DS_Store
+*.swp
