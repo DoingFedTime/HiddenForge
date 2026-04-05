@@ -5,7 +5,6 @@ __pycache__/
 
 # Editor / IDE / tooling state
 .*cache/
-.*/
 
 # Hidden service keys — NEVER commit these
 # If you accidentally stage them: git rm --cached -r tor-keys/ tor-data/
