@@ -1,6 +1,6 @@
 # Multi-Service Example
 
-HiddenForge can expose multiple independent hidden services from a single container, each with its own `.onion` address. This page walks through a complete example.
+HiddenForge can expose multiple independent hidden services from a single container, each with its own `.onion` address.
 
 ---
 
