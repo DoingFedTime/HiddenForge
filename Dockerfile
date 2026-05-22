@@ -1,4 +1,4 @@
-FROM alpine:3.23.3@sha256:59855d3dceb3ae53991193bd03301e082b2a7faa56a514b03527ae0ec2ce3a95
+FROM alpine:3.23.4@sha256:5b10f432ef3da1b8d4c7eb6c487f2f5a8f096bc91145e68878dd4a5019afde11
 
 ENV HOME=/var/lib/tor
 ENV PYTHONUNBUFFERED=1
@@ -11,8 +11,8 @@ ENV PIP_DISABLE_PIP_VERSION_CHECK=1
 # py3-pip is a build-only dep — added as .build-deps and removed after the
 # venv is bootstrapped, leaving no HTTP-capable code in the final image.
 RUN apk add --no-cache \
-    tor=0.4.9.6-r0 \
-    python3=3.12.12-r0 \
+    tor=0.4.9.8-r0 \
+    python3=3.12.13-r0 \
     su-exec=0.3-r0 && \
     apk add --no-cache --virtual .build-deps \
     py3-pip=25.1.1-r1
