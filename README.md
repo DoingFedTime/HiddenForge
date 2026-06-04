@@ -249,7 +249,7 @@ podman info --format '{{.Host.Security.Rootless}}'
 | No telemetry | pip/setuptools/urllib3 stripped from final image |
 | Input validation | All env vars validated before torrc write |
 | Supply chain | Every dep pinned by version + SHA256 hash |
-| Base image | Alpine 3.23.3 digest-pinned |
+| Base image | Alpine 3.23.4 digest-pinned |
 | Host isolation (optional) | Rootless Podman — container escape = host user, not real root |
 
 **Tor version: 0.4.9.6**
