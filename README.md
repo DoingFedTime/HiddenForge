@@ -7,7 +7,7 @@
 
 [![hiddenforge.png](https://i.postimg.cc/fR4BJ54k/hiddenforge.png)](https://postimg.cc/ykPFGm8z)
 
-A hardened Tor hidden service container. Runs Tor 0.4.9.6 with the Vanguards
+A hardened Tor hidden service container. Runs Tor 0.4.9.8 with the Vanguards
 guard-protection addon on Alpine 3.23. Every dependency is pinned and
 hash-verified at build time. Designed for a state-level adversary threat model.
 
