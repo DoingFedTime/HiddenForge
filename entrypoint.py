@@ -186,7 +186,7 @@ FetchUselessDescriptors 0     # do not fetch relay descriptors we won't use (def
         torrc_content += f"\n# ── Service: {service_name} ──\n"
         torrc_content += f"HiddenServiceDir     {hs_dir}\n"
         torrc_content += "HiddenServiceVersion 3\n"
-        torrc_content += "HiddenServiceNumIntroductionPoints 6\n"   # default 3; more = harder to attack
+        torrc_content += "HiddenServiceNumIntroductionPoints 6\n"   # default 3; max 20 (reachability vs surface tradeoff)
         torrc_content += "HiddenServiceMaxStreams 100\n"             # rate-limit per circuit
         torrc_content += "HiddenServiceMaxStreamsCloseCircuit 1\n"   # drop circuit on overrun
         # PoW options are per-service in Tor 0.4.8+ (must follow HiddenServiceDir)
