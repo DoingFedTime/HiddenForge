@@ -252,4 +252,4 @@ podman info --format '{{.Host.Security.Rootless}}'
 | Base image | Alpine 3.23.4 digest-pinned |
 | Host isolation (optional) | Rootless Podman — container escape = host user, not real root |
 
-**Tor version: 0.4.9.6**
+**Tor version: 0.4.9.8**
