@@ -4,6 +4,19 @@ All notable changes to HiddenForge are documented here.
 
 ---
 
+## [2.0.1] — 2026-05-21
+
+### Upgraded (dependency bump)
+- Base image: Alpine 3.23.3 → **3.23.4** (digest re-pinned)
+- Tor: 0.4.9.6 → **0.4.9.8**
+- Python: 3.12.12 → **3.12.13**
+
+These are version/digest bumps only; no behavioural changes to the entrypoint
+or torrc generation. Verified: `tor --list-modules` reports `pow: yes`, and the
+generated torrc passes `tor --verify-config` on the new binary.
+
+---
+
 ## [2.0.0] — 2026-04-03
 
 Complete security hardening rewrite. Not backwards-compatible with v1.x
