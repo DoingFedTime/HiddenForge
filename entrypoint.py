@@ -220,6 +220,39 @@ FetchUselessDescriptors 0     # do not fetch relay descriptors we won't use (def
         print("Warning: no *_TOR_SERVICE_HOSTS env vars found — "
               "Tor will start but no hidden services will be configured.")
 
+    return torrc_content, hs_dirs
+
+
+def generate_basic_torrc():
+    """Build the torrc, create/own the hidden-service dirs, and write /etc/tor/torrc.
+
+    Thin wrapper around the pure :func:`build_torrc_string`: it performs only the
+    privileged filesystem side effects (parent-dir traversal fix, per-service
+    ``mkdir``/``chmod``/``chown``, and writing the config file).  Behaviour and
+    output bytes are identical to the previous single-function implementation.
+    """
+
+    # Ensure the parent hidden_service directory is traversable by the tor user.
+    # In rootless podman the bind-mounted host dir may appear as root:root 770
+    # inside the container, blocking tor (UID 100) from entering subdirs.
+    parent_hs = Path('/var/lib/tor/hidden_service')
+    if parent_hs.exists():
+        os.chmod(parent_hs, 0o755)
+
+    torrc_content, hs_dirs = build_torrc_string()
+
+    tor_pw = pwd.getpwnam('tor')
+    for hs_dir in hs_dirs:
+        Path(hs_dir).mkdir(parents=True, exist_ok=True)
+        # chmod requires owning the directory (CAP_FOWNER not assumed).
+        # If the dir already exists from a previous run it will be owned by
+        # the tor user, so skip chmod — it will already be 0700 from when
+        # it was first created.  We always chown so newly-created dirs are
+        # transferred to the tor user regardless of the calling uid.
+        if os.stat(hs_dir).st_uid == 0:
+            os.chmod(hs_dir, 0o700)
+        _chown_r(hs_dir, tor_pw.pw_uid, tor_pw.pw_gid)
+
     torrc_path = '/etc/tor/torrc'
     with open(torrc_path, 'w') as f:
         f.write(torrc_content)
