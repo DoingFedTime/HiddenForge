@@ -1,0 +1,32 @@
+# HiddenForge — tooling config (tests, coverage, lint).
+# This file configures DEV tooling only. It is not installed into the image.
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# test_torrc.py is the in-CONTAINER smoke test (needs the 'tor' user + /etc/tor);
+# it is not collected in the host unit run.
+addopts = "-q --import-mode=importlib"
+python_files = ["test_*.py"]
+norecursedirs = ["golden"]
+
+[tool.coverage.run]
+branch = true
+source = ["entrypoint"]
+
+[tool.coverage.report]
+show_missing = true
+# The supervision loop / signal handler / Vanguards management are integration
+# surface, not unit surface — excluded from the unit coverage gate honestly
+# rather than faked with mocks.
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+# E/F/W pyflakes+pycodestyle, B bugbear, S flake8-bandit subset, UP pyupgrade
+select = ["E", "F", "W", "B", "S", "UP"]
