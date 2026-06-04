@@ -27,7 +27,8 @@ RUN apk add --no-cache \
 # downloaded file does not match the SHA256 recorded in requirements.txt.
 #
 # After install we strip pip, setuptools, and any test / cache artefacts from
-# the venv so no network-capable Python code remains in the final image.
+# the venv so no third-party installer or HTTP-client packages remain in the
+# final image (the Python stdlib's urllib/ssl cannot be removed and still ship).
 COPY requirements.txt /tmp/requirements.txt
 RUN python3 -m venv /opt/vanguards-venv && \
     /opt/vanguards-venv/bin/pip install \
