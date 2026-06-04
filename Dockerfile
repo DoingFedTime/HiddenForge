@@ -9,7 +9,9 @@ ENV PIP_DISABLE_PIP_VERSION_CHECK=1
 
 # Install Tor and Python runtime with pinned package versions.
 # py3-pip is a build-only dep — added as .build-deps and removed after the
-# venv is bootstrapped, leaving no HTTP-capable code in the final image.
+# venv is bootstrapped, leaving no pip/installer tooling in the final image.
+# (The Python stdlib still ships urllib/ssl; what we remove are the third-party
+# package manager and HTTP clients, not the language's built-in modules.)
 RUN apk add --no-cache \
     tor=0.4.9.8-r0 \
     python3=3.12.13-r0 \
