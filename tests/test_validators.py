@@ -6,8 +6,6 @@ rejection case below exists to falsify "the validators are sufficient."
 
 The validators are pure functions; these tests need no container.
 """
-import socket
-
 import pytest
 
 import entrypoint as e
