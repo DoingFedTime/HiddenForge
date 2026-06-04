@@ -96,13 +96,18 @@ downloaded file's SHA256 does not match what is recorded in `requirements.txt`.
 This means a compromised PyPI package — even one with the correct version number
 — cannot enter the image silently. The build simply fails.
 
-**What is NOT protected:**
+**How apk packages are verified:**
 
-apk packages are version-pinned but not hash-verified — Alpine does not expose
-per-package SHA256 hashes in a format easily consumable at build time. The
-digest-pinned base image mitigates this partially: the Alpine package index
-inside that specific image layer is fixed, so `apk add tor=0.4.9.6-r0` will
-always pull from that locked index.
+apk packages are not pinned by an explicit SHA256 in the Dockerfile the way pip
+packages are (with `--require-hashes`), but they are **not unverified**: apk
+authenticates every package against a cryptographically **signed package index**
+(`APKINDEX.tar.gz`, validated against the Alpine signing keys in
+`/etc/apk/keys`), and each package record carries a checksum anchored by that
+signed index. Because the base image is digest-pinned, the signed index inside
+that specific layer is frozen, so `apk add tor=0.4.9.8-r0` resolves
+deterministically against a fixed, signed index. (The legacy index signature is
+SHA1-based; the practical integrity anchor is the digest-pinned base plus the
+signed index, not the hash algorithm.)
 
 **Updating pinned versions:**
 
