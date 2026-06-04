@@ -30,3 +30,19 @@ line-length = 100
 [tool.ruff.lint]
 # E/F/W pyflakes+pycodestyle, B bugbear, S flake8-bandit subset, UP pyupgrade
 select = ["E", "F", "W", "B", "S", "UP"]
+
+[tool.ruff.lint.per-file-ignores]
+# entrypoint.py is a privileged container supervisor; these rules flag
+# choices that are INTENTIONAL and security-relevant, justified per line:
+#   S110 — best-effort process kill in the signal handler (swallowing errors
+#          during shutdown is deliberate; we are already terminating).
+#   S103 — chmod 0o755 on the parent hidden_service dir is required so the tor
+#          user (uid 100) can traverse a root-owned bind mount under rootless
+#          Podman. The service dirs themselves are 0o700.
+#   S603/S607 — subprocess calls to su-exec/tor by name with FIXED, validated
+#          argument lists and shell=False. No untrusted input reaches argv;
+#          partial paths resolve against the container's controlled PATH.
+"entrypoint.py" = ["S110", "S103", "S603", "S607"]
+# Tests legitimately use bare asserts (S101) and set sys.path before importing
+# the module under test (E402, in the in-container smoke test).
+"tests/*" = ["S101", "E402"]
