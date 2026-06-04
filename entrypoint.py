@@ -115,8 +115,17 @@ def resolve_to_ip(host, label):
 # Tor configuration generation
 # ---------------------------------------------------------------------------
 
-def generate_basic_torrc():
-    """Build a hardened torrc and write it to /etc/tor/torrc."""
+def build_torrc_string():
+    """Validate env vars and assemble the torrc text — PURE, no filesystem side effects.
+
+    Returns a tuple ``(torrc_content, hs_dirs)`` where ``hs_dirs`` is the list of
+    hidden-service directory paths (in deterministic order) that the caller must
+    create and chown.  This function performs NO ``mkdir``/``chmod``/``chown`` and
+    does not touch ``pwd`` — that makes it host-testable without the ``tor`` user
+    or write access to ``/etc/tor`` and keeps the security-critical string
+    assembly isolated from privileged operations.  The bytes it produces are
+    identical to what the previous monolithic generator wrote.
+    """
 
     # Tor's own seccomp sandbox can be disabled via env var for environments
     # that cannot pass --security-opt seccomp=unconfined (e.g. some managed
