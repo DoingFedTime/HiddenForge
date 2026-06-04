@@ -160,14 +160,8 @@ FetchUselessDescriptors 0     # do not fetch relay descriptors we won't use (def
 # ── Hidden services ────────────────────────────────────────────────────────
 """
 
-    # Ensure the parent hidden_service directory is traversable by the tor user.
-    # In rootless podman the bind-mounted host dir may appear as root:root 770
-    # inside the container, blocking tor (UID 100) from entering subdirs.
-    parent_hs = Path('/var/lib/tor/hidden_service')
-    if parent_hs.exists():
-        os.chmod(parent_hs, 0o755)
-
     found_any = False
+    hs_dirs = []
     for env_var in sorted(os.environ):          # sorted for deterministic torrc output
         if not env_var.endswith('_TOR_SERVICE_HOSTS'):
             continue
@@ -187,16 +181,7 @@ FetchUselessDescriptors 0     # do not fetch relay descriptors we won't use (def
         print(f"Service hosts: {service_hosts}")
 
         hs_dir = f"/var/lib/tor/hidden_service/{service_name}"
-        Path(hs_dir).mkdir(parents=True, exist_ok=True)
-        # chmod requires owning the directory (CAP_FOWNER not assumed).
-        # If the dir already exists from a previous run it will be owned by
-        # the tor user, so skip chmod — it will already be 0700 from when
-        # it was first created.  We always chown so newly-created dirs are
-        # transferred to the tor user regardless of the calling uid.
-        if os.stat(hs_dir).st_uid == 0:
-            os.chmod(hs_dir, 0o700)
-        tor_pw = pwd.getpwnam('tor')
-        _chown_r(hs_dir, tor_pw.pw_uid, tor_pw.pw_gid)
+        hs_dirs.append(hs_dir)
 
         torrc_content += f"\n# ── Service: {service_name} ──\n"
         torrc_content += f"HiddenServiceDir     {hs_dir}\n"
