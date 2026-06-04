@@ -108,7 +108,7 @@ def resolve_to_ip(host, label):
         raise ValueError(
             f"Cannot resolve '{stripped}' in {label}: {exc}. "
             "Is the backend container running and on the same network?"
-        )
+        ) from exc
 
 
 # ---------------------------------------------------------------------------
