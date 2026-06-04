@@ -199,7 +199,8 @@ INJECTION_PAYLOADS = [
     "80:127.0.0.1\n:8080",
     "80:evil\nORPort 9001:8080",
     "\nORPort 9001",
-    "80:127.0.0.1:8080\x00ORPort 9001",
+    # NB: NUL bytes cannot reach this code path — the OS rejects them in env
+    # var values (verified). The NUL case is tested at the validator level.
     "80:127.0.0.1:8080\n\n__OwningControllerProcess 1",
 ]
 
