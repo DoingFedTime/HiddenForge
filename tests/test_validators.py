@@ -149,15 +149,22 @@ def test_resolve_interior_newline_not_treated_as_ip(mock_dns, interior_newline):
         e.resolve_to_ip(interior_newline, "label")
 
 
-def test_resolve_octet_overflow_is_a_known_gap(mock_dns):
-    """FINDING F18: resolve_to_ip accepts 999.999.999.999 (no octet range check).
+@pytest.mark.parametrize("bad_ip", ["999.999.999.999", "256.1.1.1", "010.0.0.1", "1.2.3.4.5"])
+def test_resolve_invalid_dotted_quad_rejected(mock_dns, bad_ip):
+    """F18 fixed: dotted-quad-shaped values must be VALID IPv4 (was passed through).
 
-    Documents CURRENT behavior. Tor rejects such an address at parse time, so it
-    is not exploitable, but the validator is too permissive. When F18 is fixed,
-    flip this to assert rejection.
+    A value with the shape of a dotted quad but invalid octets (or leading zeros)
+    is rejected outright rather than emitted into the torrc. '1.2.3.4.5' is not
+    dotted-quad shaped so it falls through to DNS, which also fails.
     """
-    assert e.resolve_to_ip("999.999.999.999", "label") == "999.999.999.999"
-    assert mock_dns == []  # matched the dotted-quad regex, so no DNS lookup
+    with pytest.raises(ValueError):
+        e.resolve_to_ip(bad_ip, "label")
+
+
+@pytest.mark.parametrize("good_ip", ["192.0.2.1", "127.0.0.1", "1.2.3.4", "10.0.0.255"])
+def test_resolve_valid_ip_passthrough(mock_dns, good_ip):
+    assert e.resolve_to_ip(good_ip, "label") == good_ip
+    assert mock_dns == []  # valid dotted-quad → no DNS lookup
 
 
 def test_resolve_whitespace_stripped(mock_dns):
