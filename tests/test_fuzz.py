@@ -102,7 +102,7 @@ def test_fuzz_validate_hostname_invariant(s):
     assert not any(c.isspace() for c in result)
 
 
-@settings(max_examples=1000)
+@settings(max_examples=1000, suppress_health_check=[HealthCheck.function_scoped_fixture])
 @given(_no_nul)
 def test_fuzz_resolve_to_ip_invariant(mock_dns, s):
     # mock_dns raises for anything but 'backend', so no real network is touched.
