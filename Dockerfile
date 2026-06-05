@@ -39,6 +39,11 @@ RUN python3 -m venv /opt/vanguards-venv && \
     sed -i \
       's/from configparser import SafeConfigParser/from configparser import RawConfigParser as SafeConfigParser/' \
       /opt/vanguards-venv/lib/python3.12/site-packages/vanguards/config.py && \
+    # Fail the build loudly if the patch did not apply (sed exits 0 even on no
+    # match). A future vanguards release that changes this import would otherwise
+    # ship a broken venv silently.
+    grep -q 'from configparser import RawConfigParser as SafeConfigParser' \
+      /opt/vanguards-venv/lib/python3.12/site-packages/vanguards/config.py && \
     /opt/vanguards-venv/bin/pip uninstall -y pip setuptools wheel 2>/dev/null || true && \
     find /opt/vanguards-venv -type d -name 'test'  -exec rm -rf {} + 2>/dev/null || true && \
     find /opt/vanguards-venv -type d -name 'tests' -exec rm -rf {} + 2>/dev/null || true && \
