@@ -60,10 +60,12 @@ RUN mkdir -p ${HOME}/.tor /etc/tor && \
     chown -R tor:tor ${HOME} && \
     chmod 700 ${HOME}
 
-# Copy entrypoint, healthcheck, and tests
+# Copy entrypoint, healthcheck, and the in-container smoke test only.
+# The host unit suite (test_validators/test_torrc_gen/conftest/golden) runs on
+# the build host / in CI — it is deliberately NOT shipped in the image.
 COPY entrypoint.py /usr/local/bin/entrypoint.py
 COPY healthcheck.py /usr/local/bin/healthcheck.py
-COPY tests/ /usr/local/bin/tests/
+COPY tests/test_torrc.py /usr/local/bin/tests/test_torrc.py
 RUN chmod +x /usr/local/bin/entrypoint.py
 
 # Persist hidden service keys across container restarts
