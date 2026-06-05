@@ -125,6 +125,42 @@ sha256sum /tmp/dl/vanguards-0.3.2*.whl
 
 ---
 
+## Verifying the Image
+
+Build-time pinning protects what goes *into* the image; signing protects the
+image you *pull*. Released images are signed with the maintainer's cosign key
+(the public key is published in this repo as `cosign.pub`).
+
+**Verify before you run** (replace `<DIGEST>` with the digest you intend to run):
+
+```bash
+cosign verify --key cosign.pub doingfedtime/hiddenforge@sha256:<DIGEST>
+```
+
+A passing verification proves the image was signed by the holder of the
+maintainer key and has not been altered since. For the strongest guarantee,
+pin the verified digest in your compose file instead of the mutable `:latest`
+tag:
+
+```yaml
+    image: doingfedtime/hiddenforge@sha256:<DIGEST>   # pin what you verified
+```
+
+You can also inspect the SBOM and SLSA build provenance attached to the image:
+
+```bash
+cosign verify-attestation --key cosign.pub --type spdxjson doingfedtime/hiddenforge@sha256:<DIGEST>
+gh attestation verify oci://doingfedtime/hiddenforge@sha256:<DIGEST> --owner DoingFedTime
+```
+
+**One-time maintainer setup** (for whoever cuts releases): generate a key pair
+with `cosign generate-key-pair`, commit `cosign.pub` to the repo, and add
+`COSIGN_PRIVATE_KEY`, `COSIGN_PASSWORD`, `REGISTRY_USER`, and `REGISTRY_TOKEN`
+as repository secrets. The `release.yml` workflow then signs, attests, and
+publishes by digest automatically on every `v*.*.*` tag.
+
+---
+
 ## Offline Key Generation (Recommended for High-Risk Deployments)
 
 By default the container generates hidden service keys on first run on the
