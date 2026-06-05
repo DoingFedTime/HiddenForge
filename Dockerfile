@@ -74,12 +74,14 @@ RUN chmod 755 /usr/local/bin/entrypoint.py /usr/local/bin/healthcheck.py
 # Persist hidden service keys across container restarts
 VOLUME ["/var/lib/tor/hidden_service/"]
 
-# Health check — Tor must have bootstrapped AND established a circuit, not merely
-# be running. Queried over the control socket as the tor user (it lives in the
-# 0700 DataDirectory). pidof is kept as a cheap fallback if the probe errors.
+# Health check — Tor must have bootstrapped (100%) AND established a circuit,
+# not merely be running. Queried over the control socket as the tor user (the
+# socket lives in the 0700 DataDirectory). No pidof fallback: a pidof check
+# would report healthy the instant the process exists, masking a Tor that is
+# alive but wedged — which is exactly the failure this probe must catch.
 # start-period is 120s: circuit-establish + descriptor publish with PoW and 6
-# intro points can exceed the previous 90s.
+# intro points can exceed the previous 90s; failures during it don't count.
 HEALTHCHECK --interval=60s --timeout=10s --start-period=120s --retries=3 \
-    CMD su-exec tor python3 /usr/local/bin/healthcheck.py || pidof tor || exit 1
+    CMD su-exec tor python3 /usr/local/bin/healthcheck.py || exit 1
 
 ENTRYPOINT ["python3", "/usr/local/bin/entrypoint.py"]
