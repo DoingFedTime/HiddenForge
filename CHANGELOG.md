@@ -4,6 +4,49 @@ All notable changes to HiddenForge are documented here.
 
 ---
 
+## [Unreleased] — security hardening & verification
+
+### Added
+- **Intro-point DoS defence** — `HiddenServiceEnableIntroDoSDefense 1`
+  (rate 25/s, burst 200) per service. Complements PoW: PoW throttles the
+  rendezvous stage, this throttles `INTRODUCE2` flooding at the intro points.
+- **Bootstrap-aware healthcheck** — `healthcheck.py` queries the control socket
+  for `status/circuit-established` + `bootstrap-phase=100`, replacing the old
+  `pidof tor` check that passed for a process that was alive but wedged.
+- **Container resource limits** (both compose files) — `pids_limit`, `mem_limit`,
+  `memswap_limit == mem_limit` (no swap → keys never paged to disk), `cpus`,
+  and `nofile`/`nproc` ulimits.
+- **tmpfs `nodev`** on every tmpfs mount; explicit `apparmor=docker-default`
+  (Docker compose).
+- **Test suite** — host unit tests for every validator (full injection/edge
+  table), torrc-generation tests, an injection-proof property test, golden
+  snapshots, and property-based fuzzing (Hypothesis). Verified to kill logic
+  mutations of the security surface.
+- **CI** — lint (ruff/bandit/hadolint/actionlint), unit+fuzz with coverage,
+  Docker and rootless-Podman smoke tests, `tor --verify-config`, and a Trivy
+  vulnerability scan.
+- **Release pipeline** (`release.yml`) — cosign signing (maintainer key), SBOM,
+  SLSA build-provenance attestation, and publish-by-digest on version tags;
+  README documents image verification.
+
+### Changed
+- `validate_service_name` now caps length at 63 chars.
+- `resolve_to_ip` strictly validates IPv4 (rejects `999.999.999.999`,
+  leading-zero octets) instead of passing malformed dotted-quads through.
+- torrc generation refactored into a pure, host-testable `build_torrc_string()`
+  (output proven byte-identical to the previous implementation).
+- The host test suite is no longer shipped inside the production image.
+
+### Fixed
+- Dockerfile now fails the build if the vanguards `SafeConfigParser` patch does
+  not apply (previously a silent no-op on a future vanguards change).
+- Corrected documentation: version drift (Tor/Alpine/Python), the apk
+  "not hash-verified" claim (apk verifies a signed index), and the "no
+  HTTP-capable code" comment (the Python stdlib retains urllib/ssl).
+- Documented the L2-only guard-protection limitation for long-lived services.
+
+---
+
 ## [2.0.1] — 2026-05-21
 
 ### Upgraded (dependency bump)
