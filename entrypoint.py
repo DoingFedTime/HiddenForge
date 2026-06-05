@@ -189,10 +189,19 @@ FetchUselessDescriptors 0     # do not fetch relay descriptors we won't use (def
         torrc_content += "HiddenServiceNumIntroductionPoints 6\n"   # default 3; max 20
         torrc_content += "HiddenServiceMaxStreams 100\n"             # rate-limit per circuit
         torrc_content += "HiddenServiceMaxStreamsCloseCircuit 1\n"   # drop circuit on overrun
-        # PoW options are per-service in Tor 0.4.8+ (must follow HiddenServiceDir)
+        # PoW options are per-service in Tor 0.4.8+ (must follow HiddenServiceDir).
+        # PoW throttles the RENDEZVOUS stage (prioritises clients by puzzle effort).
         torrc_content += "HiddenServicePoWDefensesEnabled 1\n"
         torrc_content += "HiddenServicePoWQueueRate  250\n"
         torrc_content += "HiddenServicePoWQueueBurst 2500\n"
+        # Intro-point DoS defence throttles the INTRODUCE2 stage at the intro
+        # points — a different choke point from PoW, complementary not redundant.
+        # Default-off in torrc and in the consensus; we enable it explicitly with
+        # Tor's documented default rate/burst (25/sec, 200 burst). Burst must be
+        # non-zero or the defence is disabled. (Tor onion-service DoS guidelines.)
+        torrc_content += "HiddenServiceEnableIntroDoSDefense 1\n"
+        torrc_content += "HiddenServiceEnableIntroDoSRatePerSec 25\n"
+        torrc_content += "HiddenServiceEnableIntroDoSBurstPerSec 200\n"
 
         for host_mapping in service_hosts.split(','):
             if ':' not in host_mapping:
