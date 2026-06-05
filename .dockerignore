@@ -3,5 +3,6 @@
 
 # The files the Dockerfile COPYs into the image:
 !entrypoint.py
+!healthcheck.py
 !requirements.txt
 !tests/
