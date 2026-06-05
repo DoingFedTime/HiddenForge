@@ -44,14 +44,17 @@ def test_service_name_rejects_bad(bad):
         e.validate_service_name(bad)
 
 
-def test_service_name_no_length_cap_is_a_known_gap():
-    """FINDING F19: validate_service_name currently has NO max length.
+@pytest.mark.parametrize("good_len", [1, 2, 63])
+def test_service_name_length_boundary_accepted(good_len):
+    name = "a" * good_len
+    assert e.validate_service_name(name) == name
 
-    This test documents CURRENT behavior. When F19 is fixed (add a length cap),
-    flip this to assert rejection of an overlong name.
-    """
-    overlong = "a" * 300
-    assert e.validate_service_name(overlong) == overlong  # currently accepted
+
+@pytest.mark.parametrize("bad_len", [64, 100, 300])
+def test_service_name_overlong_rejected(bad_len):
+    """F19 fixed: names longer than 63 chars are rejected (was previously accepted)."""
+    with pytest.raises(ValueError):
+        e.validate_service_name("a" * bad_len)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
