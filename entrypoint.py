@@ -3,6 +3,7 @@
 HiddenForge entrypoint — generates a hardened torrc, starts Tor, and
 monitors the Vanguards guard-protection addon alongside it.
 """
+import ipaddress
 import os
 import pwd
 import re
