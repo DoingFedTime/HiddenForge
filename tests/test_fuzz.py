@@ -47,7 +47,7 @@ def _set_only(value):
 # THE invariant: no injection, ever, for any value
 # ─────────────────────────────────────────────────────────────────────────────
 
-@settings(max_examples=1000)
+@settings(max_examples=1000, suppress_health_check=[HealthCheck.function_scoped_fixture])
 @given(_no_nul)
 def test_fuzz_no_injection_from_any_value(mock_dns, value):
     _set_only(value)
