@@ -147,6 +147,9 @@ PER_SERVICE_REQUIRED = [
     "HiddenServicePoWDefensesEnabled 1",
     "HiddenServicePoWQueueRate  250",
     "HiddenServicePoWQueueBurst 2500",
+    "HiddenServiceEnableIntroDoSDefense 1",
+    "HiddenServiceEnableIntroDoSRatePerSec 25",
+    "HiddenServiceEnableIntroDoSBurstPerSec 200",
 ]
 
 
