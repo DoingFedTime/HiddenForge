@@ -35,15 +35,35 @@ services:
       - SETGID       # su-exec: drop from root → tor group to run the Tor daemon
     security_opt:
       - no-new-privileges:true     # prevent privilege escalation via setuid
-      - seccomp=unconfined         # required for Tor's seccomp-bpf Sandbox 1
+      # Tor's seccomp-bpf Sandbox 1 installs its own in-process syscall filter.
+      # Disabling Docker's default profile avoids a clone3/statx ENOSYS-fallback
+      # conflict across libseccomp versions; Tor's sandbox remains the filter.
+      - seccomp=unconfined
+      - apparmor=docker-default    # explicit: keep Docker's default AppArmor MAC
     read_only: true                # container filesystem is read-only
     tmpfs:
-      - /tmp:rw,noexec,nosuid,size=64m
-      - /etc/tor:rw,noexec,nosuid,size=8m
+      - /tmp:rw,noexec,nosuid,nodev,size=64m
+      - /etc/tor:rw,noexec,nosuid,nodev,size=8m
       # uid=100,gid=101: Tor process runs as the tor user (uid 100) after su-exec drops
       # privileges; the DataDirectory must be owned by that user or Tor refuses to start.
-      - /var/lib/tor:rw,noexec,nosuid,size=64m,uid=100,gid=101,mode=0700
+      - /var/lib/tor:rw,noexec,nosuid,nodev,size=64m,uid=100,gid=101,mode=0700
       # Note: the bind mount below overlays /var/lib/tor/hidden_service so keys persist.
+
+    # ── Resource limits (DoS / fork-bomb / fd-exhaustion containment) ──────
+    # Tor + a Python supervisor + Vanguards is a low-process, modest-memory
+    # workload. memswap_limit == mem_limit disables swap so key material is
+    # never paged to disk (consistent with AvoidDiskWrites 1 in the torrc).
+    mem_limit: 512m
+    memswap_limit: 512m
+    cpus: 1.0
+    pids_limit: 256
+    ulimits:
+      nofile:                      # Tor opens many sockets under load
+        soft: 8192
+        hard: 8192
+      nproc:
+        soft: 256
+        hard: 256
 
     # ── Suppress host-side log file ───────────────────────────────────────
     # Docker writes container stdout to a JSON file on the host by default.
