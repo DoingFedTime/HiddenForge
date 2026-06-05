@@ -1,0 +1,26 @@
+# HiddenForge — hardened Tor configuration
+# Generated at container startup. Do not edit by hand.
+
+# ── Control socket (required for Vanguards addon) ──────────────────────────
+# Unix socket inside DataDirectory, 0600 owned by tor.  Not reachable from
+# other containers.  No password needed; file permissions are the boundary.
+ControlSocket /var/lib/tor/control.sock
+
+# ── Network ────────────────────────────────────────────────────────────────
+SocksPort 0
+DataDirectory /var/lib/tor
+ClientOnly 1          # never volunteer as a relay or exit node
+ExitPolicy reject *:* # belt-and-suspenders: refuse all exit traffic
+
+# ── Logging ────────────────────────────────────────────────────────────────
+Log notice stdout
+SafeLogging 1         # scrub IPs / .onion addresses from log output
+HeartbeatPeriod 0     # suppress periodic heartbeat log spam
+
+# ── Security hardening ─────────────────────────────────────────────────────
+Sandbox 1             # seccomp-bpf syscall filter (needs --security-opt seccomp=unconfined)
+DisableDebuggerAttachment 1   # block ptrace / debugger attachment
+AvoidDiskWrites 1             # minimise forensic footprint on disk
+FetchUselessDescriptors 0     # do not fetch relay descriptors we won't use (default, explicit)
+
+# ── Hidden services ────────────────────────────────────────────────────────

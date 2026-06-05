@@ -21,3 +21,16 @@ docker-compose.override.yml
 # OS / IDE
 .DS_Store
 *.swp
+
+
+# Python venv (dev/test only)
+.venv/
+
+# Coverage / test artifacts
+.coverage
+htmlcov/
+.pytest_cache/
+.hypothesis/
+mutants/
+.mutmut-cache
+.mutmut-cache/

@@ -7,43 +7,139 @@ on:
   pull_request:
     branches: [master]
 
-jobs:
-  build-and-test:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
+# NOTE on supply chain: marketplace actions below are pinned to release tags to
+# match the repo's existing convention. For the project's threat model these
+# should be pinned to full commit SHAs (a documented hardening follow-up).
 
+permissions:
+  contents: read
+
+jobs:
+  # Fast static gates
+  lint:
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install lint tools
+        run: pip install ruff bandit
+      - name: ruff
+        run: ruff check entrypoint.py healthcheck.py tests/
+      - name: bandit (no High severity allowed)
+        run: bandit -r entrypoint.py healthcheck.py -lll
+      - name: hadolint (Dockerfile)
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: Dockerfile
+      - name: actionlint
+        uses: rhysd/actionlint@main
 
+  # Unit + property/fuzz tests
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install test deps
+        run: pip install pytest pytest-cov hypothesis
+      - name: Run host unit + fuzz suite
+        run: pytest --cov=entrypoint --cov-branch --cov-report=term-missing -p no:cacheprovider
+
+  # Build image, smoke test under Docker
+  build-docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
       - name: Build image
         run: docker build -t hiddenforge:ci .
-
-      - name: Smoke test — verify torrc generation
+      - name: Smoke - torrc generation (in-container test)
         run: |
-          mkdir -p /tmp/hs-test
-          docker run --rm \
-            --entrypoint python3 \
+          docker run --rm --entrypoint python3 \
             -e SERVICE_TOR_SERVICE_HOSTS="80:127.0.0.1:8080" \
             -v /tmp/hs-test:/var/lib/tor/hidden_service \
-            hiddenforge:ci \
-            /usr/local/bin/tests/test_torrc.py
-
-      - name: Verify pip and urllib3 absent from image
+            hiddenforge:ci /usr/local/bin/tests/test_torrc.py
+      - name: Smoke - tor --verify-config accepts the generated torrc
         run: |
-          docker run --rm --entrypoint sh hiddenforge:ci -c "
+          docker run --rm --entrypoint sh \
+            -e SERVICE_TOR_SERVICE_HOSTS="80:127.0.0.1:8080" \
+            hiddenforge:ci -c '
+              python3 -c "import sys,pwd,os; sys.path.insert(0,\"/usr/local/bin\"); import entrypoint; entrypoint.generate_basic_torrc(); pw=pwd.getpwnam(\"tor\"); os.chown(\"/etc/tor/torrc\", pw.pw_uid, pw.pw_gid)"
+              su-exec tor tor --verify-config -f /etc/tor/torrc 2>&1 | tail -1 | grep -q "Configuration was valid"
+            '
+      - name: Smoke - no installer/HTTP-client packages in the venv
+        run: |
+          docker run --rm --entrypoint sh hiddenforge:ci -c '
             fail=0
-            for f in pip urllib3 certifi requests setuptools; do
-              if ls /opt/vanguards-venv/lib/python3.12/site-packages/\$f 2>/dev/null; then
-                echo FAIL: \$f found in venv
-                fail=1
+            for f in pip urllib3 certifi requests setuptools wheel; do
+              if ls /opt/vanguards-venv/lib/python3.12/site-packages/$f 2>/dev/null; then
+                echo "FAIL: $f present"; fail=1
               fi
             done
-            [ \$fail -eq 0 ] && echo All telemetry checks passed.
-            exit \$fail
-          "
-
-      - name: Verify vanguards imports cleanly
+            test ! -e /opt/vanguards-venv/bin/pip || { echo "FAIL: pip binary present"; fail=1; }
+            [ $fail -eq 0 ] && echo "venv clean"; exit $fail
+          '
+      - name: Smoke - vanguards imports cleanly
         run: |
           docker run --rm --entrypoint /opt/vanguards-venv/bin/python3 hiddenforge:ci \
             -c "import vanguards; print('vanguards import ok')"
+      - name: Smoke - read-only rootfs + privilege drop
+        run: |
+          docker run -d --name hf-ro \
+            --read-only \
+            --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER \
+            --cap-add SETUID --cap-add SETGID \
+            --security-opt no-new-privileges --security-opt seccomp=unconfined \
+            --tmpfs /tmp:rw,noexec,nosuid,nodev \
+            --tmpfs /etc/tor:rw,noexec,nosuid,nodev \
+            --tmpfs /var/lib/tor:rw,noexec,nosuid,nodev,uid=100,gid=101,mode=0700 \
+            -e SERVICE_TOR_SERVICE_HOSTS="80:127.0.0.1:8080" \
+            hiddenforge:ci
+          sleep 15
+          test "$(docker inspect -f '{{.State.Running}}' hf-ro)" = "true"
+          docker exec hf-ro ps -o user,comm | grep -E '^tor +tor$'
+          docker exec hf-ro sh -c 'test "$(stat -c %U /etc/tor/torrc)" = tor'
+          docker rm -f hf-ro
+
+  # Build + smoke under rootless Podman (exercises the chown branch)
+  build-podman:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image (podman)
+        run: podman build -t hiddenforge:ci .
+      - name: Smoke - rootless startup, plain tmpfs, privilege drop
+        run: |
+          mkdir -p /tmp/pod-keys
+          podman run -d --name hf-pod \
+            --cap-drop ALL --cap-add CHOWN --cap-add SETUID --cap-add SETGID \
+            --security-opt no-new-privileges --security-opt seccomp=unconfined \
+            --read-only \
+            --tmpfs /tmp:rw,noexec,nosuid,nodev \
+            --tmpfs /etc/tor:rw,noexec,nosuid,nodev \
+            --tmpfs /var/lib/tor:rw,noexec,nosuid,nodev \
+            -v /tmp/pod-keys:/var/lib/tor/hidden_service \
+            -e SERVICE_TOR_SERVICE_HOSTS="80:8080" \
+            hiddenforge:ci
+          sleep 15
+          test "$(podman inspect -f '{{.State.Running}}' hf-pod)" = "true"
+          podman exec hf-pod ps -o user,comm | grep -E '^tor +tor$'
+          podman rm -f hf-pod
+
+  # Vulnerability scan of the built image
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -t hiddenforge:ci .
+      - name: Trivy scan (fail on fixable HIGH/CRITICAL)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: hiddenforge:ci
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"

@@ -47,3 +47,6 @@ select = ["E", "F", "W", "B", "S", "UP"]
 # Tests legitimately use bare asserts (S101) and set sys.path before importing
 # the module under test (E402, in the in-container smoke test).
 "tests/*" = ["S101", "E402"]
+
+[tool.mutmut]
+paths_to_mutate = ["entrypoint.py"]
