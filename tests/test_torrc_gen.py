@@ -23,6 +23,8 @@ ALLOWED_DIRECTIVES = {
     "HiddenServiceMaxStreams", "HiddenServiceMaxStreamsCloseCircuit",
     "HiddenServicePoWDefensesEnabled", "HiddenServicePoWQueueRate",
     "HiddenServicePoWQueueBurst", "HiddenServicePort",
+    "HiddenServiceEnableIntroDoSDefense", "HiddenServiceEnableIntroDoSRatePerSec",
+    "HiddenServiceEnableIntroDoSBurstPerSec",
 }
 
 
