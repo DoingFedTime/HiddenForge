@@ -44,6 +44,21 @@ def test_service_name_rejects_bad(bad):
         e.validate_service_name(bad)
 
 
+@pytest.mark.parametrize(
+    "surrogate_input",
+    ["web\ud800", "\udfffsvc", "ab\ud834cd"],
+)
+def test_validators_reject_surrogates(surrogate_input):
+    """Surrogate code points can reach a real env via surrogateescape decoding
+    of non-UTF8 bytes; all validators must reject them, not crash."""
+    with pytest.raises(ValueError):
+        e.validate_service_name(surrogate_input)
+    with pytest.raises(ValueError):
+        e.validate_hostname(surrogate_input, "label")
+    with pytest.raises(ValueError):
+        e.validate_port(surrogate_input, "label")
+
+
 @pytest.mark.parametrize("good_len", [1, 2, 63])
 def test_service_name_length_boundary_accepted(good_len):
     name = "a" * good_len
