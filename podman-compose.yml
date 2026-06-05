@@ -45,18 +45,34 @@ services:
       # the container. No extra capabilities are needed to write there.
     security_opt:
       - no-new-privileges:true     # prevent privilege escalation via setuid
-      - seccomp=unconfined         # required for Tor's seccomp-bpf Sandbox 1
+      # Tor's seccomp-bpf Sandbox 1 installs its own in-process syscall filter.
+      - seccomp=unconfined
+      # NOTE: no explicit apparmor= here. Rootless Podman frequently cannot load
+      # the docker-default profile unprivileged; Podman applies its own default.
     read_only: true                # container filesystem is read-only
     tmpfs:
-      - /tmp:rw,noexec,nosuid,size=64m
-      - /etc/tor:rw,noexec,nosuid,size=8m
+      - /tmp:rw,noexec,nosuid,nodev,size=64m
+      - /etc/tor:rw,noexec,nosuid,nodev,size=8m
       # uid=100,gid=101: Tor process runs as the tor user (uid 100) after su-exec drops
       # privileges; the DataDirectory must be owned by that user or Tor refuses to start.
       # NOTE: uid=/gid=/mode= tmpfs options are Docker-specific and not supported
       # by Podman.  The entrypoint explicitly chowns /var/lib/tor to the tor user
       # at startup, so we just allocate the tmpfs here without those options.
-      - /var/lib/tor:rw,noexec,nosuid,size=64m
+      - /var/lib/tor:rw,noexec,nosuid,nodev,size=64m
       # Note: the bind mount below overlays /var/lib/tor/hidden_service so keys persist.
+
+    # ── Resource limits (DoS / fork-bomb / fd-exhaustion containment) ──────
+    mem_limit: 512m
+    memswap_limit: 512m
+    cpus: 1.0
+    pids_limit: 256
+    ulimits:
+      nofile:
+        soft: 8192
+        hard: 8192
+      nproc:
+        soft: 256
+        hard: 256
 
     # ── Suppress host-side log file ───────────────────────────────────────
     logging:
