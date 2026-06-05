@@ -28,11 +28,16 @@ ALLOWED_DIRECTIVES = {
     "HiddenServiceEnableIntroDoSBurstPerSec",
 }
 
-# Text excluding NUL: the OS forbids NUL in env var values, so it can never
-# reach this code via the environment. Everything else (newlines, CR, control
-# chars, unicode, colons, commas) is fair game.
+# Strategy for values set via os.environ. Excludes:
+#   - NUL: the OS forbids it in env var values.
+#   - surrogates (category Cs): os.environ[...] = value cannot ENCODE a lone
+#     surrogate in this test harness. (Surrogates CAN appear in a real env via
+#     surrogateescape decoding of non-UTF8 bytes, but the validators reject them
+#     — covered directly in test_validators, not via this env-based strategy.)
+# Everything else (newlines, CR, control chars, unicode, colons, commas) is fair game.
 _no_nul = st.text(
-    alphabet=st.characters(blacklist_characters="\x00"), max_size=200
+    alphabet=st.characters(blacklist_characters="\x00", blacklist_categories=("Cs",)),
+    max_size=200,
 )
 
 
