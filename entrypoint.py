@@ -61,11 +61,16 @@ def signal_handler(signum, frame):
 # ---------------------------------------------------------------------------
 
 def validate_service_name(name):
-    """Allow only lowercase alphanumeric and hyphens."""
-    if not re.fullmatch(r'[a-z0-9][a-z0-9\-]*', name):
+    """Allow only lowercase alphanumeric and hyphens, max 63 chars.
+
+    The name is interpolated into a filesystem path
+    (/var/lib/tor/hidden_service/<name>), so it is length-capped at 63 — the
+    DNS-label limit and a comfortable bound below any filesystem name limit.
+    """
+    if not re.fullmatch(r'[a-z0-9][a-z0-9\-]*', name) or len(name) > 63:
         raise ValueError(
             f"Invalid service name '{name}': only lowercase alphanumeric "
-            "and hyphens allowed"
+            "and hyphens allowed, max 63 chars"
         )
     return name
 
