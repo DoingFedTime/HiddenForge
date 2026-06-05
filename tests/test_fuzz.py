@@ -8,7 +8,7 @@ build_torrc_string emit a line outside the known-directive whitelist.
 import os
 import re
 
-from hypothesis import given, settings
+from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 import entrypoint as e
