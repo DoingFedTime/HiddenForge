@@ -242,11 +242,12 @@ podman info --format '{{.Host.Security.Rootless}}'
 | Debugger blocking | `DisableDebuggerAttachment 1` |
 | Disk minimisation | `AvoidDiskWrites 1` |
 | Log scrubbing | `SafeLogging 1` |
-| DoS defence | `HiddenServicePoWDefensesEnabled 1` per service |
+| DoS defence (rendezvous) | `HiddenServicePoWDefensesEnabled 1` per service |
+| DoS defence (intro point) | `HiddenServiceEnableIntroDoSDefense 1` (rate 25/s, burst 200) |
 | Circuit overload | `HiddenServiceMaxStreams 100`, `HiddenServiceMaxStreamsCloseCircuit 1` |
-| Guard protection | Vanguards addon (bandguards + rendguard) + built-in vanguards-lite |
+| Guard protection | Vanguards addon (bandguards + rendguard) + built-in vanguards-lite (**L2 only** — see [wiki](wiki/what-is-vanguards.md#known-limitation-l2-only-guard-protection-read-this) for the L3 limitation on long-lived services) |
 | No relay/exit | `ClientOnly 1`, `ExitPolicy reject *:*` |
-| No telemetry | pip/setuptools/urllib3 stripped from final image |
+| No telemetry | pip/setuptools/urllib3 stripped from final image (Python stdlib remains) |
 | Input validation | All env vars validated before torrc write |
 | Supply chain | Every dep pinned by version + SHA256 hash |
 | Base image | Alpine 3.23.4 digest-pinned |
