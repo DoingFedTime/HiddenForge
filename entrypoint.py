@@ -104,8 +104,16 @@ def resolve_to_ip(host, label):
     a hostname in HiddenServicePort — it only accepts IPs).
     """
     stripped = host.strip()
-    if re.fullmatch(r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}', stripped):
-        return stripped
+    # If it has the shape of a dotted-quad, require it to be a VALID IPv4
+    # address (reject e.g. 999.999.999.999 and leading-zero octets) rather than
+    # passing the malformed value through to the torrc.
+    if re.fullmatch(r'\d{1,3}(?:\.\d{1,3}){3}', stripped):
+        try:
+            return str(ipaddress.IPv4Address(stripped))
+        except ipaddress.AddressValueError as exc:
+            raise ValueError(
+                f"Invalid IPv4 address '{stripped}' in {label}"
+            ) from exc
     try:
         resolved = socket.gethostbyname(stripped)
         print(f"Resolved '{stripped}' → {resolved}")
