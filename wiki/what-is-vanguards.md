@@ -44,6 +44,34 @@ The entrypoint starts Vanguards with one non-default flag: `--disable_vanguards`
 
 Vanguards runs as the `tor` user via `su-exec`, not as root. It communicates with Tor over a Unix control socket at `/var/lib/tor/control.sock`. The socket is only accessible inside the container.
 
+---
+
+## Known limitation: L2-only guard protection (read this)
+
+Be precise about what you actually get, because the difference matters for a
+**long-lived** service:
+
+- Tor's built-in **vanguards-lite** pins only the **second-layer (L2)** guards.
+  It uses **no third layer (L3)**, does not persist its guard set to disk
+  (topology resets on restart), and — per Tor's own design proposal (prop 333)
+  — is explicitly intended for **short-lived** services (uptime up to ~1 month,
+  e.g. OnionShare). The proposal states that long-lived services are *not* well
+  protected by vanguards-lite alone and should run the full addon's guard layer.
+- The full Vanguards addon's guard-layer component (which would add **L3** guards
+  and a longer-lived, disk-persisted L2 set) is the part HiddenForge disables
+  with `--disable_vanguards`, because enabling it requires a runtime `SETCONF`
+  that Tor's `Sandbox 1` blocks.
+
+So for a **persistent** .onion you currently have: bandguards + rendguard (full),
+**L2** guard pinning (vanguards-lite), and **no L3** pinning. That is a real,
+deliberate tradeoff — we chose to keep `Sandbox 1` (a strong, always-on syscall
+filter) over the addon's L3 layer, rather than ship a fragile workaround that
+could take your service offline when relays leave the network. If your threat
+model requires full L2+L3 guard-discovery resistance for a long-lived service,
+the correct answer today is to run the vanguards addon **without** Tor's
+Sandbox, on a dedicated, otherwise-hardened host — a different set of tradeoffs
+you should make consciously, not a flag we can safely flip for you.
+
 If Vanguards crashes, the entrypoint restarts it automatically up to 5 times. If it keeps crashing, it's disabled for that session and Tor continues running with vanguards-lite only. Restart the container to reset.
 
 ---
