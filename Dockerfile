@@ -66,7 +66,10 @@ RUN mkdir -p ${HOME}/.tor /etc/tor && \
 COPY entrypoint.py /usr/local/bin/entrypoint.py
 COPY healthcheck.py /usr/local/bin/healthcheck.py
 COPY tests/test_torrc.py /usr/local/bin/tests/test_torrc.py
-RUN chmod +x /usr/local/bin/entrypoint.py
+# 0755 so the unprivileged tor user can read+execute the healthcheck (the build
+# context files are 0660; COPY preserves that, leaving 'other' unable to read).
+# These scripts contain no secrets.
+RUN chmod 755 /usr/local/bin/entrypoint.py /usr/local/bin/healthcheck.py
 
 # Persist hidden service keys across container restarts
 VOLUME ["/var/lib/tor/hidden_service/"]
