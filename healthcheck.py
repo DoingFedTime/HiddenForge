@@ -35,7 +35,7 @@ def _query():
             if not chunk:
                 break
             data += chunk
-    except socket.timeout:
+    except TimeoutError:
         pass
     finally:
         s.close()
