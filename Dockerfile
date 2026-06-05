@@ -60,18 +60,21 @@ RUN mkdir -p ${HOME}/.tor /etc/tor && \
     chown -R tor:tor ${HOME} && \
     chmod 700 ${HOME}
 
-# Copy entrypoint and tests
+# Copy entrypoint, healthcheck, and tests
 COPY entrypoint.py /usr/local/bin/entrypoint.py
+COPY healthcheck.py /usr/local/bin/healthcheck.py
 COPY tests/ /usr/local/bin/tests/
 RUN chmod +x /usr/local/bin/entrypoint.py
 
 # Persist hidden service keys across container restarts
 VOLUME ["/var/lib/tor/hidden_service/"]
 
-# Health check — tor process must be alive
-# NOTE: start-period increased to 90s to allow Tor to bootstrap and for
-# Vanguards to initialise before the first health check fires.
-HEALTHCHECK --interval=60s --timeout=10s --start-period=90s --retries=3 \
-    CMD pidof tor || exit 1
+# Health check — Tor must have bootstrapped AND established a circuit, not merely
+# be running. Queried over the control socket as the tor user (it lives in the
+# 0700 DataDirectory). pidof is kept as a cheap fallback if the probe errors.
+# start-period is 120s: circuit-establish + descriptor publish with PoW and 6
+# intro points can exceed the previous 90s.
+HEALTHCHECK --interval=60s --timeout=10s --start-period=120s --retries=3 \
+    CMD su-exec tor python3 /usr/local/bin/healthcheck.py || pidof tor || exit 1
 
 ENTRYPOINT ["python3", "/usr/local/bin/entrypoint.py"]
