@@ -16,7 +16,7 @@ docker compose exec tor cat /etc/tor/torrc   # verify the torrc generated correc
 
 Common causes:
 
-**Clock skew** — Tor requires the host clock to be within ~30 minutes of real time. If it's off, Tor will fail to build circuits silently.
+**Clock skew.** Tor requires the host clock to be within ~30 minutes of real time. If it's off, Tor will fail to build circuits silently.
 ```bash
 timedatectl status
 # Look for: "System clock synchronized: yes"
