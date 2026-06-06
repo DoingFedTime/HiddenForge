@@ -252,8 +252,8 @@ podman-compose -f podman-compose.yml exec tor cat /var/lib/tor/hidden_service/my
 
 | Capability | Docker (rootful) | Podman (rootless) |
 |---|---|---|
-| `DAC_OVERRIDE` | Required — `./tor-keys` is owned by host uid 1000; container root (uid 0) is a different user | Not needed — inside the user namespace, container root = host uid 1000, so it already owns the bind mount |
-| `FOWNER` | Required — container root can't chmod files it doesn't own | Not needed — same user namespace reasoning |
+| `DAC_OVERRIDE` | Required: `./tor-keys` is owned by host uid 1000; container root (uid 0) is a different user | Not needed: inside the user namespace, container root = host uid 1000, so it already owns the bind mount |
+| `FOWNER` | Required: container root can't chmod files it doesn't own | Not needed: same user namespace reasoning |
 | `CHOWN` | Required | Required |
 | `SETUID` / `SETGID` | Required | Required |
 
