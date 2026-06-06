@@ -69,8 +69,8 @@ filter) over the addon's L3 layer, rather than ship a fragile workaround that
 could take your service offline when relays leave the network. If your threat
 model requires full L2+L3 guard-discovery resistance for a long-lived service,
 the correct answer today is to run the vanguards addon **without** Tor's
-Sandbox, on a dedicated, otherwise-hardened host, a different set of tradeoffs
-you should make consciously, not a flag we can safely flip for you.
+Sandbox, on a dedicated, otherwise-hardened host. That is a different set of
+tradeoffs you should weigh deliberately, not a flag we can safely flip for you.
 
 If Vanguards crashes, the entrypoint restarts it automatically up to 5 times. If it keeps crashing, it's disabled for that session and Tor continues running with vanguards-lite only. Restart the container to reset.
 
