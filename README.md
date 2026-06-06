@@ -111,8 +111,8 @@ signed index, not the hash algorithm.)
 
 **Updating pinned versions:**
 
-When you want to upgrade, do not just change version numbers — verify the new
-hashes first:
+When you upgrade, do not just change version numbers. Verify the new hashes
+first:
 
 ```bash
 # Get the new SHA256 for a pip package:
