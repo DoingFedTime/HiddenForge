@@ -93,8 +93,8 @@ software. HiddenForge pins every dependency at every layer.
 
 pip's `--require-hashes` flag makes the build abort with a clear error if any
 downloaded file's SHA256 does not match what is recorded in `requirements.txt`.
-This means a compromised PyPI package — even one with the correct version number
-— cannot enter the image silently. The build simply fails.
+A compromised PyPI package, even one with the correct version number, cannot
+enter the image silently. The build fails.
 
 **How apk packages are verified:**
 
