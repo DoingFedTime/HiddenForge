@@ -130,7 +130,7 @@ The `NAME` prefix in `NAME_TOR_SERVICE_HOSTS` becomes the hidden service directo
 - Must be alphanumeric + hyphens only
 - Must start with a letter or digit
 
-Invalid names are skipped with a warning at startup — check logs if a service doesn't appear.
+Invalid names are skipped with a warning at startup. Check logs if a service doesn't appear.
 
 ---
 
