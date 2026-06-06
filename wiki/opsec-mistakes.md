@@ -1,4 +1,4 @@
-# Operational Security — Common Mistakes
+# Operational Security: Common Mistakes
 
 HiddenForge handles the container hardening. The mistakes that expose operators happen outside the container. These are the ones that have burned people.
 
@@ -6,7 +6,7 @@ HiddenForge handles the container hardening. The mistakes that expose operators 
 
 ## Exposing the backend port
 
-The backend service must have no `ports:` entry in the compose file. If you add one for testing and forget to remove it, your service is reachable directly by IP — bypassing Tor entirely.
+The backend service must have no `ports:` entry in the compose file. If you add one for testing and forget to remove it, your service is reachable directly by IP, bypassing Tor entirely.
 
 ```yaml
 # WRONG — exposes your server IP
@@ -20,7 +20,7 @@ web:
     - tor-internal
 ```
 
-Verify with `docker compose ps` — the web service should list no port mappings.
+Verify with `docker compose ps`. The web service should list no port mappings.
 
 ---
 
@@ -69,7 +69,7 @@ Strip metadata from all files before publishing. Use tools like `mat2` for docum
 
 ## Not synchronising the clock
 
-Tor requires the host clock to be within roughly 30 minutes of real time. A misconfigured or drifting clock causes Tor to fail building circuits — and the failure mode isn't always obvious. The container exits cleanly but Tor never bootstraps.
+Tor requires the host clock to be within roughly 30 minutes of real time. A misconfigured or drifting clock causes Tor to fail building circuits, and the failure mode isn't always obvious. The container exits cleanly but Tor never bootstraps.
 
 Run `systemd-timesyncd` or NTP on the host. Check with `timedatectl status` before starting the container.
 
@@ -85,7 +85,7 @@ For a state-level adversary threat model: dedicated host, rootless Podman, no ot
 
 ## Leaving debug logging enabled in production
 
-The compose file ships with `logging: driver: none` for a reason. Docker's default JSON log driver writes everything to disk on the host — including Tor's output. Even with `SafeLogging 1` inside Tor (which scrubs IPs from log messages), circuit timing information and connection counts in the log are still metadata.
+The compose file ships with `logging: driver: none` for a reason. Docker's default JSON log driver writes everything to disk on the host, including Tor's output. Even with `SafeLogging 1` inside Tor (which scrubs IPs from log messages), circuit timing information and connection counts in the log are still metadata.
 
 Remove the `logging: driver: none` block only when actively debugging. Put it back before the service goes live.
 
@@ -93,6 +93,6 @@ Remove the `logging: driver: none` block only when actively debugging. Put it ba
 
 ## Reusing a `.onion` address across different contexts
 
-If you run the same `.onion` address for a long time and then change what you publish there, an adversary who monitored the address during the original use period still has that association. Operational compartmentalisation means different activities use different identities — different key pairs, different `.onion` addresses.
+If you run the same `.onion` address for a long time and then change what you publish there, an adversary who monitored the address during the original use period still has that association. Operational compartmentalisation means different activities use different identities: different key pairs and different `.onion` addresses.
 
 Don't reuse a `.onion` address that was ever associated with your real identity for a pseudonymous operation, and vice versa.

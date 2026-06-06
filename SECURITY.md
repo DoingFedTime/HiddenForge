@@ -5,7 +5,7 @@
 | Version | Supported |
 |---|---|
 | 2.x (latest) | Yes |
-| 1.x | No — upgrade to v2.0.0 |
+| 1.x | No, upgrade to v2.0.0 |
 
 ## Reporting a Vulnerability
 

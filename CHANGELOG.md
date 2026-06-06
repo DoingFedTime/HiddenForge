@@ -4,28 +4,28 @@ All notable changes to HiddenForge are documented here.
 
 ---
 
-## [Unreleased] — security hardening & verification
+## [Unreleased] - security hardening & verification
 
 ### Added
-- **Intro-point DoS defence** — `HiddenServiceEnableIntroDoSDefense 1`
+- **Intro-point DoS defence**: `HiddenServiceEnableIntroDoSDefense 1`
   (rate 25/s, burst 200) per service. Complements PoW: PoW throttles the
   rendezvous stage, this throttles `INTRODUCE2` flooding at the intro points.
-- **Bootstrap-aware healthcheck** — `healthcheck.py` queries the control socket
+- **Bootstrap-aware healthcheck**: `healthcheck.py` queries the control socket
   for `status/circuit-established` + `bootstrap-phase=100`, replacing the old
   `pidof tor` check that passed for a process that was alive but wedged.
-- **Container resource limits** (both compose files) — `pids_limit`, `mem_limit`,
+- **Container resource limits** (both compose files): `pids_limit`, `mem_limit`,
   `memswap_limit == mem_limit` (no swap → keys never paged to disk), `cpus`,
   and `nofile`/`nproc` ulimits.
 - **tmpfs `nodev`** on every tmpfs mount; explicit `apparmor=docker-default`
   (Docker compose).
-- **Test suite** — host unit tests for every validator (full injection/edge
+- **Test suite**: host unit tests for every validator (full injection/edge
   table), torrc-generation tests, an injection-proof property test, golden
   snapshots, and property-based fuzzing (Hypothesis). Verified to kill logic
   mutations of the security surface.
-- **CI** — lint (ruff/bandit/hadolint/actionlint), unit+fuzz with coverage,
+- **CI**: lint (ruff/bandit/hadolint/actionlint), unit+fuzz with coverage,
   Docker and rootless-Podman smoke tests, `tor --verify-config`, and a Trivy
   vulnerability scan.
-- **Release pipeline** (`release.yml`) — cosign signing (maintainer key), SBOM,
+- **Release pipeline** (`release.yml`): cosign signing (maintainer key), SBOM,
   SLSA build-provenance attestation, and publish-by-digest on version tags;
   README documents image verification.
 
@@ -47,7 +47,7 @@ All notable changes to HiddenForge are documented here.
 
 ---
 
-## [2.0.1] — 2026-05-21
+## [2.0.1] - 2026-05-21
 
 ### Upgraded (dependency bump)
 - Base image: Alpine 3.23.3 → **3.23.4** (digest re-pinned)
@@ -60,28 +60,28 @@ generated torrc passes `tor --verify-config` on the new binary.
 
 ---
 
-## [2.0.0] — 2026-04-03
+## [2.0.0] - 2026-04-03
 
 Complete security hardening rewrite. Not backwards-compatible with v1.x
 due to the addition of Vanguards, the Unix control socket, and the
 seccomp sandbox requirement.
 
 ### Security improvements
-- **Vanguards addon** — bandguards (bandwidth side-channel detection)
+- **Vanguards addon**: bandguards (bandwidth side-channel detection)
   and rendguard (rendezvous-point overuse detection) alongside Tor's
   built-in vanguards-lite guard rotation
-- **Tor Sandbox 1** — seccomp-bpf syscall filter; requires
+- **Tor Sandbox 1**: seccomp-bpf syscall filter; requires
   `--security-opt seccomp=unconfined` at runtime
-- **Unix ControlSocket** — replaces TCP control port; only processes
+- **Unix ControlSocket**: replaces TCP control port; only processes
   running as the `tor` user can connect
-- **Proof-of-work DoS defense** — `HiddenServicePoWDefensesEnabled 1`
+- **Proof-of-work DoS defense**: `HiddenServicePoWDefensesEnabled 1`
   per service (Tor 0.4.8+)
-- **ClientOnly 1** — container will never become a relay or exit node
-- **ExitPolicy reject all** — belt-and-suspenders relay prevention
-- **No telemetry surface** — pip, setuptools, urllib3, certifi stripped
+- **ClientOnly 1**: container will never become a relay or exit node
+- **ExitPolicy reject all**: belt-and-suspenders relay prevention
+- **No telemetry surface**: pip, setuptools, urllib3, certifi stripped
   from the final image; only vanguards, stem, and the standard library
   remain at runtime
-- **Input validation** — all env vars validated against strict regexes
+- **Input validation**: all env vars validated against strict regexes
   before being written to torrc
 - **AvoidDiskWrites 1**, **DisableDebuggerAttachment 1**, **SafeLogging 1**,
   **HeartbeatPeriod 0** added to torrc
@@ -112,7 +112,7 @@ seccomp sandbox requirement.
 
 ---
 
-## [1.0.0] — 2024 (original release)
+## [1.0.0] - 2024 (original release)
 
 Initial release. Basic hidden service support via environment variables.
 Alpine base, no Vanguards, no Sandbox, no pinned dependencies.
