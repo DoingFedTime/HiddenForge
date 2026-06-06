@@ -58,12 +58,12 @@ The only two lines you need to edit are flagged with `<-- EDIT`.
 
 ## Environment Variables
 
-- `{NAME}_TOR_SERVICE_HOSTS` — hidden service port mappings
-  - Three-part: `"80:web:80"` — route onion port 80 to Docker service `web` on port 80
-  - Two-part: `"80:8080"` — route onion port 80 to `127.0.0.1:8080` (same-container only)
+- `{NAME}_TOR_SERVICE_HOSTS` sets the hidden service port mappings.
+  - Three-part `"80:web:80"` routes onion port 80 to Docker service `web` on port 80.
+  - Two-part `"80:8080"` routes onion port 80 to `127.0.0.1:8080` (same-container only).
   - Multiple ports: `"80:web:80,443:web:443"`
-  - `NAME` is lowercased and used as the service directory name (underscores converted to hyphens)
-  - Docker service names are resolved to IP addresses at startup — no static IPs required
+  - `NAME` is lowercased and used as the service directory name (underscores become hyphens).
+  - Docker service names resolve to IP addresses at startup, so no static IPs are required.
 
 - `TOR_SANDBOX` — set to `0` to disable `Sandbox 1` (default: `1`)
 
