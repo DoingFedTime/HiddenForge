@@ -42,7 +42,7 @@ If Vanguards is not running, the service still works. Tor's built-in vanguards-l
 
 ## 4. Confirm the backend has no internet exposure
 
-This is the most important security check. Your backend container must not be reachable from the internet — only from Tor inside the isolated network.
+This is the most important security check. Your backend container must not be reachable from the internet, only from Tor inside the isolated network.
 
 ```bash
 # Confirm the backend has no port mappings on the host
