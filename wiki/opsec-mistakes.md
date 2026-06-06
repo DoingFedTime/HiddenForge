@@ -57,11 +57,11 @@ For high-risk deployments: dedicated hardware, residential or colocation interne
 
 Tor hides your IP. It does not hide:
 
-- **File metadata** — documents with embedded author names, GPS coordinates in photos, timestamps that match your timezone
-- **Writing style** — stylometric analysis can identify authors across pseudonymous and real-name writing
-- **Operational patterns** — publishing at the same hours every day, the same day of the week
-- **Referrer links** — linking to resources that log access (your own clearnet site, image hosts, analytics services)
-- **Software fingerprints** — default software configurations, error messages with version strings, headers that identify your stack
+- **File metadata**: documents with embedded author names, GPS coordinates in photos, timestamps that match your timezone
+- **Writing style**: stylometric analysis can identify authors across pseudonymous and real-name writing
+- **Operational patterns**: publishing at the same hours every day, the same day of the week
+- **Referrer links**: linking to resources that log access (your own clearnet site, image hosts, analytics services)
+- **Software fingerprints**: default software configurations, error messages with version strings, headers that identify your stack
 
 Strip metadata from all files before publishing. Use tools like `mat2` for documents and images.
 
