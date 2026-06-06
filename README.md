@@ -65,7 +65,7 @@ The only two lines you need to edit are flagged with `<-- EDIT`.
   - `NAME` is lowercased and used as the service directory name (underscores become hyphens).
   - Docker service names resolve to IP addresses at startup, so no static IPs are required.
 
-- `TOR_SANDBOX` — set to `0` to disable `Sandbox 1` (default: `1`)
+- `TOR_SANDBOX` set to `0` disables `Sandbox 1` (default: `1`)
 
 ---
 
