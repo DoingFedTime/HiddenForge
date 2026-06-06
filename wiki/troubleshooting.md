@@ -113,7 +113,7 @@ docker compose exec tor cat /etc/tor/torrc | grep HiddenServicePort
 
 Rootless Podman doesn't support the `uid=/gid=/mode=` tmpfs mount options that Docker uses. The entrypoint handles this by chowning `/var/lib/tor` at startup. Permission errors here usually mean the `CHOWN` capability was dropped.
 
-Check your `cap_add` list — the Podman compose file requires `CHOWN`, `SETUID`, and `SETGID`. Unlike the Docker version, it does NOT need `DAC_OVERRIDE` or `FOWNER`.
+Check your `cap_add` list. The Podman compose file requires `CHOWN`, `SETUID`, and `SETGID`. Unlike the Docker version, it does NOT need `DAC_OVERRIDE` or `FOWNER`.
 
 Also confirm you're actually running rootless:
 ```bash
