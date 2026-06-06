@@ -232,8 +232,8 @@ timedatectl status   # check sync status on systemd hosts
 
 Running with rootless Podman is the strongest isolation option available.
 In rootless mode, container uid 0 maps to your regular host user via Linux
-user namespaces. A container escape gives an attacker only your user account
-— not real root on the host.
+user namespaces. A container escape gives an attacker only your user account,
+not real root on the host.
 
 ```bash
 # Prerequisites: Podman 4.0+ and podman-compose
