@@ -15,8 +15,8 @@ HiddenForge can expose multiple independent hidden services from a single contai
 ## Example: blog + tip submission
 
 This example runs two hidden services:
-- `blog` — a public-facing site on port 80
-- `tips` — a separate tip submission form on a different backend
+- `blog`: a public-facing site on port 80
+- `tips`: a separate tip submission form on a different backend
 
 ```yaml
 networks:
