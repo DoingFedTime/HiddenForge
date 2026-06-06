@@ -257,8 +257,8 @@ podman-compose -f podman-compose.yml exec tor cat /var/lib/tor/hidden_service/my
 | `CHOWN` | Required | Required |
 | `SETUID` / `SETGID` | Required | Required |
 
-The `podman-compose.yml` is otherwise identical to `docker-compose.yml` — same
-seccomp, same read-only filesystem, same tmpfs mounts, same Tor hardening.
+The `podman-compose.yml` is otherwise identical to `docker-compose.yml`: same
+seccomp, read-only filesystem, tmpfs mounts, and Tor hardening.
 
 **Verify your setup is actually rootless:**
 
