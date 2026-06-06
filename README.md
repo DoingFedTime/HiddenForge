@@ -79,7 +79,7 @@ software. HiddenForge pins every dependency at every layer.
 
 | Dependency | Pinned to | Why it matters |
 |---|---|---|
-| Alpine base image | `alpine:3.23.4@sha256:...` | Digest pinning means the exact OS bytes are locked — a tag like `latest` or even `3.23.4` can be silently updated on the registry |
+| Alpine base image | `alpine:3.23.4@sha256:...` | Digest pinning locks the exact OS bytes. A tag like `latest` or even `3.23.4` can be silently updated on the registry |
 | `tor` apk | `0.4.9.8-r0` | A tampered Tor binary could de-anonymise every circuit |
 | `python3` apk | `3.12.13-r0` | The Python runtime executes the entrypoint and Vanguards |
 | `su-exec` apk | `0.3-r0` | This binary performs the privilege drop to the `tor` user |
