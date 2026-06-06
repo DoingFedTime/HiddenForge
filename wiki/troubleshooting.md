@@ -23,7 +23,7 @@ timedatectl status
 # If no: systemctl start systemd-timesyncd
 ```
 
-**Firewall blocking outbound Tor ports** — Tor clients connect to relay ORPorts to reach the network. Relays commonly listen on 443, 9001, or both. If your firewall blocks outbound 443 and 9001, Tor won't build circuits. If it blocks only one, Tor will use the other. If both are blocked, you need bridges.
+**Firewall blocking outbound Tor ports.** Tor clients connect to relay ORPorts to reach the network. Relays commonly listen on 443, 9001, or both. If your firewall blocks outbound 443 and 9001, Tor won't build circuits. If it blocks only one, Tor will use the other. If both are blocked, you need bridges.
 ```bash
 # Test from the host
 curl -s https://check.torproject.org/api/ip
