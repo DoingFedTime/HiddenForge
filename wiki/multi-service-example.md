@@ -104,7 +104,7 @@ docker compose exec tor cat /var/lib/tor/hidden_service/blog/hostname
 docker compose exec tor cat /var/lib/tor/hidden_service/tips/hostname
 ```
 
-Each service gets its own address. They're independent — knowing one doesn't reveal the other.
+Each service gets its own address. They're independent: knowing one doesn't reveal the other.
 
 ---
 
