@@ -32,7 +32,7 @@ curl -s https://check.torproject.org/api/ip
 
 **No internet on the tor container.** The tor container must be on `tor-external` (the default bridge network). If you misconfigured networking and only have `tor-internal`, Tor has no outbound path.
 
-**`seccomp=unconfined` missing** — Some managed container platforms strip this security option. Without it, Tor's `Sandbox 1` will crash immediately. Set `TOR_SANDBOX=0` as a workaround, or confirm the host supports the flag:
+**`seccomp=unconfined` missing.** Some managed container platforms strip this security option. Without it, Tor's `Sandbox 1` will crash immediately. Set `TOR_SANDBOX=0` as a workaround, or confirm the host supports the flag:
 ```bash
 docker info | grep -i seccomp
 ```
