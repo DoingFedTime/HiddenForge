@@ -36,7 +36,7 @@ docker compose exec tor ps aux
 # Look for a line containing "vanguards" owned by user "tor"
 ```
 
-If Vanguards is not running, the service still works — Tor's built-in vanguards-lite provides basic guard protection. The full Vanguards addon adds bandguards (bandwidth side-channel detection) and rendguard (rendezvous-point monitoring). See [What Is Vanguards](what-is-vanguards.md) for details.
+If Vanguards is not running, the service still works. Tor's built-in vanguards-lite provides basic guard protection. The full Vanguards addon adds bandguards (bandwidth side-channel detection) and rendguard (rendezvous-point monitoring). See [What Is Vanguards](what-is-vanguards.md) for details.
 
 ---
 
