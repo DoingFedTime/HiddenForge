@@ -194,7 +194,7 @@ docker compose up -d
 ```
 
 **Back up `hs_ed25519_secret_key` before the container runs.** Losing it means
-losing your .onion address permanently — there is no recovery.
+losing your .onion address permanently, with no recovery.
 
 ---
 
