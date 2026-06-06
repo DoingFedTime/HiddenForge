@@ -67,7 +67,7 @@ docker network inspect hiddenforge_tor-external
 
 Open Tor Browser and navigate to your `.onion` address. First connection can take 30-60 seconds while Tor builds the rendezvous circuit.
 
-If you're testing from the same machine running the container, you need a separate Tor Browser instance — not `curl` on the host, which doesn't route through Tor.
+If you're testing from the same machine running the container, you need a separate Tor Browser instance, not `curl` on the host, which doesn't route through Tor.
 
 For automated testing from a machine that has `torsocks` installed:
 ```bash
