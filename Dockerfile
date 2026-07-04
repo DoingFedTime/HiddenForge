@@ -13,7 +13,7 @@ ENV PIP_DISABLE_PIP_VERSION_CHECK=1
 # (The Python stdlib still ships urllib/ssl; what we remove are the third-party
 # package manager and HTTP clients, not the language's built-in modules.)
 RUN apk add --no-cache \
-    tor=0.4.9.11-r0 \
+    tor=0.4.9.8-r0 \
     python3=3.12.13-r0 \
     su-exec=0.3-r0 && \
     apk add --no-cache --virtual .build-deps \
