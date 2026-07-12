@@ -7,7 +7,7 @@
 
 [![hiddenforge.png](https://i.postimg.cc/fR4BJ54k/hiddenforge.png)](https://postimg.cc/ykPFGm8z)
 
-A hardened Tor hidden service container. Runs Tor 0.4.9.8 with the Vanguards
+A hardened Tor hidden service container. Runs Tor 0.4.9.11 with the Vanguards
 guard-protection addon on Alpine 3.23. Every dependency is pinned and
 hash-verified at build time. Designed for a state-level adversary threat model.
 
@@ -79,8 +79,8 @@ software. HiddenForge pins every dependency at every layer.
 
 | Dependency | Pinned to | Why it matters |
 |---|---|---|
-| Alpine base image | `alpine:3.23.4@sha256:...` | Digest pinning locks the exact OS bytes. A tag like `latest` or even `3.23.4` can be silently updated on the registry |
-| `tor` apk | `0.4.9.8-r0` | A tampered Tor binary could de-anonymise every circuit |
+| Alpine base image | `alpine:3.23.5@sha256:...` | Digest pinning locks the exact OS bytes. A tag like `latest` or even `3.23.5` can be silently updated on the registry |
+| `tor` apk | `0.4.9.11-r0` | A tampered Tor binary could de-anonymise every circuit |
 | `python3` apk | `3.12.13-r0` | The Python runtime executes the entrypoint and Vanguards |
 | `su-exec` apk | `0.3-r0` | This binary performs the privilege drop to the `tor` user |
 | `py3-pip` apk | `25.1.1-r1` | Build-only; pinned so it can't be updated to a version that silently ignores `--require-hashes` |
@@ -104,7 +104,7 @@ authenticates every package against a cryptographically **signed package index**
 (`APKINDEX.tar.gz`, validated against the Alpine signing keys in
 `/etc/apk/keys`), and each package record carries a checksum anchored by that
 signed index. Because the base image is digest-pinned, the signed index inside
-that specific layer is frozen, so `apk add tor=0.4.9.8-r0` resolves
+that specific layer is frozen, so `apk add tor=0.4.9.11-r0` resolves
 deterministically against a fixed, signed index. (The legacy index signature is
 SHA1-based; the practical integrity anchor is the digest-pinned base plus the
 signed index, not the hash algorithm.)
@@ -286,7 +286,7 @@ podman info --format '{{.Host.Security.Rootless}}'
 | No telemetry | pip/setuptools/urllib3 stripped from final image (Python stdlib remains) |
 | Input validation | All env vars validated before torrc write |
 | Supply chain | Every dep pinned by version + SHA256 hash |
-| Base image | Alpine 3.23.4 digest-pinned |
+| Base image | Alpine 3.23.5 digest-pinned |
 | Host isolation (optional) | Rootless Podman: container escape = host user, not real root |
 
-**Tor version: 0.4.9.8**
+**Tor version: 0.4.9.11**

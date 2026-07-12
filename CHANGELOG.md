@@ -4,7 +4,7 @@ All notable changes to HiddenForge are documented here.
 
 ---
 
-## [Unreleased] - security hardening & verification
+## [2.0.2] - 2026-07-12
 
 ### Added
 - **Intro-point DoS defence**: `HiddenServiceEnableIntroDoSDefense 1`
@@ -28,6 +28,11 @@ All notable changes to HiddenForge are documented here.
 - **Release pipeline** (`release.yml`): cosign signing (maintainer key), SBOM,
   SLSA build-provenance attestation, and publish-by-digest on version tags;
   README documents image verification.
+- **CI supply-chain hardening**: every GitHub Actions dependency pinned to a full
+  commit SHA (actionlint to an image digest); multi-arch release builds
+  (`linux/amd64` + `linux/arm64`); Dependabot for actions, the base image, and
+  pip; a coverage-floor gate; a scheduled rescan of the published image for
+  newly-disclosed CVEs; and failure alerts via ntfy.
 
 ### Changed
 - `validate_service_name` now caps length at 63 chars.
@@ -37,7 +42,17 @@ All notable changes to HiddenForge are documented here.
   (output proven byte-identical to the previous implementation).
 - The host test suite is no longer shipped inside the production image.
 
+### Security
+- **Patched OpenSSL** (`CVE-2026-45447`, HIGH — heap use-after-free in
+  `PKCS7_verify()`): bumped the digest-pinned Alpine base `3.23.4 → 3.23.5`, which
+  ships OpenSSL `3.5.7-r0`. Trivy now reports the image clean of HIGH/CRITICAL.
+
 ### Fixed
+- **Build was broken**: the pinned `tor=0.4.9.8-r0` had been pruned from the
+  Alpine 3.23 index, so `apk add` failed for anyone building the image. Re-pinned
+  to **`tor=0.4.9.11-r0`** — verified it builds, keeps `pow: yes`, imports
+  vanguards, serves a backend end-to-end over Tor, and an in-place upgrade from
+  the prior version preserves the existing `.onion` key (same address, no loss).
 - Dockerfile now fails the build if the vanguards `SafeConfigParser` patch does
   not apply (previously a silent no-op on a future vanguards change).
 - Corrected documentation: version drift (Tor/Alpine/Python), the apk
