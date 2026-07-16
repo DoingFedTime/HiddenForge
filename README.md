@@ -173,7 +173,7 @@ mkp224o -d ./keys myprefix
 ```bash
 # Service directory must contain:
 #   hostname                (your .onion address, plaintext)
-#   hs_ed25519_secret_key   (binary — keep offline backups, never share)
+#   hs_ed25519_secret_key   (binary, keep offline backups, never share)
 #   hs_ed25519_public_key   (binary)
 
 mkdir -p ./tor-keys/myapp

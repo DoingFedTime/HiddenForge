@@ -61,14 +61,14 @@ All notable changes to HiddenForge are documented here.
 - The host test suite is no longer shipped inside the production image.
 
 ### Security
-- **Patched OpenSSL** (`CVE-2026-45447`, HIGH — heap use-after-free in
+- **Patched OpenSSL** (`CVE-2026-45447`, HIGH, heap use-after-free in
   `PKCS7_verify()`): bumped the digest-pinned Alpine base `3.23.4 → 3.23.5`, which
   ships OpenSSL `3.5.7-r0`. Trivy now reports the image clean of HIGH/CRITICAL.
 
 ### Fixed
 - **Build was broken**: the pinned `tor=0.4.9.8-r0` had been pruned from the
   Alpine 3.23 index, so `apk add` failed for anyone building the image. Re-pinned
-  to **`tor=0.4.9.11-r0`** — verified it builds, keeps `pow: yes`, imports
+  to **`tor=0.4.9.11-r0`**, verified it builds, keeps `pow: yes`, imports
   vanguards, serves a backend end-to-end over Tor, and an in-place upgrade from
   the prior version preserves the existing `.onion` key (same address, no loss).
 - Dockerfile now fails the build if the vanguards `SafeConfigParser` patch does
