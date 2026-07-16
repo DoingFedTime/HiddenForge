@@ -9,12 +9,11 @@
 
 ## Reporting a Vulnerability
 
-**Do not open a public GitHub issue for security vulnerabilities.**
+**Do not open a public issue for security vulnerabilities.**
 
-Report vulnerabilities privately via GitHub's
-[Security Advisories](https://github.com/DoingFedTime/HiddenForge/security/advisories/new)
-feature, or by email to the address on the
-[DoingFedTime GitHub profile](https://github.com/DoingFedTime).
+Report privately by email to the maintainer; contact details are on the
+[maintainer's profile](https://sambent.dev/sam). Encrypt sensitive reports with
+the maintainer's published key where possible.
 
 Please include:
 - Description of the vulnerability

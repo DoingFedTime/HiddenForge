@@ -1,6 +1,7 @@
 # HiddenForge
 
-**Pull it:** `sambent.dev/sam/hiddenforge` (primary) or `doingfedtime/hiddenforge` (Docker Hub mirror)
+**Sovereign source & signatures:** `sambent.dev/sam/hiddenforge` (verify here).
+**Public mirror (what the compose file pulls):** `doingfedtime/hiddenforge`.
 
 **Documentation:** the full guide lives in the [wiki](https://sambent.dev/sam/HiddenForge/wiki).
 
