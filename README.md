@@ -7,13 +7,9 @@
 
 [![hiddenforge.png](https://i.postimg.cc/fR4BJ54k/hiddenforge.png)](https://postimg.cc/ykPFGm8z)
 
-A hardened Tor hidden service container. Runs Tor 0.4.9.11 with the Vanguards
-guard-protection addon on Alpine 3.23. Every dependency is pinned and
-hash-verified at build time. Designed for a state-level adversary threat model.
-
----
-
 ## Quick Start (3 steps)
+
+`docker compose up` pulls the image (`doingfedtime/hiddenforge`) automatically, so this is all you need:
 
 ```bash
 # 1. Download the compose file
@@ -34,6 +30,10 @@ docker compose exec tor cat /var/lib/tor/hidden_service/myapp/hostname
 
 All security flags are pre-configured in the compose file. The backend service
 is network-isolated and never exposed to the internet.
+
+**What it is:** a hardened Tor hidden service container. Tor 0.4.9.11 with the
+Vanguards guard-protection addon on Alpine 3.23, every dependency pinned and
+hash-verified at build time, built for a state-level adversary threat model.
 
 
 ---
