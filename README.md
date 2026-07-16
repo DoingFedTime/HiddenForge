@@ -1,9 +1,8 @@
 # HiddenForge
 
-[![Docker Hub](https://img.shields.io/docker/pulls/doingfedtime/hiddenforge)](https://hub.docker.com/r/doingfedtime/hiddenforge)
-[![GitHub](https://img.shields.io/github/stars/DoingFedTime/HiddenForge)](https://github.com/DoingFedTime/HiddenForge)
+**Pull it:** `sambent.dev/sam/hiddenforge` (primary) or `doingfedtime/hiddenforge` (Docker Hub mirror)
 
-**Available on Docker Hub:** https://hub.docker.com/r/doingfedtime/hiddenforge
+**Documentation:** the full guide lives in the [wiki](https://sambent.dev/sam/HiddenForge/wiki).
 
 [![hiddenforge.png](https://i.postimg.cc/fR4BJ54k/hiddenforge.png)](https://postimg.cc/ykPFGm8z)
 
@@ -17,7 +16,7 @@ hash-verified at build time. Designed for a state-level adversary threat model.
 
 ```bash
 # 1. Download the compose file
-curl -O https://raw.githubusercontent.com/DoingFedTime/HiddenForge/main/docker-compose.yml
+curl -O https://sambent.dev/sam/HiddenForge/raw/branch/master/docker-compose.yml
 
 # 2. Edit the lines marked <-- EDIT in docker-compose.yml
 #    - Change MYAPP to your service name (e.g. BLOG, TIPSITE)
@@ -27,7 +26,7 @@ curl -O https://raw.githubusercontent.com/DoingFedTime/HiddenForge/main/docker-c
 mkdir -p ./tor-keys
 docker compose up -d
 
-# Your .onion address appears here once Tor bootstraps (~60-90s):
+# Your .onion address appears here once Tor bootstraps (first boot takes a couple of minutes):
 # Replace "myapp" with whatever you named your service in step 2
 docker compose exec tor cat /var/lib/tor/hidden_service/myapp/hostname
 ```
@@ -127,37 +126,28 @@ sha256sum /tmp/dl/vanguards-0.3.2*.whl
 
 ## Verifying the Image
 
-Build-time pinning protects what goes *into* the image; signing protects the
-image you *pull*. Released images are signed with the maintainer's cosign key
-(the public key is published in this repo as `cosign.pub`).
+Build-time pinning protects what goes *into* the image; signing and reproducible
+builds let you verify the image you *pull*.
 
-**Verify before you run** (replace `<DIGEST>` with the digest you intend to run):
+Released images are signed three independent ways over the image digest, with no
+dependency on any external transparency log: the maintainer's **cosign** key
+(`cosign.pub` in this repo), a **post-quantum ML-DSA-65** signature, and a
+**hardware YubiKey** signature. The verification files live in `signatures/`. The
+build is also **reproducible**, so you can rebuild from source and confirm you get
+a byte-for-byte identical image.
 
-```bash
-cosign verify --key cosign.pub doingfedtime/hiddenforge@sha256:<DIGEST>
-```
-
-A passing verification proves the image was signed by the holder of the
-maintainer key and has not been altered since. For the strongest guarantee,
-pin the verified digest in your compose file instead of the mutable `:latest`
-tag:
-
-```yaml
-    image: doingfedtime/hiddenforge@sha256:<DIGEST>   # pin what you verified
-```
-
-You can also inspect the SBOM and SLSA build provenance attached to the image:
+The quickest check, using the maintainer key:
 
 ```bash
-cosign verify-attestation --key cosign.pub --type spdxjson doingfedtime/hiddenforge@sha256:<DIGEST>
-gh attestation verify oci://doingfedtime/hiddenforge@sha256:<DIGEST> --owner DoingFedTime
+cosign verify --key cosign.pub --insecure-ignore-tlog=true \
+  sambent.dev/sam/hiddenforge@sha256:<DIGEST>
 ```
 
-**One-time maintainer setup** (for whoever cuts releases): generate a key pair
-with `cosign generate-key-pair`, commit `cosign.pub` to the repo, and add
-`COSIGN_PRIVATE_KEY`, `COSIGN_PASSWORD`, `REGISTRY_USER`, and `REGISTRY_TOKEN`
-as repository secrets. The `release.yml` workflow then signs, attests, and
-publishes by digest automatically on every `v*.*.*` tag.
+For the strongest guarantee, pin the verified digest in your compose file instead
+of the mutable `:latest` tag. Full step-by-step verification, all three signatures
+plus reproducing the build, is in the wiki:
+
+**→ [Verifying the Image](https://sambent.dev/sam/HiddenForge/wiki/Verifying-the-Image)**
 
 ---
 
@@ -244,7 +234,7 @@ pip install podman-compose   # or: pipx install podman-compose
 mkdir -p ./tor-keys
 podman-compose -f podman-compose.yml up -d
 
-# Read the .onion address once Tor bootstraps (~60-90s)
+# Read the .onion address once Tor bootstraps (first boot takes a couple of minutes)
 podman-compose -f podman-compose.yml exec tor cat /var/lib/tor/hidden_service/myapp/hostname
 ```
 
@@ -281,7 +271,7 @@ podman info --format '{{.Host.Security.Rootless}}'
 | DoS defence (rendezvous) | `HiddenServicePoWDefensesEnabled 1` per service |
 | DoS defence (intro point) | `HiddenServiceEnableIntroDoSDefense 1` (rate 25/s, burst 200) |
 | Circuit overload | `HiddenServiceMaxStreams 100`, `HiddenServiceMaxStreamsCloseCircuit 1` |
-| Guard protection | Vanguards addon (bandguards + rendguard) + built-in vanguards-lite (**L2 only**; see [wiki](wiki/what-is-vanguards.md#known-limitation-l2-only-guard-protection-read-this) for the L3 limitation on long-lived services) |
+| Guard protection | Vanguards addon (bandguards + rendguard) + built-in vanguards-lite (**L2 only**; see the [Security Model](https://sambent.dev/sam/HiddenForge/wiki/Security-Model) wiki page for the L3 limitation on long-lived services) |
 | No relay/exit | `ClientOnly 1`, `ExitPolicy reject *:*` |
 | No telemetry | pip/setuptools/urllib3 stripped from final image (Python stdlib remains) |
 | Input validation | All env vars validated before torrc write |
