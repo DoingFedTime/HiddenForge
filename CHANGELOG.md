@@ -4,6 +4,24 @@ All notable changes to HiddenForge are documented here.
 
 ---
 
+## [2.0.3] - 2026-07-16
+
+### Added
+- **Reproducible builds.** The image now builds bit-for-bit reproducibly: two
+  builds of the same source commit produce an identical image digest, on any
+  machine. Three sources of build-date nondeterminism were removed: the apk
+  virtual build-deps package is pinned (it was auto-versioned with the build
+  timestamp), the timestamped `/var/log/apk.log` is dropped, and every
+  `/etc/shadow` last-change field is normalized to `SOURCE_DATE_EPOCH`. You can
+  now rebuild from source and confirm the published image matches it.
+
+### Changed
+- Published to the maintainer's own registry (`sambent.dev/sam/hiddenforge`)
+  alongside the Docker Hub mirror.
+- User documentation moved to the project wiki.
+
+---
+
 ## [2.0.2] - 2026-07-12
 
 ### Added
