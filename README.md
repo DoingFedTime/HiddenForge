@@ -1,7 +1,9 @@
 # HiddenForge
 
-**Sovereign source & signatures:** `sambent.dev/sam/hiddenforge` (verify here).
-**Public mirror (what the compose file pulls):** `doingfedtime/hiddenforge`.
+**Pull it (sovereign registry):** `docker pull sambent.dev/sam/hiddenforge`
+**Or the Docker Hub mirror** (used by the compose file): `docker pull doingfedtime/hiddenforge`
+
+**Verify what you pulled** (signatures + reproducible build): the [verification guide](https://sambent.dev/sam/HiddenForge/wiki/Verifying-the-Image).
 
 **Documentation:** the full guide lives in the [wiki](https://sambent.dev/sam/HiddenForge/wiki).
 
