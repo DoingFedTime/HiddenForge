@@ -1,5 +1,10 @@
 FROM alpine:3.23.5@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc2d6daf40
 
+# SOURCE_DATE_EPOCH: a UNIX timestamp (set by the build to the source commit
+# time) used to make the image reproducible. Consumed below to pin the one
+# clock-derived field apk writes into /etc/shadow when it creates the tor user.
+ARG SOURCE_DATE_EPOCH=0
+
 ENV HOME=/var/lib/tor
 ENV PYTHONUNBUFFERED=1
 # Suppress .pyc file generation — no bytecode debris on disk
@@ -12,12 +17,25 @@ ENV PIP_DISABLE_PIP_VERSION_CHECK=1
 # venv is bootstrapped, leaving no pip/installer tooling in the final image.
 # (The Python stdlib still ships urllib/ssl; what we remove are the third-party
 # package manager and HTTP clients, not the language's built-in modules.)
+# .build-deps is pinned to =0 (not the default auto-version): apk stamps a
+# virtual package with the build-time clock (e.g. 20260715.235608), which would
+# leak a timestamp into /etc/apk/world and /lib/apk/db/installed and break
+# reproducible builds. rm apk.log for the same reason (it records wall-clock op
+# times). Together these make this layer byte-identical across rebuilds.
 RUN apk add --no-cache \
     tor=0.4.9.11-r0 \
     python3=3.12.13-r0 \
     su-exec=0.3-r0 && \
-    apk add --no-cache --virtual .build-deps \
-    py3-pip=25.1.1-r1
+    apk add --no-cache --virtual .build-deps=0 \
+    py3-pip=25.1.1-r1 && \
+    rm -f /var/log/apk.log && \
+    # apk stamps a new account's shadow "last-change" field with the current day
+    # (days since 1970) when it creates the tor user. Pin every account's field
+    # to the SOURCE_DATE_EPOCH day so /etc/shadow is byte-identical regardless of
+    # build date. Applied to all rows (not just tor) so a future package that
+    # adds a user cannot silently reintroduce nondeterminism. Only affects
+    # reproducibility; these are locked system accounts with no login.
+    sed -i "s#^\([^:]*:[^:]*\):[0-9]*:#\1:$(( SOURCE_DATE_EPOCH / 86400 )):#" /etc/shadow
 
 # Install Vanguards guard-protection addon in an isolated venv.
 # vanguards 0.3.1 (PyPI) uses the removed SafeConfigParser API from Python
@@ -51,7 +69,8 @@ RUN python3 -m venv /opt/vanguards-venv && \
     find /opt/vanguards-venv -name '*.pyc' -delete && \
     find /opt/vanguards-venv -name '*.pyo' -delete && \
     rm /tmp/requirements.txt && \
-    apk del .build-deps
+    apk del .build-deps && \
+    rm -f /var/log/apk.log
 
 # Set up Tor data directory and config directory.
 # DataDirectory must be mode 700 — Tor refuses to create a ControlSocket in a
