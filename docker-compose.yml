@@ -21,7 +21,7 @@ networks:
 
 services:
   tor:
-    image: doingfedtime/hiddenforge:latest
+    image: sambent.dev/sam/hiddenforge:latest
     restart: unless-stopped
 
     # ── Security flags ────────────────────────────────────────────────────

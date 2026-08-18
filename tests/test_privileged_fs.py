@@ -1,0 +1,194 @@
+"""Tests for the privileged filesystem helpers in entrypoint.py.
+
+These helpers run as root (PID 1) over the operator-supplied hidden-service bind
+mount, so every path they touch is attacker-influenceable if that volume is ever
+restored from untrusted media or is writable by another host user.
+
+The property under test is narrow and absolute: **no operation may ever follow a
+symlink out of the hidden-service tree.** Before this was fixed, ``_chown_r``
+used a plain ``os.chown()``, which follows symlinks — giving a hostile key volume
+a root-privileged arbitrary-chown primitive (demonstrated: a symlink inside the
+key dir caused a file outside it to change owner 0 -> 100).
+
+The chown tests do not require root: they assert on *how* the syscall is invoked
+rather than on its effect, which is both root-free and a stricter check.
+"""
+import errno
+import os
+
+import pytest
+
+import entrypoint as e
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# _open_dir_nofollow — the primitive everything else is built on
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_open_dir_nofollow_opens_a_real_directory(tmp_path):
+    d = tmp_path / "real"
+    d.mkdir()
+    fd = e._open_dir_nofollow(str(d))
+    try:
+        assert os.fstat(fd).st_ino == os.stat(str(d)).st_ino
+    finally:
+        os.close(fd)
+
+
+def test_open_dir_nofollow_refuses_a_symlinked_directory(tmp_path):
+    """A symlinked hidden-service dir must fail loudly, not be silently followed."""
+    target = tmp_path / "outside"
+    target.mkdir()
+    link = tmp_path / "hs"
+    link.symlink_to(target)
+
+    with pytest.raises(OSError) as exc:
+        e._open_dir_nofollow(str(link))
+    # O_DIRECTORY is evaluated before O_NOFOLLOW, so the kernel reports ENOTDIR
+    # here rather than ELOOP. What matters is that the open is REFUSED.
+    assert exc.value.errno == errno.ENOTDIR
+
+
+def test_open_dir_nofollow_refuses_a_regular_file(tmp_path):
+    f = tmp_path / "notadir"
+    f.write_text("x")
+    with pytest.raises(OSError) as exc:
+        e._open_dir_nofollow(str(f))
+    assert exc.value.errno == errno.ENOTDIR
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# _chmod_dir_nofollow
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_chmod_dir_nofollow_sets_mode(tmp_path):
+    d = tmp_path / "hs"
+    d.mkdir()
+    os.chmod(str(d), 0o777)  # noqa: S103 - the loose mode is the precondition under test
+    assert e._chmod_dir_nofollow(str(d), 0o700) is True
+    assert os.stat(str(d)).st_mode & 0o777 == 0o700
+
+
+def test_chmod_dir_nofollow_does_not_chmod_through_a_symlink(tmp_path):
+    """The symlink target's mode must be untouched."""
+    target = tmp_path / "outside"
+    target.mkdir()
+    os.chmod(str(target), 0o755)  # noqa: S103 - must stay 0755; that is the assertion
+    link = tmp_path / "hs"
+    link.symlink_to(target)
+
+    with pytest.raises(OSError) as exc:
+        e._chmod_dir_nofollow(str(link), 0o700)
+    assert exc.value.errno == errno.ENOTDIR
+    assert os.stat(str(target)).st_mode & 0o777 == 0o755, \
+        "symlink target was chmod'ed — the escape is still open"
+
+
+def test_chmod_dir_nofollow_skips_when_not_root_owned(tmp_path):
+    """only_if_root_owned must not chmod a dir we do not own as root.
+
+    The test process is not root, so the directory is owned by a non-zero uid and
+    the mode must be left exactly as-is.
+    """
+    d = tmp_path / "hs"
+    d.mkdir()
+    os.chmod(str(d), 0o755)  # noqa: S103 - must be left untouched; that is the assertion
+    assert e._chmod_dir_nofollow(str(d), 0o700, only_if_root_owned=True) is False
+    assert os.stat(str(d)).st_mode & 0o777 == 0o755
+
+
+def test_chmod_dir_nofollow_leaks_no_file_descriptors(tmp_path):
+    """The fd must be closed on both the success and the skip path."""
+    d = tmp_path / "hs"
+    d.mkdir()
+    before = len(os.listdir("/proc/self/fd"))
+    for _ in range(50):
+        e._chmod_dir_nofollow(str(d), 0o700)
+        e._chmod_dir_nofollow(str(d), 0o700, only_if_root_owned=True)
+    after = len(os.listdir("/proc/self/fd"))
+    assert after <= before + 1, f"fd leak: {before} -> {after}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# _chown_r — the function that had the real bug
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_chown_r_never_follows_symlinks(tmp_path, monkeypatch):
+    """EVERY os.chown call must pass follow_symlinks=False.
+
+    Asserting on the call itself rather than the effect means this test needs no
+    root privileges and cannot be fooled by a uid that happens to already match.
+    """
+    d = tmp_path / "hs"
+    d.mkdir()
+    (d / "hostname").write_text("x.onion")
+    sub = d / "authorized_clients"
+    sub.mkdir()
+    (sub / "a.auth").write_text("x")
+    # The symlink target must EXIST, so that vulnerable code succeeds in
+    # following it (and is caught by the assertion) rather than dying on ENOENT
+    # — a crash would be an accidental, fragile way to "pass" this test.
+    outside_target = tmp_path / "outside_target"
+    outside_target.write_text("sensitive")
+    (d / "evil").symlink_to(outside_target)
+
+    calls = []
+    real_chown = os.chown
+
+    def recording_chown(path, uid, gid, *args, **kwargs):
+        calls.append((path, kwargs.get("follow_symlinks", True)))
+        return real_chown(path, uid, gid, *args, **kwargs)
+
+    monkeypatch.setattr(os, "chown", recording_chown)
+    e._chown_r(str(d), os.getuid(), os.getgid())
+
+    assert calls, "no chown calls recorded"
+    followed = [p for p, follow in calls if follow]
+    assert not followed, f"these chowns would follow a symlink: {followed}"
+
+
+def test_chown_r_does_not_descend_into_symlinked_directories(tmp_path, monkeypatch):
+    """A symlinked subdirectory must not be walked into."""
+    d = tmp_path / "hs"
+    d.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "SHOULD_NOT_BE_TOUCHED").write_text("x")
+    (d / "sneaky").symlink_to(outside)
+
+    calls = []
+    real_chown = os.chown
+
+    def recording_chown(path, uid, gid, *args, **kwargs):
+        calls.append(os.path.realpath(path))
+        return real_chown(path, uid, gid, *args, **kwargs)
+
+    monkeypatch.setattr(os, "chown", recording_chown)
+    e._chown_r(str(d), os.getuid(), os.getgid())
+
+    escaped = [p for p in calls if "SHOULD_NOT_BE_TOUCHED" in p]
+    assert not escaped, f"walk descended through a symlink: {escaped}"
+
+
+def test_chown_r_still_chowns_the_legitimate_tree(tmp_path, monkeypatch):
+    """Guard against 'fixing' the escape by simply not chowning anything."""
+    d = tmp_path / "hs"
+    d.mkdir()
+    (d / "hs_ed25519_secret_key").write_text("k")
+    sub = d / "authorized_clients"
+    sub.mkdir()
+    (sub / "a.auth").write_text("x")
+
+    seen = []
+    real_chown = os.chown
+
+    def recording_chown(path, uid, gid, *args, **kwargs):
+        seen.append(os.path.basename(path))
+        return real_chown(path, uid, gid, *args, **kwargs)
+
+    monkeypatch.setattr(os, "chown", recording_chown)
+    e._chown_r(str(d), os.getuid(), os.getgid())
+
+    assert "hs_ed25519_secret_key" in seen
+    assert "authorized_clients" in seen
+    assert "a.auth" in seen

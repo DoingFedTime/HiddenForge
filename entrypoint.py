@@ -24,11 +24,63 @@ VANGUARDS_STATE  = '/var/lib/tor/vanguards.state'
 
 
 def _chown_r(path, uid, gid):
-    """Recursively chown path without shelling out to chown(1)."""
-    os.chown(path, uid, gid)
-    for root, dirs, files in os.walk(path):
+    """Recursively chown path without shelling out to chown(1).
+
+    SECURITY: this runs as root (PID 1) over the operator-supplied key bind
+    mount, so every entry it touches is attacker-influenceable if that volume is
+    ever restored from untrusted media or is writable by another host user.
+
+    ``os.chown`` follows symlinks by default, which turns this function into a
+    root-privileged arbitrary-chown primitive: a symlink placed inside the key
+    directory pointing anywhere else in the container would have its *target*
+    chowned to the tor user.  We therefore use ``follow_symlinks=False``
+    (lchown) so the link itself is retargeted and never its destination, and
+    pass ``followlinks=False`` to ``os.walk`` so symlinked directories are not
+    descended into.  Tor has no legitimate use for symlinks inside a
+    HiddenServiceDir, so nothing is lost by refusing to follow them.
+    """
+    os.chown(path, uid, gid, follow_symlinks=False)
+    for root, dirs, files in os.walk(path, followlinks=False):
         for name in dirs + files:
-            os.chown(os.path.join(root, name), uid, gid)
+            os.chown(os.path.join(root, name), uid, gid, follow_symlinks=False)
+
+
+def _open_dir_nofollow(path):
+    """Open a directory, refusing to traverse a final-component symlink.
+
+    Returns a file descriptor the caller must close.  Linux has no ``lchmod``,
+    so the only way to chmod a directory without a symlink race is to hold an
+    ``O_NOFOLLOW`` descriptor to it and use ``fchmod``/``fstat`` on that fd.
+
+    Raises ``OSError(ENOTDIR)`` if ``path`` is a symlink, a regular file, or any
+    other non-directory.  (Verified kernel behaviour: with ``O_DIRECTORY`` set,
+    a symlink yields ENOTDIR rather than the ELOOP that ``O_NOFOLLOW`` alone
+    would give — ``O_DIRECTORY`` is evaluated first.  We keep ``O_DIRECTORY``
+    deliberately: it also makes opening a FIFO or device node fail immediately
+    instead of blocking, which a bare ``O_NOFOLLOW`` open would not.)  Either
+    way the open is refused, which is the correct loud failure for a key
+    directory that has been tampered with.
+    """
+    return os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+
+
+def _chmod_dir_nofollow(path, mode, only_if_root_owned=False):
+    """chmod a directory via an O_NOFOLLOW fd; never follows a symlink.
+
+    If ``only_if_root_owned`` is set, the mode is applied only when the
+    directory is still owned by uid 0 — preserving the existing logic that
+    avoids chmod'ing a directory we do not own (which would need CAP_FOWNER).
+    The ownership test is done with ``fstat`` on the same descriptor we chmod,
+    so there is no TOCTOU window between the check and the change.
+    """
+    fd = _open_dir_nofollow(path)
+    try:
+        if only_if_root_owned and os.fstat(fd).st_uid != 0:
+            return False
+        os.fchmod(fd, mode)
+        return True
+    finally:
+        os.close(fd)
 
 
 # ---------------------------------------------------------------------------
@@ -171,6 +223,22 @@ DisableDebuggerAttachment 1   # block ptrace / debugger attachment
 AvoidDiskWrites 1             # minimise forensic footprint on disk
 FetchUselessDescriptors 0     # do not fetch relay descriptors we won't use (default, explicit)
 
+# ── Guard-discovery protection ─────────────────────────────────────────────
+# vanguards-lite (Tor proposal 333) pins a small set of layer-2 guards so an
+# adversary cannot enumerate our position by forcing circuit rebuilds.  This is
+# our PRIMARY defence against guard discovery: the full Vanguards addon's
+# layer-2/3 pinning cannot be used here because it applies its guard sets via
+# SETCONF, which the seccomp sandbox rejects when enabled ("Failed to configure
+# rendezvous options"). We keep the sandbox and rely on vanguards-lite instead.
+#
+# Pinned to 1, NOT left at the "auto" default.  Per the Tor manual, "auto" means
+# "do what the vanguards-lite-enabled consensus parameter tells them to do" —
+# which puts our only guard-discovery defence under the control of the directory
+# authorities rather than the operator.  An adversary able to influence the
+# consensus could otherwise disable it for every deployment simultaneously,
+# silently.  Setting it explicitly makes that impossible.
+VanguardsLiteEnabled 1
+
 # ── Hidden services ────────────────────────────────────────────────────────
 """
 
@@ -195,28 +263,35 @@ FetchUselessDescriptors 0     # do not fetch relay descriptors we won't use (def
         print(f"Service hosts: {service_hosts}")
 
         hs_dir = f"/var/lib/tor/hidden_service/{service_name}"
-        hs_dirs.append(hs_dir)
 
-        torrc_content += f"\n# ── Service: {service_name} ──\n"
-        torrc_content += f"HiddenServiceDir     {hs_dir}\n"
-        torrc_content += "HiddenServiceVersion 3\n"
-        torrc_content += "HiddenServiceNumIntroductionPoints 6\n"   # default 3; max 20
-        torrc_content += "HiddenServiceMaxStreams 100\n"             # rate-limit per circuit
-        torrc_content += "HiddenServiceMaxStreamsCloseCircuit 1\n"   # drop circuit on overrun
+        # The service block is assembled separately and only committed if at
+        # least one port mapping survives validation.  Tor REFUSES TO START AT
+        # ALL on a HiddenServiceDir with no HiddenServicePort ("Hidden service
+        # with no ports configured" -> "Reading config failed"), so emitting a
+        # portless block would let one typo in one service take down every other
+        # service in the container.  Skipping invalid mappings while still
+        # emitting the block would be graceful in appearance only.
+        service_block = f"\n# ── Service: {service_name} ──\n"
+        service_block += f"HiddenServiceDir     {hs_dir}\n"
+        service_block += "HiddenServiceVersion 3\n"
+        service_block += "HiddenServiceNumIntroductionPoints 6\n"   # default 3; max 20
+        service_block += "HiddenServiceMaxStreams 100\n"             # rate-limit per circuit
+        service_block += "HiddenServiceMaxStreamsCloseCircuit 1\n"   # drop circuit on overrun
         # PoW options are per-service in Tor 0.4.8+ (must follow HiddenServiceDir).
         # PoW throttles the RENDEZVOUS stage (prioritises clients by puzzle effort).
-        torrc_content += "HiddenServicePoWDefensesEnabled 1\n"
-        torrc_content += "HiddenServicePoWQueueRate  250\n"
-        torrc_content += "HiddenServicePoWQueueBurst 2500\n"
+        service_block += "HiddenServicePoWDefensesEnabled 1\n"
+        service_block += "HiddenServicePoWQueueRate  250\n"
+        service_block += "HiddenServicePoWQueueBurst 2500\n"
         # Intro-point DoS defence throttles the INTRODUCE2 stage at the intro
         # points — a different choke point from PoW, complementary not redundant.
         # Default-off in torrc and in the consensus; we enable it explicitly with
         # Tor's documented default rate/burst (25/sec, 200 burst). Burst must be
         # non-zero or the defence is disabled. (Tor onion-service DoS guidelines.)
-        torrc_content += "HiddenServiceEnableIntroDoSDefense 1\n"
-        torrc_content += "HiddenServiceEnableIntroDoSRatePerSec 25\n"
-        torrc_content += "HiddenServiceEnableIntroDoSBurstPerSec 200\n"
+        service_block += "HiddenServiceEnableIntroDoSDefense 1\n"
+        service_block += "HiddenServiceEnableIntroDoSRatePerSec 25\n"
+        service_block += "HiddenServiceEnableIntroDoSBurstPerSec 200\n"
 
+        port_lines = []
         for host_mapping in service_hosts.split(','):
             if ':' not in host_mapping:
                 continue
@@ -227,16 +302,29 @@ FetchUselessDescriptors 0     # do not fetch relay descriptors we won't use (def
                     target_host = validate_hostname(parts[1], host_mapping)
                     target_host = resolve_to_ip(target_host,  host_mapping)
                     target_port = validate_port(parts[2],     host_mapping)
-                    torrc_content += f"HiddenServicePort {hs_port} {target_host}:{target_port}\n"
+                    port_lines.append(f"HiddenServicePort {hs_port} {target_host}:{target_port}\n")
                 elif len(parts) == 2:
                     hs_port     = validate_port(parts[0], host_mapping)
                     target_port = validate_port(parts[1], host_mapping)
-                    torrc_content += f"HiddenServicePort {hs_port} 127.0.0.1:{target_port}\n"
+                    port_lines.append(f"HiddenServicePort {hs_port} 127.0.0.1:{target_port}\n")
                 else:
                     print(f"Skipping malformed mapping: '{host_mapping}'")
             except ValueError as e:
                 print(f"Skipping invalid mapping '{host_mapping}': {e}")
 
+        if not port_lines:
+            # Drop the service entirely rather than emit a portless block that
+            # would abort Tor's startup and take every other service with it.
+            print(
+                f"ERROR: service '{service_name}' has no valid port mappings "
+                f"(from {env_var}='{service_hosts}') — skipping it. Tor cannot "
+                "start a hidden service with no ports, so emitting it would "
+                "take down every other service too. Fix this mapping."
+            )
+            continue
+
+        torrc_content += service_block + "".join(port_lines)
+        hs_dirs.append(hs_dir)
         found_any = True
 
     if not found_any:
@@ -258,9 +346,20 @@ def generate_basic_torrc():
     # Ensure the parent hidden_service directory is traversable by the tor user.
     # In rootless podman the bind-mounted host dir may appear as root:root 770
     # inside the container, blocking tor (UID 100) from entering subdirs.
+    #
+    # 0o751, not 0o755: Tor only ever opens its HiddenServiceDir by full path, so
+    # it needs the execute (traverse) bit on this parent and nothing else. The
+    # read bit would additionally let any non-owner enumerate the names of every
+    # hidden service configured on the host, which is information a compromised
+    # in-container process should not get for free. Grant traverse, withhold list.
+    # (The per-service directories below remain 0700, owned by tor.)
     parent_hs = Path('/var/lib/tor/hidden_service')
     if parent_hs.exists():
-        os.chmod(parent_hs, 0o755)
+        # nosec B103 - 0o751 is the minimum that works: Tor (uid 100) is "other"
+        # relative to this root-owned bind mount and must be able to traverse it.
+        # The alternative, chowning the operator's host directory to uid 100, is
+        # more surprising and no more secure. Keys stay in 0700 subdirectories.
+        _chmod_dir_nofollow(parent_hs, 0o751)
 
     torrc_content, hs_dirs = build_torrc_string()
 
@@ -272,8 +371,12 @@ def generate_basic_torrc():
         # the tor user, so skip chmod — it will already be 0700 from when
         # it was first created.  We always chown so newly-created dirs are
         # transferred to the tor user regardless of the calling uid.
-        if os.stat(hs_dir).st_uid == 0:
-            os.chmod(hs_dir, 0o700)
+        #
+        # mkdir(exist_ok=True) succeeds if hs_dir is a symlink to a directory,
+        # so the O_NOFOLLOW open below is what actually rejects a tampered key
+        # volume: it raises ELOOP rather than letting a root chmod/chown escape
+        # the hidden_service tree.
+        _chmod_dir_nofollow(hs_dir, 0o700, only_if_root_owned=True)
         _chown_r(hs_dir, tor_pw.pw_uid, tor_pw.pw_gid)
 
     torrc_path = '/etc/tor/torrc'
@@ -377,9 +480,10 @@ def main():
         # When running under Docker the tmpfs is already tor:tor 0700 via the
         # mount options, so we skip chmod (root can't chmod a file it doesn't
         # own without CAP_FOWNER) and the chown is a harmless no-op.
-        if os.stat(data_dir).st_uid == 0:
-            os.chmod(data_dir, 0o700)   # safe: we own the dir, no FOWNER needed
-        os.chown(data_dir, tor_pw.pw_uid, tor_pw.pw_gid)
+        # safe: we own the dir, no FOWNER needed. O_NOFOLLOW-based so a symlinked
+        # DataDirectory cannot redirect the root chmod/chown elsewhere.
+        _chmod_dir_nofollow(data_dir, 0o700, only_if_root_owned=True)
+        os.chown(data_dir, tor_pw.pw_uid, tor_pw.pw_gid, follow_symlinks=False)
 
     # ── Start Tor ───────────────────────────────────────────────────────────
     print("Starting Tor...")

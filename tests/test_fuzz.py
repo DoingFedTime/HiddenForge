@@ -20,6 +20,7 @@ ALLOWED_DIRECTIVES = {
     "ControlSocket", "SocksPort", "DataDirectory", "ClientOnly", "ExitPolicy",
     "Log", "SafeLogging", "HeartbeatPeriod", "Sandbox",
     "DisableDebuggerAttachment", "AvoidDiskWrites", "FetchUselessDescriptors",
+    "VanguardsLiteEnabled",
     "HiddenServiceDir", "HiddenServiceVersion", "HiddenServiceNumIntroductionPoints",
     "HiddenServiceMaxStreams", "HiddenServiceMaxStreamsCloseCircuit",
     "HiddenServicePoWDefensesEnabled", "HiddenServicePoWQueueRate",

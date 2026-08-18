@@ -23,6 +23,22 @@ DisableDebuggerAttachment 1   # block ptrace / debugger attachment
 AvoidDiskWrites 1             # minimise forensic footprint on disk
 FetchUselessDescriptors 0     # do not fetch relay descriptors we won't use (default, explicit)
 
+# ── Guard-discovery protection ─────────────────────────────────────────────
+# vanguards-lite (Tor proposal 333) pins a small set of layer-2 guards so an
+# adversary cannot enumerate our position by forcing circuit rebuilds.  This is
+# our PRIMARY defence against guard discovery: the full Vanguards addon's
+# layer-2/3 pinning cannot be used here because it applies its guard sets via
+# SETCONF, which the seccomp sandbox rejects when enabled ("Failed to configure
+# rendezvous options"). We keep the sandbox and rely on vanguards-lite instead.
+#
+# Pinned to 1, NOT left at the "auto" default.  Per the Tor manual, "auto" means
+# "do what the vanguards-lite-enabled consensus parameter tells them to do" —
+# which puts our only guard-discovery defence under the control of the directory
+# authorities rather than the operator.  An adversary able to influence the
+# consensus could otherwise disable it for every deployment simultaneously,
+# silently.  Setting it explicitly makes that impossible.
+VanguardsLiteEnabled 1
+
 # ── Hidden services ────────────────────────────────────────────────────────
 
 # ── Service: service ──

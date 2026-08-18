@@ -2,6 +2,18 @@
 """
 HiddenForge torrc generation tests.
 Run inside the container: python3 /usr/local/bin/tests/test_torrc.py
+
+NON-DESTRUCTIVE BY CONSTRUCTION.  This is safe to run against a LIVE container.
+
+It used to call the privileged ``generate_basic_torrc()``, which overwrote the
+running ``/etc/tor/torrc`` with this test's throwaway config and created a bogus
+``service`` hidden-service directory inside the operator's persistent key
+volume — so following the instruction in this very docstring could take down a
+live onion service and litter the key volume with keys for a service nobody
+asked for.  It now exercises the pure ``build_torrc_string()`` instead, which
+performs no filesystem side effects at all.  ``build_torrc_string()`` produces
+exactly the bytes that ``generate_basic_torrc()`` writes, so coverage is
+unchanged.
 """
 import sys
 import os
@@ -28,15 +40,35 @@ _socket.gethostbyname = _mock_gethostbyname
 
 import entrypoint
 
-os.environ['SERVICE_TOR_SERVICE_HOSTS'] = '80:backend:8080,443:backend:8443'
-entrypoint.generate_basic_torrc()
+# Deliberately NOT a name a real deployment would use, so the "did this test
+# create anything?" assertion below can never collide with an operator's own
+# service directory (including one left behind by the old destructive version).
+os.environ['HIDDENFORGE_SELFTEST_TOR_SERVICE_HOSTS'] = '80:backend:8080,443:backend:8443'
 
-torrc = open('/etc/tor/torrc').read()
+# Pure generator: returns the torrc text and the list of hidden-service dirs it
+# WOULD have created. Nothing is written, nothing is chowned, no directory is
+# created — the live config and the key volume are untouched.
+torrc, hs_dirs = entrypoint.build_torrc_string()
+
+# Guard the property this test now depends on: our throwaway service must have
+# been *named* only, never created on disk. (Any OTHER entries in hs_dirs belong
+# to the operator's real services, which legitimately already exist on a live
+# container — we must not assert anything about those.)
+_selftest_dir = '/var/lib/tor/hidden_service/hiddenforge-selftest'
+if _selftest_dir not in hs_dirs:
+    print(f'FAILED: expected {_selftest_dir} to be planned, got {hs_dirs}')
+    sys.exit(1)
+if os.path.exists(_selftest_dir):
+    print(f'FAILED: test created a real hidden-service directory at {_selftest_dir} '
+          '— the generator is no longer side-effect free')
+    sys.exit(1)
 
 checks = [
     ('ClientOnly 1',                   'ClientOnly 1 missing — container could become a relay'),
     ('ExitPolicy reject',              'ExitPolicy missing — container could exit traffic'),
     ('Sandbox',                        'Sandbox directive missing'),
+    ('VanguardsLiteEnabled 1',         'VanguardsLiteEnabled not pinned to 1 — guard-discovery '
+                                       'defence would fall back to consensus control'),
     ('HiddenServicePoWDefensesEnabled','PoW DoS defense missing'),
     ('FetchUselessDescriptors 0',      'FetchUselessDescriptors missing'),
     ('SafeLogging 1',                  'SafeLogging missing — logs may expose .onion addresses'),

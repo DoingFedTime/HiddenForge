@@ -4,8 +4,12 @@
 #   1. Copy this file and edit the two lines marked with <-- EDIT
 #   2. mkdir -p ./tor-keys
 #   3. podman-compose -f podman-compose.yml up -d
-#   4. podman-compose -f podman-compose.yml exec tor cat /var/lib/tor/hidden_service/myapp/hostname
+#   4. podman-compose -f podman-compose.yml exec tor su-exec tor cat /var/lib/tor/hidden_service/myapp/hostname
 #      (replace "myapp" with whatever you used in step 1)
+#      The `su-exec tor` is REQUIRED here and is not a typo: this file drops
+#      DAC_OVERRIDE, so the exec'd root cannot traverse the 0700 tor-owned
+#      DataDirectory. Read it as the tor user. If you hit "Permission denied",
+#      do NOT re-add DAC_OVERRIDE or relax the key directory to work around it.
 #
 # WHY THIS FILE EXISTS (rootless security model):
 #   Running Podman rootless means container uid 0 maps to your host user (e.g.
@@ -29,7 +33,7 @@ networks:
 
 services:
   tor:
-    image: docker.io/doingfedtime/hiddenforge:latest
+    image: sambent.dev/sam/hiddenforge:latest
     restart: unless-stopped
 
     # ── Security flags ────────────────────────────────────────────────────

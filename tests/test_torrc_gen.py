@@ -19,6 +19,7 @@ ALLOWED_DIRECTIVES = {
     "ControlSocket", "SocksPort", "DataDirectory", "ClientOnly", "ExitPolicy",
     "Log", "SafeLogging", "HeartbeatPeriod", "Sandbox",
     "DisableDebuggerAttachment", "AvoidDiskWrites", "FetchUselessDescriptors",
+    "VanguardsLiteEnabled",
     "HiddenServiceDir", "HiddenServiceVersion", "HiddenServiceNumIntroductionPoints",
     "HiddenServiceMaxStreams", "HiddenServiceMaxStreamsCloseCircuit",
     "HiddenServicePoWDefensesEnabled", "HiddenServicePoWQueueRate",
@@ -138,6 +139,7 @@ GLOBAL_REQUIRED = [
     "DisableDebuggerAttachment 1",
     "AvoidDiskWrites 1",
     "FetchUselessDescriptors 0",
+    "VanguardsLiteEnabled 1",
 ]
 PER_SERVICE_REQUIRED = [
     "HiddenServiceVersion 3",
@@ -172,6 +174,82 @@ def test_global_directives_present_even_with_no_services(monkeypatch):
     assert dirs == []
     for directive in GLOBAL_REQUIRED:
         assert directive in torrc
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# One bad service must not take down the whole container
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_service_with_no_valid_ports_is_dropped_entirely(monkeypatch):
+    """A HiddenServiceDir with no HiddenServicePort makes Tor refuse to start.
+
+    Observed live: `Hidden service (...) with no ports configured` ->
+    `Failed to parse/validate config` -> `Reading config failed`. Tor aborts
+    completely, so a portless block does not degrade one service, it kills the
+    entire container. Such a service must be omitted, not emitted empty.
+    """
+    _set_services(monkeypatch, BAD_TOR_SERVICE_HOSTS="99999:127.0.0.1:8080")
+    torrc, dirs = e.build_torrc_string()
+    assert "/var/lib/tor/hidden_service/bad" not in torrc
+    assert "HiddenServiceDir" not in torrc
+    assert dirs == [], "a key directory must not be created for a dropped service"
+
+
+def test_one_bad_service_does_not_kill_a_good_one(monkeypatch):
+    """The good service must survive a sibling with entirely invalid mappings."""
+    _set_services(
+        monkeypatch,
+        GOOD_TOR_SERVICE_HOSTS="80:127.0.0.1:8080",
+        BAD_TOR_SERVICE_HOSTS="-1:127.0.0.1:-5",
+    )
+    torrc, dirs = e.build_torrc_string()
+    assert dirs == ["/var/lib/tor/hidden_service/good"]
+    assert "HiddenServicePort 80 127.0.0.1:8080" in torrc
+    assert "hidden_service/bad" not in torrc
+    # Exactly one service block, and it has a port.
+    assert torrc.count("HiddenServiceDir") == 1
+
+
+def test_partially_valid_service_keeps_its_good_ports(monkeypatch):
+    """Dropping portless services must not also drop merely-partial ones."""
+    _set_services(
+        monkeypatch,
+        SERVICE_TOR_SERVICE_HOSTS="99999:127.0.0.1:8080,443:127.0.0.1:8443",
+    )
+    torrc, dirs = e.build_torrc_string()
+    assert dirs == ["/var/lib/tor/hidden_service/service"]
+    assert "HiddenServicePort 443 127.0.0.1:8443" in torrc
+    assert "99999" not in torrc
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Guard-discovery protection must not be delegated to the consensus
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_vanguards_lite_is_pinned_not_auto(monkeypatch):
+    """VanguardsLiteEnabled must be hard-set to 1, never left at "auto".
+
+    The full Vanguards addon's layer-2/3 pinning is unavailable to us (Sandbox 1
+    rejects the SETCONF it needs), so vanguards-lite is our ONLY defence against
+    guard-discovery attacks. Per the Tor manual, "auto" delegates the decision to
+    the `vanguards-lite-enabled` consensus parameter — i.e. to the directory
+    authorities. An adversary with influence over the consensus could then
+    disable guard-discovery protection for every deployment at once, silently.
+    Pinning it locally removes that lever.
+    """
+    _set_services(monkeypatch, SERVICE_TOR_SERVICE_HOSTS="80:127.0.0.1:8080")
+    torrc, _ = e.build_torrc_string()
+    assert "VanguardsLiteEnabled 1" in torrc
+    assert "VanguardsLiteEnabled auto" not in torrc
+    assert "VanguardsLiteEnabled 0" not in torrc
+
+
+def test_vanguards_lite_pinned_even_with_sandbox_disabled(monkeypatch):
+    """Turning off Tor's seccomp sandbox must not silently drop the guard pin."""
+    _set_services(monkeypatch, SERVICE_TOR_SERVICE_HOSTS="80:127.0.0.1:8080")
+    monkeypatch.setenv("TOR_SANDBOX", "0")
+    torrc, _ = e.build_torrc_string()
+    assert "VanguardsLiteEnabled 1" in torrc
 
 
 # ─────────────────────────────────────────────────────────────────────────────

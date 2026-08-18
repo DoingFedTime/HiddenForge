@@ -13,20 +13,29 @@ ENV PYTHONDONTWRITEBYTECODE=1
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1
 
 # Install Tor and Python runtime with pinned package versions.
-# py3-pip is a build-only dep — added as .build-deps and removed after the
-# venv is bootstrapped, leaving no pip/installer tooling in the final image.
-# (The Python stdlib still ships urllib/ssl; what we remove are the third-party
-# package manager and HTTP clients, not the language's built-in modules.)
-# .build-deps is pinned to =0 (not the default auto-version): apk stamps a
-# virtual package with the build-time clock (e.g. 20260715.235608), which would
-# leak a timestamp into /etc/apk/world and /lib/apk/db/installed and break
-# reproducible builds. rm apk.log for the same reason (it records wall-clock op
-# times). Together these make this layer byte-identical across rebuilds.
+# py3-pip is a build-only dep — removed after the venv is bootstrapped, leaving
+# no pip/installer tooling in the final image. (The Python stdlib still ships
+# urllib/ssl; what we remove are the third-party package manager and HTTP
+# clients, not the language's built-in modules.)
+#
+# py3-pip is installed DIRECTLY, not via `apk add --virtual .build-deps`.
+# A virtual package would be the conventional way to drop a build dep and its
+# orphans in one go, but apk assigns every virtual package a self-generated
+# checksum in /lib/apk/db/installed, and that checksum was observed to differ
+# between two builds of identical source — producing different image digests
+# and silently breaking the reproducible-build guarantee (the failure looks
+# exactly like image tampering to anyone verifying it). Installing py3-pip by
+# name removes that record entirely; `apk del py3-pip` below still reclaims all
+# eight packages (py3-pip plus the py3-packaging/py3-parsing/py3-setuptools
+# tree it pulls in), because apk already tracks auto-installed dependencies —
+# verified: nothing is left behind versus the pre-pip package set.
+#
+# rm apk.log because it records wall-clock operation times, which would also
+# break reproducibility.
 RUN apk add --no-cache \
     tor=0.4.9.11-r0 \
-    python3=3.12.13-r0 \
-    su-exec=0.3-r0 && \
-    apk add --no-cache --virtual .build-deps=0 \
+    python3=3.12.14-r0 \
+    su-exec=0.3-r0 \
     py3-pip=25.1.1-r1 && \
     rm -f /var/log/apk.log && \
     # apk stamps a new account's shadow "last-change" field with the current day
@@ -69,7 +78,7 @@ RUN python3 -m venv /opt/vanguards-venv && \
     find /opt/vanguards-venv -name '*.pyc' -delete && \
     find /opt/vanguards-venv -name '*.pyo' -delete && \
     rm /tmp/requirements.txt && \
-    apk del .build-deps && \
+    apk del py3-pip && \
     rm -f /var/log/apk.log
 
 # Set up Tor data directory and config directory.

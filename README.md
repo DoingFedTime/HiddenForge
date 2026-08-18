@@ -1,7 +1,10 @@
 # HiddenForge
 
-**Pull it (sovereign registry):** `docker pull sambent.dev/sam/hiddenforge`
-**Or the Docker Hub mirror** (used by the compose file): `docker pull doingfedtime/hiddenforge`
+**Pull it:** `docker pull sambent.dev/sam/hiddenforge`
+
+Distributed only from the maintainer's own registry. There is no Docker Hub
+mirror as of 2.0.4 — one registry means one digest to verify, with no second
+party able to serve you different bytes under the same tag.
 
 **Verify what you pulled** (signatures + reproducible build): the [verification guide](https://sambent.dev/sam/HiddenForge/wiki/Verifying-the-Image).
 
@@ -11,7 +14,7 @@
 
 ## Quick Start (3 steps)
 
-`docker compose up` pulls the image (`doingfedtime/hiddenforge`) automatically, so this is all you need:
+`docker compose up` pulls the image (`sambent.dev/sam/hiddenforge`) automatically, so this is all you need:
 
 ```bash
 # 1. Download the compose file
@@ -83,7 +86,7 @@ software. HiddenForge pins every dependency at every layer.
 |---|---|---|
 | Alpine base image | `alpine:3.23.5@sha256:...` | Digest pinning locks the exact OS bytes. A tag like `latest` or even `3.23.5` can be silently updated on the registry |
 | `tor` apk | `0.4.9.11-r0` | A tampered Tor binary could de-anonymise every circuit |
-| `python3` apk | `3.12.13-r0` | The Python runtime executes the entrypoint and Vanguards |
+| `python3` apk | `3.12.14-r0` | The Python runtime executes the entrypoint and Vanguards |
 | `su-exec` apk | `0.3-r0` | This binary performs the privilege drop to the `tor` user |
 | `py3-pip` apk | `25.1.1-r1` | Build-only; pinned so it can't be updated to a version that silently ignores `--require-hashes` |
 | `vanguards` pip | `0.3.1` + SHA256 | Guard protection addon; a compromised version could leak circuit topology |
@@ -105,11 +108,21 @@ packages are (with `--require-hashes`), but they are **not unverified**: apk
 authenticates every package against a cryptographically **signed package index**
 (`APKINDEX.tar.gz`, validated against the Alpine signing keys in
 `/etc/apk/keys`), and each package record carries a checksum anchored by that
-signed index. Because the base image is digest-pinned, the signed index inside
-that specific layer is frozen, so `apk add tor=0.4.9.11-r0` resolves
-deterministically against a fixed, signed index. (The legacy index signature is
-SHA1-based; the practical integrity anchor is the digest-pinned base plus the
-signed index, not the hash algorithm.)
+signed index. (The legacy index signature is SHA1-based; the practical integrity
+anchor is the signed index plus the exact-version pin, not the hash algorithm.)
+
+Be aware of the limit this has, because it is easy to overstate. `apk add
+--no-cache` fetches the index from `dl-cdn.alpinelinux.org` **at build time** —
+digest-pinning the base image does *not* freeze it. The exact-version pin
+(`=3.12.14-r0`) still makes the resolved package deterministic: apk installs that
+version or fails, never a silently newer one. But Alpine **prunes superseded
+versions** from the index, so a pin that was valid at release time stops
+resolving once a security update lands, and the build fails outright rather than
+drifting. That is the safe failure mode, and it is the intended one — but it does
+mean a source build of an older tag will not necessarily reproduce, and pinned
+versions must be refreshed as Alpine moves. This has now bitten the project
+twice: `tor=0.4.9.8-r0` (fixed in 2.0.2) and `python3=3.12.13-r0` (fixed in
+2.0.4).
 
 **Updating pinned versions:**
 
@@ -132,22 +145,30 @@ sha256sum /tmp/dl/vanguards-0.3.2*.whl
 Build-time pinning protects what goes *into* the image; signing and reproducible
 builds let you verify the image you *pull*.
 
-Released images are signed three independent ways over the image digest, with no
-dependency on any external transparency log: the maintainer's **cosign** key
-(`cosign.pub` in this repo), a **post-quantum ML-DSA-65** signature, and a
-**hardware YubiKey** signature. The verification files live in `signatures/`. The
-build is also **reproducible**, so you can rebuild from source and confirm you get
-a byte-for-byte identical image.
-
-The quickest check, using the maintainer key:
+Released images are signed two independent ways over the image digest, with no
+dependency on any external service or transparency log: a **post-quantum
+ML-DSA-65** signature (FIPS 204) and a **hardware YubiKey** (SSH-FIDO2)
+signature. The verification files live in `signatures/`. The build is also
+**reproducible**, so you can rebuild from source and confirm you get a
+byte-for-byte identical image.
 
 ```bash
-cosign verify --key cosign.pub --insecure-ignore-tlog=true \
-  sambent.dev/sam/hiddenforge@sha256:<DIGEST>
+# both verify with stock tools, offline
+pqsign verify --pub sambent-mldsa.pub --sig hiddenforge.digest.mldsa --in hiddenforge.digest
+ssh-keygen -Y verify -f allowed-signers -I sam@sambent.com -n file \
+  -s hiddenforge.digest.sig < hiddenforge.digest
+
+# confirm that digest is what the registry actually serves
+skopeo inspect --raw docker://sambent.dev/sam/hiddenforge:latest | sha256sum
 ```
 
+Releases up to 2.0.3 additionally carried a cosign signature (`cosign.pub` is
+kept in the repo so those older releases stay verifiable). From 2.0.4 cosign is
+no longer used: it was the last part of the flow that depended on external
+tooling, and the ML-DSA + hardware pair is the attestation.
+
 For the strongest guarantee, pin the verified digest in your compose file instead
-of the mutable `:latest` tag. Full step-by-step verification, all three signatures
+of the mutable `:latest` tag. Full step-by-step verification, both signatures
 plus reproducing the build, is in the wiki:
 
 **→ [Verifying the Image](https://sambent.dev/sam/HiddenForge/wiki/Verifying-the-Image)**
@@ -209,6 +230,31 @@ logging:
 
 ---
 
+## What HiddenForge Cannot Protect You From
+
+This container hardens the *Tor layer*. Historically, that is almost never the
+layer that gets an onion service located. The service is usually found because
+the **application behind it** told someone where it lives. Nothing in this image
+can stop that, so it is on you:
+
+| Leak | What happens | What to do |
+|---|---|---|
+| Backend makes outbound requests | Your app fetches an avatar, a font, an update check, or sends error telemetry — **directly**, over clearnet, from the server's real IP. One request is enough. | Keep the backend on the `internal:` network (the shipped compose does). Never add an outbound route "just for updates". Verify: from inside the backend, any internet connection must fail. |
+| Absolute URLs / configured hostname | The app emits `https://realhost.example.com/...` in a redirect, canonical tag, RSS feed, e-mail, or error page. | Configure the app's public URL as the `.onion`. Grep rendered output for the real domain before going live. |
+| Server / framework banners | `Server:`, `X-Powered-By`, ETag formats, default error pages and admin paths fingerprint the exact host, which can be matched against a clearnet scan. | Strip identifying headers; do not run the same fingerprintable stack on clearnet and onion. |
+| Same content on clearnet and onion | Trivially correlated by anyone scanning both. | If it must exist on both, do not let them share favicons, ETags, analytics IDs, TLS certs, or timestamps. |
+| Timestamps and locale | Logs, generated files, and feeds leak the server's timezone, narrowing location. | Run the backend in UTC. |
+| Analytics / third-party assets | Any CDN, font, or tracker call runs from the *client*, but a server-side render can run it from the server. | Serve every asset locally. |
+| The onion address itself | Publishing it beside a clearnet identity links them permanently. | Decide the linkage deliberately; it cannot be undone. |
+
+**Also outside this container's control:** the host. A hidden service is only as
+anonymous as the machine hosting it — how it was paid for, provisioned, and
+administered. Consider the [offline key generation](#offline-key-generation-recommended-for-high-risk-deployments)
+and [rootless Podman](#rootless-podman-recommended-for-high-risk-deployments)
+sections mandatory rather than optional if you are in this threat model.
+
+---
+
 ## Time Synchronisation
 
 Tor is sensitive to clock skew. If the host clock is more than ~30 minutes
@@ -238,7 +284,11 @@ mkdir -p ./tor-keys
 podman-compose -f podman-compose.yml up -d
 
 # Read the .onion address once Tor bootstraps (first boot takes a couple of minutes)
-podman-compose -f podman-compose.yml exec tor cat /var/lib/tor/hidden_service/myapp/hostname
+# NOTE the `su-exec tor`: unlike the Docker file, this one drops DAC_OVERRIDE, so
+# the exec'd root user cannot traverse the 0700 tor-owned DataDirectory. Reading
+# it as the tor user is the correct way — do NOT "fix" a permission error here by
+# adding DAC_OVERRIDE back or loosening the key directory.
+podman-compose -f podman-compose.yml exec tor su-exec tor cat /var/lib/tor/hidden_service/myapp/hostname
 ```
 
 **Why the Podman compose file drops two capabilities:**
@@ -274,7 +324,8 @@ podman info --format '{{.Host.Security.Rootless}}'
 | DoS defence (rendezvous) | `HiddenServicePoWDefensesEnabled 1` per service |
 | DoS defence (intro point) | `HiddenServiceEnableIntroDoSDefense 1` (rate 25/s, burst 200) |
 | Circuit overload | `HiddenServiceMaxStreams 100`, `HiddenServiceMaxStreamsCloseCircuit 1` |
-| Guard protection | Vanguards addon (bandguards + rendguard) + built-in vanguards-lite (**L2 only**; see the [Security Model](https://sambent.dev/sam/HiddenForge/wiki/Security-Model) wiki page for the L3 limitation on long-lived services) |
+| Guard protection | Vanguards addon (bandguards + rendguard) + built-in vanguards-lite, pinned with `VanguardsLiteEnabled 1` so it cannot be switched off by a consensus parameter (**L2 only**; see the [Security Model](https://sambent.dev/sam/HiddenForge/wiki/Security-Model) wiki page for the L3 limitation on long-lived services) |
+| Key-volume tampering | Privileged startup chown/chmod refuse to follow symlinks out of the hidden-service directory |
 | No relay/exit | `ClientOnly 1`, `ExitPolicy reject *:*` |
 | No telemetry | pip/setuptools/urllib3 stripped from final image (Python stdlib remains) |
 | Input validation | All env vars validated before torrc write |

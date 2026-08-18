@@ -4,6 +4,111 @@ All notable changes to HiddenForge are documented here.
 
 ---
 
+## [2.0.4] - 2026-08-18
+
+### Security
+- **Python runtime patched** (`python3` apk `3.12.13-r0` → `3.12.14-r0`), clearing
+  six HIGH CVEs Alpine disclosed against the version 2.0.3 shipped:
+  `CVE-2026-11940`, `CVE-2026-15308`, `CVE-2026-3644`, `CVE-2026-4786`,
+  `CVE-2026-6100`, `CVE-2026-7210`. None of the affected modules are on this
+  image's attack surface — it runs only the entrypoint, the healthcheck and
+  Vanguards/stem, none of which parse untrusted XML or HTML, extract tarballs,
+  handle HTTP cookies, or open a browser — but a Tor hidden service should not
+  ship a knowingly vulnerable runtime. Trivy reports the image clean at every
+  severity.
+
+- **`VanguardsLiteEnabled 1` is now pinned in the generated torrc.** The full
+  Vanguards addon's layer-2/3 guard pinning cannot be used in this image: it
+  applies guard sets via `SETCONF`, which Tor's seccomp sandbox rejects
+  (`Failed to configure rendezvous options`). vanguards-lite is therefore the
+  only guard-discovery defence present, and Tor's `auto` default delegates it to
+  the `vanguards-lite-enabled` consensus parameter — placing the last line of
+  defence against guard-discovery attacks under the directory authorities'
+  control rather than the operator's. Pinning it locally removes that lever.
+
+- **Privileged startup no longer follows symlinks out of the key directory.**
+  The entrypoint runs as root over the operator-supplied `./tor-keys` bind mount
+  and used `os.chown()`, which follows symlinks — an arbitrary-chown primitive
+  for anyone able to write to that volume (a restored backup, untrusted media, a
+  second host user). On the previous image a symlink placed in the key directory
+  transfers `/etc/tor` to the `tor` user, which would let a compromised Tor
+  process rewrite its own configuration and persist. All privileged filesystem
+  operations now refuse symlinks (`follow_symlinks=False`,
+  `os.walk(followlinks=False)`, and `O_NOFOLLOW` descriptor-based chmod, as Linux
+  has no `lchmod`).
+
+- **Hidden-service parent directory tightened `0755` → `0751`.** Tor needs only
+  the traverse bit to open a service directory by path; the read bit additionally
+  allowed any non-owner process in the container to enumerate the names of every
+  configured hidden service.
+
+### Fixed
+- **A single misconfigured service no longer takes down every other service.**
+  When all of a service's port mappings failed validation, the entrypoint logged
+  "Skipping invalid mapping" and still emitted a `HiddenServiceDir` with no
+  `HiddenServicePort` — a state in which Tor refuses to start at all
+  (`Hidden service ... with no ports configured` → `Reading config failed`). One
+  typo therefore killed every onion in the container while the logs implied
+  graceful degradation. Such services are now dropped with an explicit error and
+  no key directory is created for them.
+
+- **The in-image smoke test is non-destructive.** `tests/test_torrc.py` ships in
+  the image and its docstring directs you to run it inside the container, where
+  it called the privileged `generate_basic_torrc()` — overwriting the running
+  `/etc/tor/torrc` and creating a stray hidden-service directory in the
+  operator's key volume. It now exercises the pure `build_torrc_string()`, which
+  has no filesystem side effects, and asserts that it created nothing.
+
+- **Reading your `.onion` address works under rootless Podman.**
+  `podman-compose ... exec tor cat .../hostname` failed with `Permission denied`,
+  because that compose file correctly drops `DAC_OVERRIDE` and the exec'd root
+  cannot traverse the `0700` tor-owned DataDirectory. Documented as
+  `su-exec tor cat ...`, with a warning not to work around the error by re-adding
+  the capability or loosening the key directory.
+
+- **Build restored.** Alpine pruned the pinned `python3=3.12.13-r0` from the 3.23
+  index when the security update landed, so `apk add` failed and the image could
+  not be built from source at all.
+
+### Changed
+- **Distribution is single-registry: `sambent.dev/sam/hiddenforge`.** One registry
+  means one digest to verify and no second party able to serve different bytes
+  under the same tag.
+
+- **Reproducible builds are now genuinely reproducible**, and the requirements are
+  documented in `signatures/README.md`. Two things break bit-for-bit
+  reproducibility and both are now handled: release images are built with
+  `--provenance=false`, because buildx embeds wall-clock timestamps in the SLSA
+  provenance attestation and that attestation lives inside the image index; and
+  releases are built from a pristine checkout, because `rewrite-timestamp`
+  *clamps* file mtimes to `SOURCE_DATE_EPOCH` rather than normalising them, so a
+  working tree's older mtimes are baked into the layer verbatim.
+
+- **The `.build-deps` virtual apk package was removed.** apk assigns virtual
+  packages a self-generated checksum that was observed to differ between builds
+  of identical source. `py3-pip` is installed by name and `apk del py3-pip`
+  reclaims it along with the seven packages it pulls in.
+
+- **Release signing uses the maintainer's identity key.** Releases through 2.0.3
+  were signed with a per-project key; from 2.0.4 a single per-identity key signs
+  every project. `signatures/allowed-signers` retains every key that has ever
+  signed a release, so earlier releases remain independently verifiable. cosign
+  is no longer used — the ML-DSA-65 and YubiKey signatures are the attestation —
+  and `cosign.pub` is kept so releases up to 2.0.3 stay verifiable.
+
+### Added
+- **Operator guidance on what HiddenForge cannot protect you from** — a README
+  section on application-layer deanonymization: the backend making outbound
+  clearnet requests, emitting absolute URLs or its real hostname, leaking
+  framework banners and ETags matchable against a clearnet scan, serving
+  identical content on both networks, and leaking the server's timezone.
+
+- **`tests/test_privileged_fs.py`** covering the symlink-refusal property of the
+  privileged startup path, plus guard-pinning and portless-service tests. Suite:
+  129 → 145 tests.
+
+---
+
 ## [2.0.3] - 2026-07-16
 
 ### Added
