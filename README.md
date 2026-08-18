@@ -1,10 +1,14 @@
 # HiddenForge
 
-**Pull it:** `docker pull sambent.dev/sam/hiddenforge`
+**Pull it:**
 
-Distributed only from the maintainer's own registry. There is no Docker Hub
-mirror as of 2.0.4 — one registry means one digest to verify, with no second
-party able to serve you different bytes under the same tag.
+```bash
+docker pull sambent.dev/sam/hiddenforge   # the maintainer's own registry
+docker pull doingfedtime/hiddenforge      # Docker Hub
+```
+
+Both serve the identical digest, and the same signatures verify either one — use
+whichever you prefer.
 
 **Verify what you pulled** (signatures + reproducible build): the [verification guide](https://sambent.dev/sam/HiddenForge/wiki/Verifying-the-Image).
 

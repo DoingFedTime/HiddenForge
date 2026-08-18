@@ -71,9 +71,10 @@ All notable changes to HiddenForge are documented here.
   not be built from source at all.
 
 ### Changed
-- **Distribution is single-registry: `sambent.dev/sam/hiddenforge`.** One registry
-  means one digest to verify and no second party able to serve different bytes
-  under the same tag.
+- **Published to the maintainer's own registry as well as Docker Hub**
+  (`sambent.dev/sam/hiddenforge` and `doingfedtime/hiddenforge`). Both serve the
+  identical digest and the same signatures verify either, so the mirror cannot
+  serve different bytes under the same tag without detection.
 
 - **Reproducible builds are now genuinely reproducible**, and the requirements are
   documented in `signatures/README.md`. Two things break bit-for-bit
