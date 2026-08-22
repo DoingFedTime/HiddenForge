@@ -4,6 +4,47 @@ All notable changes to HiddenForge are documented here.
 
 ---
 
+## [2.0.5] - 2026-08-22
+
+### Security
+- **The Tor config is written through an `O_NOFOLLOW` descriptor**, and its mode
+  and ownership are set with `fchmod`/`fchown` on that same descriptor. `open('w')`
+  follows symlinks and the follow-up `chmod`/`chown` took a path, so a process able
+  to write into the `/etc/tor` tmpfs before the entrypoint ran could have root
+  truncate, chmod and chown an arbitrary file. Confirmed against 2.0.4: a symlinked
+  `torrc` had the configuration written through it and the target transferred to the
+  `tor` user. It now fails loudly instead.
+
+  Reachability is low — the tmpfs starts empty and the entrypoint runs as PID 1 —
+  so this is defence in depth rather than an urgent fix, but it is the same class of
+  issue already closed for the hidden-service key directory.
+
+- **The resolver's answer is re-parsed** through `ipaddress.IPv4Address` before it
+  can reach the config. CPython builds that string with `inet_ntop` from a 4-byte
+  struct, so a hostile DNS server cannot smuggle whitespace or a newline through it;
+  this is not a reachable injection. It is, however, the only value written to the
+  torrc that the entrypoint neither constructs nor validates, and enforcing the
+  invariant locally means a future change of resolver cannot silently reintroduce
+  the gap.
+
+### Added
+- Tests covering resolver **output** rather than only user input: unusable answers
+  drop the mapping, whitespace-padded ones normalise, and nothing outside the
+  allowed directive set can appear regardless of what comes back. Suite: 145 → 164.
+- Documentation of a long-standing operational trap: backend hostnames are resolved
+  **once**, at startup, and the resulting IP is baked into the torrc. Recreating the
+  backend container gives it a new IP and the onion then blackholes silently, with
+  nothing logged. Restart the Tor container after recreating a backend.
+
+### Unchanged (deliberately)
+- A Tor process that exits **on its own** is still reported as a failure, including
+  when its own exit code was 0. Measured: `restart: unless-stopped` restarts on any
+  exit status, so passing 0 through prevents no restart loop, while under
+  `restart: on-failure` it would leave a dead onion inside a container that reports
+  success. An orderly shutdown already exits 0 via the signal handler.
+
+---
+
 ## [2.0.4] - 2026-08-18
 
 ### Security
