@@ -343,3 +343,65 @@ def test_matches_golden(monkeypatch, mock_dns, name):
     with open(os.path.join(GOLDEN_DIR, f"{name}.torrc"), encoding="utf-8") as fh:
         expected = fh.read()
     assert torrc == expected, f"golden drift in {name}.torrc"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Resolver OUTPUT is untrusted too, not just user input
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Answers that are merely dirty but recover to a valid address: safe to use.
+RECOVERABLE_RESOLVER_ANSWERS = ["10.0.0.5\n", " 10.0.0.5 ", "10.0.0.5\r\n"]
+
+# Answers that cannot be a canonical IPv4 address: the mapping must be dropped.
+REJECTED_RESOLVER_ANSWERS = [
+    "10.0.0.5\nORPort 9001",       # embedded newline + directive
+    "10.0.0.5\r\nDirPort 9030",    # CRLF variant
+    "not-an-ip",
+    "::1",                          # IPv6 where IPv4 is required
+    "999.999.999.999",              # dotted-quad shaped but invalid
+    "",
+]
+
+
+def _resolver(monkeypatch, answer):
+    import socket
+    monkeypatch.setattr(socket, "gethostbyname", lambda h: answer)
+    _set_services(monkeypatch, SERVICE_TOR_SERVICE_HOSTS="80:backend:8080")
+    return e.build_torrc_string()
+
+
+@pytest.mark.parametrize("answer", REJECTED_RESOLVER_ANSWERS + RECOVERABLE_RESOLVER_ANSWERS)
+def test_hostile_resolver_output_never_injects(monkeypatch, answer):
+    """The resolver's answer is the one torrc input this module does not build itself.
+
+    CPython constructs that string with inet_ntop from a 4-byte struct, so a
+    hostile DNS server cannot actually smuggle a newline through it. The
+    invariant is enforced anyway so a future change of resolver cannot silently
+    reintroduce the gap: whatever comes back, nothing outside the allowed
+    directive set may appear in the generated config.
+    """
+    torrc, _ = _resolver(monkeypatch, answer)
+    for token, line in directive_lines(torrc):
+        assert token in ALLOWED_DIRECTIVES, f"INJECTED line: {line!r}"
+    for forbidden in ("ORPort", "DirPort", "ControlPort"):
+        assert forbidden not in torrc
+
+
+@pytest.mark.parametrize("answer", REJECTED_RESOLVER_ANSWERS)
+def test_unusable_resolver_output_drops_the_mapping(monkeypatch, answer):
+    """An answer that is not a canonical IPv4 address must not reach the torrc."""
+    torrc, _ = _resolver(monkeypatch, answer)
+    assert "HiddenServicePort" not in torrc
+
+
+@pytest.mark.parametrize("answer", RECOVERABLE_RESOLVER_ANSWERS)
+def test_whitespace_padded_resolver_output_is_normalised(monkeypatch, answer):
+    """Surrounding whitespace is stripped, not rejected — and never reaches the file."""
+    torrc, _ = _resolver(monkeypatch, answer)
+    assert "HiddenServicePort 80 10.0.0.5:8080" in torrc
+
+
+def test_valid_resolver_output_is_still_used(monkeypatch):
+    """Guard against 'fixing' the above by rejecting every resolver answer."""
+    torrc, _ = _resolver(monkeypatch, "10.1.2.3")
+    assert "HiddenServicePort 80 10.1.2.3:8080" in torrc

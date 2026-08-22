@@ -168,13 +168,33 @@ def resolve_to_ip(host, label):
             ) from exc
     try:
         resolved = socket.gethostbyname(stripped)
-        print(f"Resolved '{stripped}' → {resolved}")
-        return resolved
     except socket.gaierror as exc:
         raise ValueError(
             f"Cannot resolve '{stripped}' in {label}: {exc}. "
             "Is the backend container running and on the same network?"
         ) from exc
+
+    # Re-parse the resolver's answer instead of trusting its formatting.
+    #
+    # This is defence in depth, not a patch for a reachable attack: CPython builds
+    # this string itself with inet_ntop from a 4-byte struct, so a hostile DNS
+    # server cannot smuggle whitespace or a newline through it (verified: it
+    # normalises 0177.0.0.1 and 2130706433 to 127.0.0.1 rather than echoing input).
+    # The value is nonetheless the ONLY thing reaching the torrc that this module
+    # did not construct or validate itself, and anything with an embedded newline
+    # would split a HiddenServicePort line and stop Tor from starting at all. That
+    # invariant is worth enforcing rather than inheriting from CPython's internals,
+    # so a future change of resolver cannot silently reintroduce the gap.
+    try:
+        validated = str(ipaddress.IPv4Address(resolved.strip()))
+    except (ipaddress.AddressValueError, ValueError, AttributeError) as exc:
+        raise ValueError(
+            f"Resolver returned a non-IPv4 value {resolved!r} for '{stripped}' "
+            f"in {label} — refusing to write it to the torrc"
+        ) from exc
+
+    print(f"Resolved '{stripped}' → {validated}")
+    return validated
 
 
 # ---------------------------------------------------------------------------
@@ -379,10 +399,34 @@ def generate_basic_torrc():
         _chmod_dir_nofollow(hs_dir, 0o700, only_if_root_owned=True)
         _chown_r(hs_dir, tor_pw.pw_uid, tor_pw.pw_gid)
 
+    # Write the config through an O_NOFOLLOW descriptor and set its metadata on
+    # that same descriptor.
+    #
+    # open('w') follows symlinks, and the chmod/chown that used to follow took a
+    # PATH — so a process that could write into the /etc/tor tmpfs before this
+    # point could replace torrc with a symlink and have root truncate, chmod and
+    # chown an arbitrary file. The window is small (this runs early, as PID 1, on
+    # a tmpfs that starts empty) but it costs nothing to close, and it is the same
+    # class of bug already fixed for the hidden-service key directory.
+    #
+    # fchmod/fchown operate on a DUPLICATE of the write descriptor: os.fdopen()
+    # takes ownership of the original and closes it when the with-block exits, so
+    # using it afterwards raises EBADF.
     torrc_path = '/etc/tor/torrc'
-    with open(torrc_path, 'w') as f:
-        f.write(torrc_content)
-    os.chmod(torrc_path, 0o640)
+    torrc_fd = os.open(
+        torrc_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o640
+    )
+    meta_fd = None
+    try:
+        with os.fdopen(torrc_fd, 'w') as f:
+            f.write(torrc_content)
+            f.flush()
+            meta_fd = os.dup(f.fileno())
+        os.fchmod(meta_fd, 0o640)
+        os.fchown(meta_fd, tor_pw.pw_uid, tor_pw.pw_gid)
+    finally:
+        if meta_fd is not None:
+            os.close(meta_fd)
 
     print("Generated Tor configuration at /etc/tor/torrc")
     return True
@@ -461,7 +505,9 @@ def main():
         print(f"Error generating configuration: {e}")
         sys.exit(1)
 
-    os.chown('/etc/tor/torrc', tor_pw.pw_uid, tor_pw.pw_gid)
+    # torrc ownership is set by fchown on the write descriptor inside
+    # generate_basic_torrc(); doing it again here by PATH would reopen the
+    # symlink race that descriptor exists to close.
 
     # ── Fix DataDirectory ownership ─────────────────────────────────────────
     # Docker's tmpfs uid=/gid= mount options pre-set ownership at mount time,
@@ -513,6 +559,17 @@ def main():
         if tor_rc is not None:
             print(f"Tor exited with code {tor_rc}, shutting down.")
             _kill_proc(_vanguards_process, "Vanguards", timeout=5)
+            # A Tor that exits ON ITS OWN is a failure even when its exit code is
+            # 0, so report non-zero. Reaching this loop at all means nobody asked
+            # us to stop: an orderly `docker stop` is handled by signal_handler,
+            # which exits 0 without coming through here.
+            #
+            # Do NOT "preserve the real exit code" here. Measured behaviour:
+            # restart:unless-stopped restarts on ANY exit status (exit 0 still
+            # produced 7 restarts in 12s), so passing 0 through prevents no
+            # restart loop; and under restart:on-failure exit 0 means the
+            # container stays DOWN with a success status, leaving a dead onion
+            # that looks healthy in `docker ps`.
             sys.exit(tor_rc if tor_rc != 0 else 1)
 
         # Restart Vanguards if it crashes (up to 5 times, then give up).
