@@ -27,10 +27,34 @@ All notable changes to HiddenForge are documented here.
   invariant locally means a future change of resolver cannot silently reintroduce
   the gap.
 
+- **Two environment variables can no longer collapse into one hidden service.**
+  Service names are lowercased and underscores become hyphens, so
+  `MYAPP_TOR_SERVICE_HOSTS`, `myapp_TOR_SERVICE_HOSTS` and
+  `MY_APP_TOR_SERVICE_HOSTS` all resolve to the same directory — and environment
+  variable names are case-sensitive, so all of them can be set at once. The
+  generator emitted a `HiddenServiceDir` block per variable, and Tor rejects a
+  duplicated directory outright: `Another hidden service is already configured
+  for directory ...` → `Reading config failed`. Confirmed live against 2.0.4: the
+  container never starts, taking down every other onion with it. Colliding names
+  are now skipped with an explicit error naming both variables, matching how a
+  service with no valid ports is handled.
+
+- **A failed Vanguards addon is no longer invisible.** The supervisor restarts
+  Vanguards up to five times and then continues with Tor alone, printing a
+  warning to stdout — which the shipped compose file discards
+  (`logging: driver: none`, so no host-side record of onion activity exists).
+  The container therefore kept reporting **healthy** while bandguards and
+  rendguard, both of which exist to detect an attack in progress, were gone.
+  The healthcheck now also verifies the addon is alive, so the degradation shows
+  up in `docker ps` — the one channel that survives a disabled log driver.
+  Verified by exhausting the restart budget: 2.0.4 reports `healthy`, this
+  release reports `unhealthy` with the reason.
+
 ### Added
 - Tests covering resolver **output** rather than only user input: unusable answers
   drop the mapping, whitespace-padded ones normalise, and nothing outside the
-  allowed directive set can appear regardless of what comes back. Suite: 145 → 164.
+  allowed directive set can appear regardless of what comes back, plus service-name
+  collision coverage. Suite: 145 → 169.
 - Documentation of a long-standing operational trap: backend hostnames are resolved
   **once**, at startup, and the resulting IP is baked into the torrc. Recreating the
   backend container gives it a new IP and the onion then blackholes silently, with

@@ -12,10 +12,38 @@ Run as the tor user (the control socket lives in the 0700 DataDirectory):
 Authentication is null (ControlSocket with no cookie/password — file permissions
 are the boundary), so AUTHENTICATE takes no argument. Exit 0 = healthy, 1 = not.
 """
+import os
 import socket
 import sys
 
 CONTROL_SOCKET = "/var/lib/tor/control.sock"
+VANGUARDS_BIN = "/opt/vanguards-venv/bin/vanguards"
+
+
+def _vanguards_running():
+    """True if the Vanguards addon process is alive.
+
+    The entrypoint restarts Vanguards up to five times and then gives up,
+    printing a warning and continuing with Tor alone. That warning goes to
+    stdout — which the shipped compose file discards (`logging: driver: none`,
+    to avoid a host-side log of onion activity). The result is that losing
+    bandguards and rendguard, both of which exist to detect an attack in
+    progress, is completely invisible to the operator.
+
+    The health status is the one channel that survives a disabled log driver, so
+    report it here. Scans /proc directly rather than shelling out to pgrep,
+    which is not in the image.
+    """
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit():
+            continue
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as fh:
+                if VANGUARDS_BIN.encode() in fh.read():
+                    return True
+        except OSError:
+            continue          # process exited mid-scan, or not ours to read
+    return False
 
 
 def _query():
@@ -55,6 +83,10 @@ def main():
     # bootstrap-phase line contains PROGRESS=NN; require 100.
     if b"PROGRESS=100" not in resp:
         print("healthcheck: bootstrap not at 100%")
+        return 1
+    if not _vanguards_running():
+        print("healthcheck: Tor is serving but the Vanguards addon is NOT running "
+              "— bandguards and rendguard are gone. Restart the container.")
         return 1
     return 0
 

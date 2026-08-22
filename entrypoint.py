@@ -263,6 +263,7 @@ VanguardsLiteEnabled 1
 """
 
     found_any = False
+    seen_names = {}   # service name -> the env var that first claimed it
     hs_dirs = []
     for env_var in sorted(os.environ):          # sorted for deterministic torrc output
         if not env_var.endswith('_TOR_SERVICE_HOSTS'):
@@ -278,6 +279,27 @@ VanguardsLiteEnabled 1
         except ValueError as e:
             print(f"Skipping invalid service name from {env_var}: {e}")
             continue
+
+        # Two env vars can collapse to the same service name: names are
+        # lowercased and underscores become hyphens, so MYAPP_TOR_SERVICE_HOSTS,
+        # myapp_TOR_SERVICE_HOSTS and MY_APP_TOR_SERVICE_HOSTS all yield the same
+        # directory. Environment variable names are case-sensitive, so all of
+        # these can be set at once.
+        #
+        # Emitting the block twice does NOT merge the two services: Tor rejects
+        # the whole configuration with "Another hidden service is already
+        # configured for directory ..." and refuses to start, taking down every
+        # other onion in the container. Keep the first and skip the rest, which
+        # matches how a service with no valid ports is handled.
+        if service_name in seen_names:
+            print(
+                f"ERROR: {env_var} maps to service '{service_name}', which is "
+                f"already defined by {seen_names[service_name]} — skipping it. "
+                "Service names are lowercased and underscores become hyphens, so "
+                "names that differ only in case or in _ vs - collide. Rename one."
+            )
+            continue
+        seen_names[service_name] = env_var
 
         print(f"Configuring hidden service: {service_name}")
         print(f"Service hosts: {service_hosts}")

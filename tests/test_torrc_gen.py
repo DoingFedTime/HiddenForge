@@ -405,3 +405,53 @@ def test_valid_resolver_output_is_still_used(monkeypatch):
     """Guard against 'fixing' the above by rejecting every resolver answer."""
     torrc, _ = _resolver(monkeypatch, "10.1.2.3")
     assert "HiddenServicePort 80 10.1.2.3:8080" in torrc
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Two env vars must never collapse into the same service directory
+# ─────────────────────────────────────────────────────────────────────────────
+
+COLLIDING_PAIRS = [
+    ("MYAPP_TOR_SERVICE_HOSTS", "myapp_TOR_SERVICE_HOSTS"),   # differ only in case
+    ("MY_APP_TOR_SERVICE_HOSTS", "my-app_TOR_SERVICE_HOSTS"), # underscore vs hyphen
+    ("WEB_TOR_SERVICE_HOSTS", "web_TOR_SERVICE_HOSTS"),
+]
+
+
+@pytest.mark.parametrize("first,second", COLLIDING_PAIRS)
+def test_colliding_service_names_emit_one_block(monkeypatch, first, second):
+    """Names are lowercased and underscores hyphenated, so distinct env vars can
+    collapse to one directory. Env var names are case-sensitive, so both can be
+    set at once.
+
+    Emitting the block twice does not merge the services: Tor rejects the entire
+    config ("Another hidden service is already configured for directory ...") and
+    refuses to start, killing every other onion in the container. Verified live
+    against 2.0.4. Exactly one block must be emitted.
+    """
+    _set_services(monkeypatch, **{first: "80:127.0.0.1:8080",
+                                  second: "9000:127.0.0.1:9000"})
+    torrc, dirs = e.build_torrc_string()
+    assert torrc.count("HiddenServiceDir") == 1, "duplicate HiddenServiceDir emitted"
+    assert len(dirs) == len(set(dirs)) == 1, f"duplicate service dirs: {dirs}"
+
+
+def test_collision_keeps_the_first_and_drops_the_second(monkeypatch):
+    """Deterministic: env vars are iterated sorted, so the first wins."""
+    _set_services(monkeypatch,
+                  MYAPP_TOR_SERVICE_HOSTS="80:127.0.0.1:8080",
+                  myapp_TOR_SERVICE_HOSTS="9000:127.0.0.1:9000")
+    torrc, _ = e.build_torrc_string()
+    assert "HiddenServicePort 80 127.0.0.1:8080" in torrc
+    assert "HiddenServicePort 9000" not in torrc
+
+
+def test_distinct_names_are_unaffected(monkeypatch):
+    """Guard against 'fixing' collisions by dropping legitimate second services."""
+    _set_services(monkeypatch,
+                  WEB_TOR_SERVICE_HOSTS="80:127.0.0.1:8080",
+                  API_TOR_SERVICE_HOSTS="9000:127.0.0.1:9000")
+    torrc, dirs = e.build_torrc_string()
+    assert torrc.count("HiddenServiceDir") == 2
+    assert sorted(dirs) == ["/var/lib/tor/hidden_service/api",
+                            "/var/lib/tor/hidden_service/web"]
