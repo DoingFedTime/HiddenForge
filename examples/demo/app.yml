@@ -1,0 +1,20 @@
+# The throwaway application. It publishes no ports and joins only the
+# `tor-internal` network (defined in the generated compose.service.yml), so it
+# has no internet access and is not reachable from the host.
+services:
+  web:
+    image: nginx:alpine
+    restart: unless-stopped
+    cap_drop: [ALL]
+    cap_add: [CHOWN, SETUID, SETGID, DAC_OVERRIDE]
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m
+      - /var/cache/nginx:rw,noexec,nosuid,nodev,size=16m
+      - /var/run:rw,noexec,nosuid,nodev,size=8m
+    volumes:
+      - ./site:/usr/share/nginx/html:ro
+    networks:
+      - tor-internal

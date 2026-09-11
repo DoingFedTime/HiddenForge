@@ -40,10 +40,43 @@ docker compose exec tor cat /var/lib/tor/hidden_service/myapp/hostname
 All security flags are pre-configured in the compose file. The backend service
 is network-isolated and never exposed to the internet.
 
-**What it is:** a hardened Tor hidden service container. Tor 0.4.9.11 with the
+**What it is:** a hardened Tor hidden service container. Tor 0.4.9.12 with the
 Vanguards guard-protection addon on Alpine 3.23, every dependency pinned and
 hash-verified at build time, built for a state-level adversary threat model.
 
+
+---
+
+## Adopt it programmatically (CLI + machine contract)
+
+Editing a compose file by hand and building `mkp224o` yourself are no longer
+required. The `hiddenforge` CLI emits a merge fragment, and the vanity generator
+ships **inside the image**.
+
+```bash
+# 1. Emit a ready-to-merge fragment (does not touch your files)
+hiddenforge setup --backend web:80 --name myapp --out ./deploy
+
+# 2. Merge and start — your app needs no ports and no Tor code
+docker compose -f compose.yml -f ./deploy/compose.service.yml up -d
+
+# 3. Read the .onion (also written to ./tor-keys/myapp.onion)
+hiddenforge show --keys ./tor-keys --name myapp --json
+```
+
+Subcommands: `setup`, `info`, `version`, `show`, `status`, `doctor`, `vanity`,
+`backup`, `restore`, `rotate`, `encrypt-key`, `decrypt-key`. Every one supports
+`--json`, never prompts off a TTY, and uses stable exit codes. `vanity --bench`
+prints the honest time estimate for a prefix on your machine before you start.
+
+**→ Full integrator guide: [docs/INTEGRATION.md](docs/INTEGRATION.md)**
+
+The image is also self-describing and self-contained:
+
+```bash
+docker run --rm sambent.dev/sam/hiddenforge:latest version --json
+docker run --rm sambent.dev/sam/hiddenforge:latest info --json   # the machine contract
+```
 
 ---
 
@@ -98,7 +131,7 @@ software. HiddenForge pins every dependency at every layer.
 | Dependency | Pinned to | Why it matters |
 |---|---|---|
 | Alpine base image | `alpine:3.23.5@sha256:...` | Digest pinning locks the exact OS bytes. A tag like `latest` or even `3.23.5` can be silently updated on the registry |
-| `tor` apk | `0.4.9.11-r0` | A tampered Tor binary could de-anonymise every circuit |
+| `tor` apk | `0.4.9.12-r0` | A tampered Tor binary could de-anonymise every circuit |
 | `python3` apk | `3.12.14-r0` | The Python runtime executes the entrypoint and Vanguards |
 | `su-exec` apk | `0.3-r0` | This binary performs the privilege drop to the `tor` user |
 | `py3-pip` apk | `25.1.1-r1` | Build-only; pinned so it can't be updated to a version that silently ignores `--require-hashes` |
@@ -346,4 +379,4 @@ podman info --format '{{.Host.Security.Rootless}}'
 | Base image | Alpine 3.23.5 digest-pinned |
 | Host isolation (optional) | Rootless Podman: container escape = host user, not real root |
 
-**Tor version: 0.4.9.11**
+**Tor version: 0.4.9.12**

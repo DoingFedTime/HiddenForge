@@ -1,0 +1,115 @@
+{
+  "address": {
+    "command": "hiddenforge show --json [--name <service>]",
+    "file": "/var/lib/tor/hidden_service/<name>/hostname",
+    "format": "base32(PUBKEY || SHA3-256('.onion checksum' || PUBKEY || 0x03)[:2] || 0x03).lower() + '.onion'",
+    "key_path": "/var/lib/tor/hidden_service/<name>/hs_ed25519_secret_key",
+    "note": "The <name>.onion file is written into the mounted key volume, so a consumer can read it directly with no hiddenforge installed. `show --json` is the same value with the name and key path attached.",
+    "public_key_path": "/var/lib/tor/hidden_service/<name>/hs_ed25519_public_key",
+    "published_file": "/var/lib/tor/hidden_service/<name>.onion",
+    "single_object_with_flag": "--name <service>"
+  },
+  "contract_version": 1,
+  "description": "Hardened Tor v3 onion-service sidecar: expose any backend as a .onion hidden service.",
+  "env": {
+    "contract": "<NAME>_TOR_SERVICE_HOSTS=onion_port:backend_host:backend_port[,...]",
+    "note": "The entrypoint resolves backend hostnames to IPs once, at startup. Recreating the backend container can change its IP; restart the tor container after recreating a backend.",
+    "optional": {
+      "TOR_SANDBOX": "1 (default) | 0 - set 0 only on platforms that strip seccomp=unconfined"
+    },
+    "required": {
+      "<NAME>_TOR_SERVICE_HOSTS": "onion_port:backend_host:backend_port[,...] - one hidden service named <name> (lowercased, underscores become hyphens), several onion-side ports. This is the native full form."
+    },
+    "simple": {
+      "--backend": "in `hiddenforge setup`: host:port shorthand that emits 80:<host>:<port> under <NAME>_TOR_SERVICE_HOSTS"
+    }
+  },
+  "exit_codes": {
+    "0": "success",
+    "1": "refused or failed (see stderr / the --json error field)",
+    "130": "aborted at a prompt",
+    "2": "usage, validation, or environment error",
+    "3": "a key appeared at the output path while a search was running",
+    "4": "not ready yet (status --json: the hidden service is not published)"
+  },
+  "health": {
+    "command": "hiddenforge status --json",
+    "docker_healthcheck": [
+      "CMD",
+      "su-exec",
+      "tor",
+      "python3",
+      "/usr/local/bin/healthcheck.py"
+    ],
+    "poll": "Poll `hiddenforge status --json` and publish nothing until `ready` is true. Read the address with `hiddenforge show --json`.",
+    "ready_field": "ready",
+    "states": {
+      "hidden_service_published": "the address file exists",
+      "process_up": "running is true",
+      "ready": "running AND healthy AND published - never false-positive",
+      "tor_bootstrapped": "the control socket reports bootstrap 100%"
+    }
+  },
+  "image": "sambent.dev/sam/hiddenforge:latest",
+  "image_repository": "sambent.dev/sam/hiddenforge",
+  "key": {
+    "hostname": {
+      "format": "one line, <56-char base32>.onion",
+      "mode": "0644"
+    },
+    "public": {
+      "format": "64 bytes: 32-byte tag + 32-byte Ed25519 public key",
+      "mode": "0600",
+      "path": "/var/lib/tor/hidden_service/<name>/hs_ed25519_public_key"
+    },
+    "secret": {
+      "format": "96 bytes: 32-byte '== ed25519v1-secret: type0 ==' tag + 64-byte Ed25519 secret",
+      "mode": "0600",
+      "path": "/var/lib/tor/hidden_service/<name>/hs_ed25519_secret_key"
+    },
+    "warning": "The key IS the .onion address. Losing it loses the address permanently; there is no recovery and no reset. Encrypt backups."
+  },
+  "modes": [
+    "backend",
+    "direct"
+  ],
+  "name": "hiddenforge",
+  "networks": {
+    "external": "tor-external",
+    "internal": "tor-internal",
+    "note": "Attach the backend to tor-internal only. tor-internal is internal:true (no egress, not host-reachable). hiddenforge joins tor-internal (to reach the backend) and tor-external (for Tor)."
+  },
+  "ports": [],
+  "secrets": [],
+  "tmpfs": [
+    {
+      "path": "/tmp",
+      "size": "64m"
+    },
+    {
+      "path": "/etc/tor",
+      "size": "8m"
+    },
+    {
+      "note": "ephemeral; the hidden_service bind mount overlays it",
+      "path": "/var/lib/tor",
+      "size": "64m"
+    }
+  ],
+  "tor_version": "0.4.9.12",
+  "version": "2.1.0",
+  "volumes": [
+    {
+      "back_up": true,
+      "contains": [
+        "keys",
+        "address"
+      ],
+      "dir_mode": "0700",
+      "host_suggestion": "./tor-keys",
+      "key_mode": "0600",
+      "path": "/var/lib/tor/hidden_service",
+      "purpose": "persistent hidden-service keys and the published address(es)"
+    }
+  ]
+}

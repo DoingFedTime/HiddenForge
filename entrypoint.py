@@ -21,6 +21,60 @@ _vanguards_process = None
 VANGUARDS_BIN    = '/opt/vanguards-venv/bin/vanguards'
 CONTROL_SOCKET   = '/var/lib/tor/control.sock'
 VANGUARDS_STATE  = '/var/lib/tor/vanguards.state'
+HF_CLI           = '/usr/local/bin/hiddenforge'
+KEYS_ROOT        = '/var/lib/tor/hidden_service'
+ONION_RE         = re.compile(r'[a-z2-7]{56}\.onion')
+
+# Subcommands the image CLI (`docker run <image> <cmd>`) dispatches to an
+# operator tool instead of booting Tor. Mirrors the sibling i2pforge contract.
+# `vanity` runs the vendored generator directly; every key-facing command runs as
+# root so it can write into (and chown) a host-owned key bind mount. `show` and
+# `doctor` run as the tor user because they only read the 0700 tor-owned key
+# directories, which root cannot traverse under rootless Podman.
+SUBCOMMANDS     = {'setup', 'show', 'doctor', 'version', 'info', 'vanity',
+                   'encrypt-key', 'decrypt-key', 'backup', 'restore', 'rotate'}
+AS_TOR          = {'show', 'doctor'}
+
+
+def _safe(value):
+    """Escape control characters before echoing operator-supplied values.
+
+    Env-var values reach the start-up log verbatim. A value containing ANSI
+    escapes or bare newlines could forge log lines or move the cursor when an
+    operator re-enables the json-file log driver, so non-printable characters
+    are escaped instead of emitted.
+    """
+    return ''.join(
+        ch if ch.isprintable() else f'\\x{ord(ch):02x}'
+        for ch in str(value)
+    )
+
+
+def dispatch_subcommand(argv):
+    """Run the operator CLI for a known subcommand, else return None (boot Tor).
+
+    Returns the process exit code, or None when argv does not name a subcommand
+    and normal container start-up should proceed.
+    """
+    if not argv or argv[0] not in SUBCOMMANDS:
+        return None
+    if not os.path.exists(HF_CLI):
+        print(f"error: {HF_CLI} not found in this image", file=sys.stderr)
+        return 2
+    if argv[0] == 'vanity':
+        tool = ['/usr/local/bin/vanity.py', *argv[1:]]
+    else:
+        tool = [HF_CLI, *argv]
+        if argv[0] == 'doctor':
+            # No docker socket inside the container; check on-disk key hygiene only.
+            tool.append('--keys-only')
+    if argv[0] in AS_TOR and os.geteuid() == 0:
+        tool = ['su-exec', 'tor', *tool]
+    try:
+        os.execvp(tool[0], tool)
+    except OSError as exc:  # pragma: no cover - exec replaces the process on success
+        print(f"error: could not run {tool[0]}: {exc}", file=sys.stderr)
+        return 2
 
 
 def _chown_r(path, uid, gid):
@@ -302,7 +356,7 @@ VanguardsLiteEnabled 1
         seen_names[service_name] = env_var
 
         print(f"Configuring hidden service: {service_name}")
-        print(f"Service hosts: {service_hosts}")
+        print(f"Service hosts: {_safe(service_hosts)}")
 
         hs_dir = f"/var/lib/tor/hidden_service/{service_name}"
 
@@ -350,9 +404,9 @@ VanguardsLiteEnabled 1
                     target_port = validate_port(parts[1], host_mapping)
                     port_lines.append(f"HiddenServicePort {hs_port} 127.0.0.1:{target_port}\n")
                 else:
-                    print(f"Skipping malformed mapping: '{host_mapping}'")
+                    print(f"Skipping malformed mapping: '{_safe(host_mapping)}'")
             except ValueError as e:
-                print(f"Skipping invalid mapping '{host_mapping}': {e}")
+                print(f"Skipping invalid mapping '{_safe(host_mapping)}': {e}")
 
         if not port_lines:
             # Drop the service entirely rather than emit a portless block that
@@ -451,7 +505,47 @@ def generate_basic_torrc():
             os.close(meta_fd)
 
     print("Generated Tor configuration at /etc/tor/torrc")
-    return True
+    return hs_dirs
+
+
+def _publish_addresses(hs_dirs, keys_root=KEYS_ROOT):
+    """Publish each service's .onion address as a readable file in the key volume.
+
+    Tor writes ``hostname`` inside the 0700 service directory, which the host user
+    cannot read once the entrypoint has chowned that directory to the ``tor``
+    user.  We copy it to ``<keys_root>/<name>.onion`` (0644) so a consumer can
+    discover the address straight from the mount, with no docker exec and no
+    root, and without ever touching the secret key.
+
+    The parent directory is 0751 (traverse, not list), so the address is readable
+    only by a consumer that already knows the service name -- which is not
+    sensitive.  Writes go through a same-directory temp file and os.replace, so a
+    reader never sees a partial file and a symlink planted at the target is
+    replaced, not followed.
+    """
+    root = Path(keys_root)
+    for hs_dir in hs_dirs:
+        name = Path(hs_dir).name
+        try:
+            raw = (Path(hs_dir) / 'hostname').read_bytes()
+        except OSError:
+            continue
+        onion = raw.decode('ascii', 'ignore').strip()
+        if not ONION_RE.fullmatch(onion):
+            continue
+        target = root / f'{name}.onion'
+        try:
+            if target.read_bytes().decode('ascii', 'ignore').strip() == onion:
+                continue
+        except OSError:
+            pass
+        tmp = root / f'.{name}.onion.tmp.{os.getpid()}'
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o644)
+        with os.fdopen(fd, 'wb') as fh:
+            fh.write(onion.encode('ascii') + b'\n')
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, target)
+        print(f"Published address for {name}: {onion}")
 
 
 # ---------------------------------------------------------------------------
@@ -513,6 +607,13 @@ def start_vanguards():
 def main():
     global _tor_process, _vanguards_process
 
+    # In-image operator CLI: `docker run <image> show|vanity|doctor|...` runs the
+    # hiddenforge CLI instead of starting Tor. Unknown args fall through to a
+    # normal boot (Docker may pass a stray arg; we must not brick the container).
+    dispatched = dispatch_subcommand(sys.argv[1:])
+    if dispatched is not None:
+        sys.exit(dispatched)
+
     signal.signal(signal.SIGTERM, signal_handler)
     signal.signal(signal.SIGINT,  signal_handler)
 
@@ -521,7 +622,7 @@ def main():
     # ── Generate torrc ──────────────────────────────────────────────────────
     try:
         print("Generating Tor configuration...")
-        generate_basic_torrc()
+        hs_dirs = generate_basic_torrc()
         print("Tor configuration generated successfully.")
     except Exception as e:
         print(f"Error generating configuration: {e}")
@@ -575,6 +676,10 @@ def main():
 
     while True:
         time.sleep(1)
+
+        # Republish the .onion address file(s) as soon as Tor writes hostname.
+        # Cheap: a 56-byte read per service, skipped once already correct.
+        _publish_addresses(hs_dirs)
 
         # Tor is the primary process — exit if it dies.
         tor_rc = _tor_process.poll()

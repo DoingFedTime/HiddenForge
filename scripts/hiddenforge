@@ -1,0 +1,1488 @@
+#!/usr/bin/env python3
+"""hiddenforge - operator CLI and machine contract for the hiddenforge image.
+
+Runs ON YOUR HOST (or standalone from a download). Stdlib only, no pip install.
+
+Subcommands:
+    setup        Emit a ready-to-merge compose fragment + deploy.sh + README.txt
+    info         Print the machine contract (manifest.json)
+    version      Print name, version and contract version
+    show         Print the .onion address(es) in the key volume
+    status       Report container/Tor/hidden-service readiness
+    doctor       Verify the hardening of the running container and the keys
+    vanity       Brute-force a vanity .onion prefix (runs in the image)
+    backup       Encrypted offline backup of the key volume
+    restore      Restore a previous backup
+    rotate       DESTRUCTIVE: archive the current identity and start over
+    encrypt-key  Encrypt a service key directory at rest (age/gpg), offline
+    decrypt-key  Reverse of encrypt-key
+
+Machine contract (stable): every command that matters supports --json, prints
+exactly one JSON document on stdout, sends narration to stderr, never prompts
+off a TTY, and uses the exit codes in manifest.json.
+"""
+from __future__ import annotations
+
+import argparse
+import base64
+import hashlib
+import json
+import os
+import re
+import shutil
+import stat
+import subprocess
+import sys
+import tarfile
+import time
+from pathlib import Path
+
+# ---------------------------------------------------------------------------
+# Constants (single source of truth for the CLI; manifest.json mirrors this and
+# tests/test_manifest.py asserts they agree).
+# ---------------------------------------------------------------------------
+
+HIDDENFORGE_VERSION = "2.1.0"
+CONTRACT_VERSION = 1
+DEFAULT_IMAGE = os.environ.get("HIDDENFORGE_IMAGE", "sambent.dev/sam/hiddenforge:latest")
+DEFAULT_IMAGE_REPOSITORY = "sambent.dev/sam/hiddenforge"
+DEFAULT_CONTAINER = "tor"
+DEFAULT_NAME = "myapp"
+DEFAULT_KEYS = "./tor-keys"
+TOR_VERSION = "0.4.9.12"
+
+EXIT_OK = 0
+EXIT_FAIL = 1
+EXIT_USAGE = 2
+EXIT_RACE = 3
+EXIT_NOT_READY = 4
+EXIT_ABORTED = 130
+
+EXIT_CODES = {
+    "0": "success",
+    "1": "refused or failed (see stderr / the --json error field)",
+    "2": "usage, validation, or environment error",
+    "3": "a key appeared at the output path while a search was running",
+    "4": "not ready yet (status --json: the hidden service is not published)",
+    "130": "aborted at a prompt",
+}
+
+# Tor v3 on-disk layout.
+SECRET_FILE = "hs_ed25519_secret_key"
+PUBLIC_FILE = "hs_ed25519_public_key"
+HOSTNAME_FILE = "hostname"
+PUBLIC_TAG = b"== ed25519v1-public: type0 =="
+TAG_LEN = 32
+PUBKEY_LEN = 32
+
+NAME_RE = re.compile(r"^[a-z0-9][a-z0-9\-]{0,62}$")
+ONION_RE = re.compile(r"^[a-z2-7]{56}\.onion$")
+PREFIX_RE = re.compile(r"^[a-z2-7]{1,12}$")
+CONTAINER_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.\-]*$")
+HSDIR_RE = re.compile(r"^\s*HiddenServiceDir\s+(\S+)\s*$")
+TORRC_PATH = "/etc/tor/torrc"
+
+# Directives every generated torrc must contain. Kept here so the emitter, the
+# tests and `doctor` agree. The authoritative generator is entrypoint.py; this
+# is the CLI-side copy used only for documentation/verification messages.
+HARDENING_DIRECTIVES = (
+    "ClientOnly 1",
+    "ExitPolicy reject *:*",
+    "SafeLogging 1",
+    "AvoidDiskWrites 1",
+    "DisableDebuggerAttachment 1",
+    "FetchUselessDescriptors 0",
+    "VanguardsLiteEnabled 1",
+    "HiddenServicePoWDefensesEnabled 1",
+    "HiddenServiceEnableIntroDoSDefense 1",
+    "HiddenServiceVersion 3",
+)
+
+# The minimum cap_add the image needs under rootful Docker. Mirrors both compose
+# files and the emitted fragment.
+REQUIRED_CAP_ADD = {"CHOWN", "DAC_OVERRIDE", "FOWNER", "SETUID", "SETGID"}
+
+
+# ---------------------------------------------------------------------------
+# Small helpers
+# ---------------------------------------------------------------------------
+
+def _eprint(*a, **kw):
+    print(*a, file=sys.stderr, **kw)
+
+
+def emit_json(rc: int, **fields) -> int:
+    """Emit exactly one JSON document on stdout.
+
+    Null values are kept, not dropped: a consumer polling for an address must be
+    able to distinguish "no address yet" (onion: null) from "field absent".
+    """
+    doc = {"ok": rc == 0, "exit_code": rc}
+    doc.update(fields)
+    print(json.dumps(doc, sort_keys=True))
+    return rc
+
+
+def _narrate(args, message: str) -> None:
+    """Human narration; in --json mode goes to stderr so stdout stays one doc."""
+    if getattr(args, "json", False):
+        _eprint(message)
+    else:
+        print(message)
+
+
+def _default_keys() -> Path:
+    return Path(os.environ.get("HIDDENFORGE_KEYS_DIR", DEFAULT_KEYS))
+
+
+def validate_name(name: str) -> str:
+    if not NAME_RE.fullmatch(name):
+        raise ValueError(
+            f"invalid service name {name!r}: lowercase letters, digits and hyphens "
+            "only, must start alphanumeric, max 63 chars (it becomes a directory "
+            "under the key volume)"
+        )
+    if name in (".", "..") or "/" in name or "\x00" in name:
+        raise ValueError(f"invalid service name {name!r}")
+    return name
+
+
+def validate_container(name: str) -> str:
+    if not CONTAINER_RE.fullmatch(name):
+        raise ValueError(f"invalid container name {name!r}")
+    return name
+
+
+def derive_onion(pubkey: bytes) -> str:
+    if len(pubkey) != PUBKEY_LEN:
+        raise ValueError(f"public key must be {PUBKEY_LEN} bytes")
+    checksum = hashlib.sha3_256(b".onion checksum" + pubkey + b"\x03").digest()[:2]
+    return base64.b32encode(pubkey + checksum + b"\x03").decode("ascii").lower() + ".onion"
+
+
+def _read_nofollow(path: Path, max_bytes: int = 8192) -> bytes:
+    """Read a regular file, refusing to follow a final-component symlink."""
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise OSError(f"{path} is not a regular file")
+        if st.st_size > max_bytes:
+            raise OSError(f"{path} is unexpectedly large ({st.st_size} bytes)")
+        data = b""
+        while len(data) < st.st_size:
+            chunk = os.read(fd, st.st_size - len(data))
+            if not chunk:
+                break
+            data += chunk
+        return data
+    finally:
+        os.close(fd)
+
+
+def read_pubkey(path: Path) -> bytes:
+    data = _read_nofollow(path)
+    if len(data) == TAG_LEN + PUBKEY_LEN and data.startswith(PUBLIC_TAG):
+        return data[TAG_LEN:]
+    if len(data) == PUBKEY_LEN:
+        return data
+    raise ValueError(f"{path.name}: bad public key length {len(data)}")
+
+
+def read_onion_file(path: Path) -> str | None:
+    try:
+        text = _read_nofollow(path, 256).decode("ascii").strip()
+    except (OSError, UnicodeDecodeError):
+        return None
+    return text if ONION_RE.fullmatch(text) else None
+
+
+def address_for(keys: Path, name: str) -> dict:
+    """Resolve one service's address without ever reading the secret key."""
+    validate_name(name)
+    d = keys / name
+    published_path = keys / f"{name}.onion"
+    onion = read_onion_file(d / HOSTNAME_FILE)
+    source = "hostname"
+    if onion is None:
+        onion = read_onion_file(published_path)
+        source = "published"
+    if onion is None:
+        try:
+            onion = derive_onion(read_pubkey(d / PUBLIC_FILE))
+            source = "derived"
+        except (OSError, ValueError):
+            onion, source = None, None
+    return {
+        "name": name,
+        "onion": onion,
+        "source": source,
+        "key_path": str(d / SECRET_FILE),
+        "public_key_path": str(d / PUBLIC_FILE),
+        "address_path": str(published_path),
+        "key_dir": str(d),
+    }
+
+
+def _torrc_service_names(keys: Path) -> list[str]:
+    """Service names from the running torrc (in-container fallback).
+
+    Needed because the key volume is 0751 (traverse, not list), so neither the
+    host user nor the tor user can enumerate it. The torrc is readable and names
+    every HiddenServiceDir; on the host the file does not exist, so this returns
+    [] and normal listing/inspection applies.
+    """
+    try:
+        text = Path(TORRC_PATH).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    names: list[str] = []
+    for line in text.splitlines():
+        m = HSDIR_RE.match(line)
+        if not m:
+            continue
+        d = Path(m.group(1))
+        if str(d.parent) == str(keys) or d.parent == keys:
+            if NAME_RE.fullmatch(d.name) and d.name not in names:
+                names.append(d.name)
+    return names
+
+
+def service_names(keys: Path) -> list[str]:
+    """Service directory names, or [] if the key volume is not listable.
+
+    The entrypoint sets the key volume to 0751 (traverse, not list) so a local
+    non-owner cannot enumerate which services exist. That is deliberate, so
+    listing is best-effort: if the directory cannot be listed, fall back to the
+    torrc (in-container) and otherwise return [].
+    """
+    if not keys.is_dir():
+        return []
+    try:
+        entries = list(keys.iterdir())
+    except PermissionError:
+        return _torrc_service_names(keys)
+    names = []
+    for p in sorted(entries):
+        if p.is_symlink() or not p.is_dir():
+            continue
+        if NAME_RE.fullmatch(p.name):
+            names.append(p.name)
+    return names
+
+
+def _run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
+    return subprocess.run(cmd, capture_output=True, text=True, **kw)
+
+
+# ---------------------------------------------------------------------------
+# manifest / info / version
+# ---------------------------------------------------------------------------
+
+def build_manifest() -> dict:
+    return {
+        "name": "hiddenforge",
+        "version": HIDDENFORGE_VERSION,
+        "contract_version": CONTRACT_VERSION,
+        "description": "Hardened Tor v3 onion-service sidecar: expose any backend "
+                       "as a .onion hidden service.",
+        "image": DEFAULT_IMAGE,
+        "image_repository": DEFAULT_IMAGE_REPOSITORY,
+        "tor_version": TOR_VERSION,
+        "modes": ["backend", "direct"],
+        "env": {
+            "contract": "<NAME>_TOR_SERVICE_HOSTS=onion_port:backend_host:backend_port[,...]",
+            "required": {
+                "<NAME>_TOR_SERVICE_HOSTS":
+                    "onion_port:backend_host:backend_port[,...] - one hidden service "
+                    "named <name> (lowercased, underscores become hyphens), several "
+                    "onion-side ports. This is the native full form.",
+            },
+            "simple": {
+                "--backend": "in `hiddenforge setup`: host:port shorthand that emits "
+                             "80:<host>:<port> under <NAME>_TOR_SERVICE_HOSTS",
+            },
+            "optional": {
+                "TOR_SANDBOX": "1 (default) | 0 - set 0 only on platforms that strip "
+                               "seccomp=unconfined",
+            },
+            "note": "The entrypoint resolves backend hostnames to IPs once, at "
+                    "startup. Recreating the backend container can change its IP; "
+                    "restart the tor container after recreating a backend.",
+        },
+        "ports": [],
+        "networks": {
+            "internal": "tor-internal",
+            "external": "tor-external",
+            "note": "Attach the backend to tor-internal only. tor-internal is "
+                    "internal:true (no egress, not host-reachable). hiddenforge joins "
+                    "tor-internal (to reach the backend) and tor-external (for Tor).",
+        },
+        "volumes": [{
+            "path": "/var/lib/tor/hidden_service",
+            "purpose": "persistent hidden-service keys and the published address(es)",
+            "contains": ["keys", "address"],
+            "back_up": True,
+            "host_suggestion": "./tor-keys",
+            "dir_mode": "0700",
+            "key_mode": "0600",
+        }],
+        "tmpfs": [
+            {"path": "/tmp", "size": "64m"},
+            {"path": "/etc/tor", "size": "8m"},
+            {"path": "/var/lib/tor", "size": "64m",
+             "note": "ephemeral; the hidden_service bind mount overlays it"},
+        ],
+        "secrets": [],
+        "health": {
+            "docker_healthcheck": ["CMD", "su-exec", "tor", "python3",
+                                   "/usr/local/bin/healthcheck.py"],
+            "command": "hiddenforge status --json",
+            "ready_field": "ready",
+            "states": {
+                "process_up": "running is true",
+                "tor_bootstrapped": "the control socket reports bootstrap 100%",
+                "hidden_service_published": "the address file exists",
+                "ready": "running AND healthy AND published - never false-positive",
+            },
+            "poll": "Poll `hiddenforge status --json` and publish nothing until "
+                    "`ready` is true. Read the address with `hiddenforge show --json`.",
+        },
+        "address": {
+            "command": "hiddenforge show --json [--name <service>]",
+            "file": "/var/lib/tor/hidden_service/<name>/hostname",
+            "published_file": "/var/lib/tor/hidden_service/<name>.onion",
+            "key_path": "/var/lib/tor/hidden_service/<name>/hs_ed25519_secret_key",
+            "public_key_path": "/var/lib/tor/hidden_service/<name>/hs_ed25519_public_key",
+            "format": "base32(PUBKEY || SHA3-256('.onion checksum' || PUBKEY || 0x03)[:2] "
+                      "|| 0x03).lower() + '.onion'",
+            "single_object_with_flag": "--name <service>",
+            "note": "The <name>.onion file is written into the mounted key volume, so "
+                    "a consumer can read it directly with no hiddenforge installed. "
+                    "`show --json` is the same value with the name and key path attached.",
+        },
+        "key": {
+            "secret": {"path": "/var/lib/tor/hidden_service/<name>/hs_ed25519_secret_key",
+                       "format": "96 bytes: 32-byte '== ed25519v1-secret: type0 ==' tag "
+                                 "+ 64-byte Ed25519 secret",
+                       "mode": "0600"},
+            "public": {"path": "/var/lib/tor/hidden_service/<name>/hs_ed25519_public_key",
+                       "format": "64 bytes: 32-byte tag + 32-byte Ed25519 public key",
+                       "mode": "0600"},
+            "hostname": {"format": "one line, <56-char base32>.onion", "mode": "0644"},
+            "warning": "The key IS the .onion address. Losing it loses the address "
+                       "permanently; there is no recovery and no reset. Encrypt backups.",
+        },
+        "exit_codes": EXIT_CODES,
+    }
+
+
+def cmd_info(args) -> int:
+    manifest = build_manifest()
+    if args.json:
+        print(json.dumps(manifest, indent=2, sort_keys=True))
+        return EXIT_OK
+    print(f"{manifest['name']} {manifest['version']} (contract {manifest['contract_version']})")
+    print(f"  image:   {manifest['image']}")
+    print(f"  tor:     {manifest['tor_version']}")
+    print(f"  address: {manifest['address']['command']}")
+    print(f"  health:  {manifest['health']['command']}"
+          f" (field: {manifest['health']['ready_field']})")
+    print(f"  keys:    {manifest['volumes'][0]['path']}"
+          f" -> {manifest['volumes'][0]['host_suggestion']}")
+    return EXIT_OK
+
+
+def cmd_version(args) -> int:
+    if args.json:
+        return emit_json(EXIT_OK, name="hiddenforge", version=HIDDENFORGE_VERSION,
+                         contract_version=CONTRACT_VERSION)
+    print(f"hiddenforge {HIDDENFORGE_VERSION} (contract {CONTRACT_VERSION})")
+    return EXIT_OK
+
+
+# ---------------------------------------------------------------------------
+# show
+# ---------------------------------------------------------------------------
+
+def cmd_show(args) -> int:
+    keys = Path(args.keys)
+    try:
+        if args.name:
+            validate_name(args.name)
+            entry = address_for(keys, args.name)
+            if entry["onion"] is None:
+                return emit_json(EXIT_NOT_READY, name=args.name, onion=None,
+                                 key_path=entry["key_path"], keys=str(keys),
+                                 error="address not generated yet")
+            if args.json:
+                return emit_json(EXIT_OK, **entry)
+            print(f"{entry['name']} {entry['onion']}")
+            return EXIT_OK
+        entries = [address_for(keys, n) for n in service_names(keys)]
+    except ValueError as exc:
+        return emit_json(EXIT_USAGE, error=str(exc))
+
+    if not keys.is_dir():
+        return emit_json(EXIT_USAGE, keys=str(keys),
+                         error=f"key directory {keys} does not exist")
+    if not args.name and not entries:
+        # Not listable (0751 by design) and no explicit name: say so clearly
+        # rather than reporting an empty volume.
+        return emit_json(EXIT_USAGE, keys=str(keys),
+                         error=f"cannot enumerate services in {keys} (the key volume "
+                               "is 0751, traverse-only); pass --name <service>")
+
+    if args.json:
+        if entries and all(e["onion"] for e in entries):
+            rc = EXIT_OK
+        elif entries:
+            rc = EXIT_NOT_READY
+        else:
+            rc = EXIT_OK
+        return emit_json(rc, keys=str(keys), addresses=entries,
+                         address=entries[0]["onion"] if entries else None)
+    for e in entries:
+        print(f"{e['name']} {e['onion'] or '(not generated yet)'}")
+    if not entries:
+        _eprint(f"no services found in {keys}")
+    return EXIT_OK if all(e["onion"] for e in entries) else EXIT_NOT_READY
+
+
+# ---------------------------------------------------------------------------
+# status
+# ---------------------------------------------------------------------------
+
+def _resolve_container(container: str) -> str | None:
+    """Resolve a container reference: exact id/name, else Compose service label.
+
+    With Docker Compose the container is named `<project>-<service>-1`, so
+    `docker inspect tor` fails even though the service is running. Fall back to
+    the compose service label so `hiddenforge status` works out of the box.
+    """
+    if _run(["docker", "inspect", container]).returncode == 0:
+        return container
+    proc = _run(["docker", "ps", "--filter",
+                 f"label=com.docker.compose.service={container}",
+                 "--format", "{{.ID}}"])
+    ids = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+    return ids[0] if ids else None
+
+
+def _docker_inspect(container: str) -> tuple[dict | None, str | None]:
+    if shutil.which("docker") is None:
+        return None, "docker not found on PATH"
+    resolved = _resolve_container(container)
+    if resolved is None:
+        return None, f"container or compose service {container!r} not found"
+    proc = _run(["docker", "inspect", resolved])
+    if proc.returncode != 0:
+        return None, (proc.stderr.strip() or f"container {container!r} not found")
+    try:
+        doc = json.loads(proc.stdout)
+    except json.JSONDecodeError as exc:
+        return None, f"could not parse docker inspect output: {exc}"
+    if not doc:
+        return None, f"container {container!r} not found"
+    return doc[0], None
+
+
+def _docker_exec_json(container: str, argv: list[str]) -> dict | None:
+    """Best-effort in-container JSON query; returns None if unavailable."""
+    candidates = [
+        ["docker", "exec", container, *argv],
+        ["docker", "exec", container, "su-exec", "tor", *argv],
+    ]
+    for cmd in candidates:
+        proc = _run(cmd)
+        # Accept the doc even on a non-zero exit: healthcheck exits 1 when the
+        # service is not ready yet, but still prints the granular state we want.
+        if proc.stdout.strip():
+            try:
+                return json.loads(proc.stdout)
+            except json.JSONDecodeError:
+                continue
+    return None
+
+
+def cmd_status(args) -> int:
+    container = args.container
+    try:
+        validate_container(container)
+    except ValueError as exc:
+        return emit_json(EXIT_USAGE, error=str(exc))
+
+    info, err = _docker_inspect(container)
+    if info is None:
+        return emit_json(EXIT_USAGE, container=container, running=False,
+                         ready=False, error=err)
+
+    state = info.get("State", {}) or {}
+    running = bool(state.get("Running"))
+    health = (state.get("Health") or {}).get("Status")  # healthy|unhealthy|starting|None
+    started = state.get("StartedAt")
+    restarts = info.get("RestartCount")
+
+    # Granular readiness from the in-container healthcheck, if reachable.
+    resolved = _resolve_container(container)
+    hc = _docker_exec_json(resolved, ["python3", "/usr/local/bin/healthcheck.py", "--json"]) if resolved else None
+    if hc is not None:
+        bootstrapped = hc.get("tor_bootstrapped")
+        published = hc.get("hidden_service_published")
+        vanguards = hc.get("vanguards")
+        reason = hc.get("reason")
+    else:
+        bootstrapped = health == "healthy" if health else None
+        published = None
+        vanguards = None
+        reason = None
+
+    # Addresses: prefer the host key volume; fall back to the in-container
+    # healthcheck's list (it reads service names from the torrc, so it works even
+    # when the 0751 key volume cannot be listed from the host).
+    keys = Path(args.keys)
+    addresses = []
+    if keys.is_dir():
+        addresses = [{"name": e["name"], "onion": e["onion"]}
+                     for e in (address_for(keys, n) for n in service_names(keys))]
+    if not addresses and hc and hc.get("services"):
+        addresses = [{"name": s.get("name"), "onion": s.get("address")}
+                     for s in hc["services"]]
+    if published is None:
+        published = bool(addresses) and all(a["onion"] for a in addresses)
+
+    healthy = health == "healthy"
+    ready = bool(running and healthy and published and addresses
+                 and all(a["onion"] for a in addresses))
+
+    doc = {
+        "container": container,
+        "status": state.get("Status"),
+        "running": running,
+        "healthy": healthy if health else None,
+        "health_status": health,
+        "tor_bootstrapped": bootstrapped,
+        "vanguards": vanguards,
+        "hidden_service_published": published,
+        "addresses": addresses,
+        "address": addresses[0]["onion"] if addresses else None,
+        "started": started,
+        "restarts": restarts,
+        "ready": ready,
+        "reason": reason,
+    }
+
+    if args.json:
+        return emit_json(EXIT_OK if ready else EXIT_NOT_READY, **doc)
+
+    print(f"container:  {container}")
+    print(f"state:      {doc['status']} (running={running}, health={health}, "
+          f"restarts={restarts})")
+    print(f"bootstrapped: {bootstrapped}  published: {published}  vanguards: {vanguards}")
+    for a in addresses:
+        print(f"address:    {a['name']} {a['onion'] or '(pending)'}")
+    if reason:
+        print(f"reason:     {reason}")
+    print(f"ready:      {ready}")
+    return EXIT_OK if ready else EXIT_NOT_READY
+
+
+# ---------------------------------------------------------------------------
+# doctor
+# ---------------------------------------------------------------------------
+
+def _check(ok: bool, name: str, detail: str, severity: str = "fail") -> dict:
+    return {"check": name, "ok": bool(ok), "detail": detail, "severity": severity}
+
+
+def _caps_ok(caps) -> set[str]:
+    out = set()
+    for c in caps or []:
+        out.add(str(c).upper().removeprefix("CAP_"))
+    return out
+
+
+def _append_key_checks(checks: list[dict], keys: Path) -> None:
+    """Verify on-disk key hygiene. Reads only modes/sizes, never key bytes."""
+    if not keys.is_dir():
+        checks.append(_check(False, "key directory exists", f"{keys} not found"))
+        return
+    dirmode = stat.S_IMODE(os.lstat(keys).st_mode)
+    # 0751 (traverse, not list) is the intended mode: execute is required so the
+    # host user can read <name>.onion by known path; group/world read or write is
+    # what must never be set.
+    checks.append(_check(dirmode & 0o026 == 0,
+                         "key volume is not group/world writable or world readable",
+                         f"mode={oct(dirmode)}", severity="warn"))
+    names = service_names(keys)
+    if not names and keys.is_dir():
+        checks.append(_check(True, "service key directories checked",
+                             "key volume is not listable (0751 by design); run "
+                             "`docker exec <container> hiddenforge doctor --keys-only` "
+                             "to verify service dir/file modes", severity="warn"))
+    for name in names:
+        d = keys / name
+        try:
+            dmode = stat.S_IMODE(os.lstat(d).st_mode)
+            smode = stat.S_IMODE(os.lstat(d / SECRET_FILE).st_mode)
+        except OSError as exc:
+            checks.append(_check(False, f"key modes for {name}", f"cannot stat: {exc}"))
+            continue
+        checks.append(_check(dmode == 0o700, f"key dir {name} is 0700",
+                             f"mode={oct(dmode)}"))
+        checks.append(_check(smode == 0o600, f"secret key {name} is 0600",
+                             f"mode={oct(smode)}"))
+
+
+def cmd_doctor(args) -> int:
+    container = args.container
+    checks: list[dict] = []
+    try:
+        validate_container(container)
+    except ValueError as exc:
+        return emit_json(EXIT_USAGE, error=str(exc))
+
+    info = None
+    if not getattr(args, "keys_only", False):
+        info, err = _docker_inspect(container)
+        if info is None:
+            return emit_json(EXIT_USAGE, container=container, error=err)
+    else:
+        # In-container mode: no docker socket; verify on-disk key hygiene alone.
+        checks = []
+        _append_key_checks(checks, Path(args.keys))
+        failures = [c for c in checks if not c["ok"] and c["severity"] == "fail"]
+        ok = not failures
+        if args.json:
+            return emit_json(EXIT_OK if ok else EXIT_FAIL, keys=str(args.keys), ok=ok,
+                             failures=[c["check"] for c in failures], checks=checks)
+        for c in checks:
+            print(f"[{'ok  ' if c['ok'] else 'FAIL'}] {c['check']}: {c['detail']}")
+        return EXIT_OK if ok else EXIT_FAIL
+
+    hc = info.get("HostConfig", {}) or {}
+    secopt = [str(s) for s in (hc.get("SecurityOpt") or [])]
+
+    drop = _caps_ok(hc.get("CapDrop"))
+    add = _caps_ok(hc.get("CapAdd"))
+    checks.append(_check("ALL" in drop, "cap_drop includes ALL",
+                         f"CapDrop={sorted(drop)}"))
+    extra = add - REQUIRED_CAP_ADD
+    checks.append(_check(not extra, "cap_add stays within the allowed set",
+                         f"CapAdd={sorted(add)}"
+                         + (f"; unexpected: {sorted(extra)}" if extra else "")))
+    missing = REQUIRED_CAP_ADD - add
+    checks.append(_check(not missing, "cap_add includes every required capability",
+                         f"missing: {sorted(missing)}" if missing else "complete"))
+    checks.append(_check(
+        any("no-new-privileges" in s for s in secopt),
+        "no-new-privileges is set", f"SecurityOpt={secopt}"))
+    checks.append(_check(bool(hc.get("ReadonlyRootfs")),
+                         "root filesystem is read-only",
+                         f"ReadonlyRootfs={hc.get('ReadonlyRootfs')}"))
+    checks.append(_check(
+        any("seccomp=unconfined" in s for s in secopt),
+        "seccomp=unconfined is set (Tor Sandbox 1 needs it)",
+        f"SecurityOpt={secopt}"))
+
+    apparmor = info.get("AppArmorProfile") or next(
+        (s.split("=", 1)[1] for s in secopt if s.startswith("apparmor=")), "")
+    dockerinfo = _run(["docker", "info", "--format", "{{json .SecurityOptions}}"])
+    host_has_apparmor = dockerinfo.returncode == 0 and "apparmor" in dockerinfo.stdout.lower()
+    if host_has_apparmor:
+        checks.append(_check(bool(apparmor) and apparmor != "unconfined",
+                             "AppArmor profile is applied",
+                             f"AppArmorProfile={apparmor!r}"))
+    else:
+        checks.append(_check(True, "AppArmor profile is applied",
+                             "host has no AppArmor; skipped", severity="warn"))
+
+    pids = hc.get("PidsLimit")
+    checks.append(_check(bool(pids) and 0 < int(pids) <= 512,
+                         "process count is capped at 512 or fewer", f"PidsLimit={pids}"))
+
+    mem = hc.get("Memory") or 0
+    memswap = hc.get("MemorySwap") or 0
+    checks.append(_check(mem > 0 and memswap == mem,
+                         "swap is disabled (key material cannot be paged to disk)",
+                         f"Memory={mem} MemorySwap={memswap}"))
+
+    ports = (info.get("NetworkSettings") or {}).get("Ports") or {}
+    published = {p: b for p, b in ports.items() if b}
+    checks.append(_check(not published, "no public port bindings",
+                         f"Ports={published or '{}'}"))
+
+    logdriver = (hc.get("LogConfig") or {}).get("Type")
+    checks.append(_check(logdriver == "none", "logging driver is 'none' (no host log)",
+                         f"LogConfig.Type={logdriver!r}", severity="warn"))
+
+    # On-disk key hygiene (host side; no docker exec needed).
+    _append_key_checks(checks, Path(args.keys))
+    failures = [c for c in checks if not c["ok"] and c["severity"] == "fail"]
+    warnings = [c for c in checks if not c["ok"] and c["severity"] == "warn"]
+    ok = not failures
+
+    if args.json:
+        return emit_json(EXIT_OK if ok else EXIT_FAIL, container=container, ok=ok,
+                         failures=[c["check"] for c in failures],
+                         warnings=[c["check"] for c in warnings], checks=checks)
+    for c in checks:
+        mark = "ok  " if c["ok"] else ("WARN" if c["severity"] == "warn" else "FAIL")
+        print(f"[{mark}] {c['check']}: {c['detail']}")
+    print(f"\n{'PASS' if ok else 'FAIL'}"
+          + (f" ({len(warnings)} warning(s))" if warnings else ""))
+    return EXIT_OK if ok else EXIT_FAIL
+
+
+# ---------------------------------------------------------------------------
+# setup: compose fragment + deploy script + README + descriptor
+# ---------------------------------------------------------------------------
+
+def render_compose_fragment(name: str, env_value: str, image: str, backend: str,
+                            keys: str, container: str) -> str:
+    return f"""# hiddenforge compose fragment (contract v{HIDDENFORGE_VERSION}, contract {CONTRACT_VERSION}).
+# Merge it into YOUR compose file; do not edit it:
+#
+#   docker compose -f compose.yml -f compose.service.yml up -d
+#
+# Your backend service must join the `tor-internal` network below and must NOT
+# publish any ports. hiddenforge reaches it by service name; the resolved IP is
+# pinned into the torrc at container start.
+#
+# Address:  hiddenforge show --json --name {name}
+# Ready:    hiddenforge status --json   (poll the `ready` field)
+#
+# Threat model: state-level adversary. Do not weaken these flags.
+
+networks:
+  tor-internal:
+    internal: true
+  tor-external: {{}}
+
+services:
+  {container}:
+    image: {image}
+    restart: unless-stopped
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID]
+    security_opt:
+      - no-new-privileges:true
+      - seccomp=unconfined
+      - apparmor=docker-default
+    read_only: true
+    pids_limit: 256
+    mem_limit: 512m
+    memswap_limit: 512m
+    cpus: 1.0
+    ulimits:
+      nofile:
+        soft: 8192
+        hard: 8192
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m
+      - /etc/tor:rw,noexec,nosuid,nodev,size=8m
+      - /var/lib/tor:rw,noexec,nosuid,nodev,size=64m,uid=100,gid=101,mode=0700
+    logging:
+      driver: none
+    environment:
+      {name.upper().replace('-', '_')}_TOR_SERVICE_HOSTS: "{env_value}"
+    volumes:
+      - {keys}:/var/lib/tor/hidden_service
+    networks:
+      - tor-internal
+      - tor-external
+    healthcheck:
+      test: ["CMD", "su-exec", "tor", "python3", "/usr/local/bin/healthcheck.py"]
+      interval: 60s
+      timeout: 10s
+      start_period: 120s
+      retries: 3
+    depends_on:
+      - {backend if backend and CONTAINER_RE.fullmatch(backend) else 'your-backend'}
+"""
+
+
+def render_deploy_sh(name: str, image: str, keys_dir: str) -> str:
+    return f"""#!/usr/bin/env bash
+# hiddenforge, one-shot deploy. Generated by `hiddenforge setup`.
+set -euo pipefail
+cd "$(dirname "$0")"
+
+if ! command -v docker >/dev/null 2>&1; then
+    echo "docker not installed. Install Docker Engine first." >&2
+    exit 1
+fi
+
+echo "==> Preparing key directory {keys_dir}"
+mkdir -p "{keys_dir}"
+chmod 700 "{keys_dir}" 2>/dev/null || :
+
+echo "==> Bringing the stack up"
+docker compose up -d
+
+echo "==> Waiting for the .onion address (up to 180 seconds)"
+onion=""
+for _ in $(seq 1 180); do
+    onion=$(docker compose exec -T {name} cat \\
+        /var/lib/tor/hidden_service/{name}/hostname 2>/dev/null || true)
+    if [ -n "$onion" ]; then break; fi
+    sleep 1
+done
+
+echo
+echo "================================================================="
+if [ -n "$onion" ]; then
+    echo "Your .onion address: $onion"
+    echo "Persisted to: {keys_dir}/{name}/hostname and {keys_dir}/{name}.onion"
+else
+    echo "(address not ready yet; check: docker compose logs {name})"
+fi
+echo "BACK UP THE ENTIRE {keys_dir} DIRECTORY. It IS your address."
+echo "================================================================="
+"""
+
+
+def render_readme_txt(name: str, env_value: str, image: str, keys_dir: str,
+                      backend: str) -> str:
+    return f"""hiddenforge, your setup
+=========================
+
+Service:   {name}
+Backend:   {backend}
+Mapping:   {name.upper().replace('-', '_')}_TOR_SERVICE_HOSTS="{env_value}"
+Image:     {image}
+Keys:      {keys_dir}
+
+How to bring it up
+------------------
+1. Make sure your backend service joins the `tor-internal` network and has no
+   published ports.
+2. ./deploy.sh
+
+Where the address lives
+-----------------------
+  {keys_dir}/{name}/hostname   <- Tor's own hostname file
+  {keys_dir}/{name}.onion      <- world-readable copy written at startup
+
+Read it any time:
+  hiddenforge show --json --name {name}
+
+BACK UP THE ENTIRE {keys_dir} DIRECTORY. The key IS the .onion address.
+Losing it loses the address permanently.
+
+If you recreate the backend container, restart hiddenforge so it re-resolves
+the backend IP:  docker compose restart {name}
+"""
+
+
+def _prompt(text: str, default: str | None = None) -> str:
+    if not sys.stdin.isatty():
+        raise EOFError(text)
+    suffix = f" [{default}]" if default else ""
+    val = input(f"{text}{suffix}: ").strip()
+    if not val and default is not None:
+        return default
+    if not val:
+        raise EOFError(text)
+    return val
+
+
+def _parse_backend(backend: str) -> tuple[str, str]:
+    if ":" not in backend:
+        raise ValueError(f"--backend must be host:port, got {backend!r}")
+    host, _, port = backend.rpartition(":")
+    if not host or not port.isdigit() or not (1 <= int(port) <= 65535):
+        raise ValueError(f"--backend must be host:port with port 1-65535, got {backend!r}")
+    if not re.fullmatch(r"[a-zA-Z0-9._\-]{1,253}", host):
+        raise ValueError(f"invalid backend host {host!r}")
+    return host, port
+
+
+def cmd_setup(args) -> int:
+    try:
+        name = validate_name(args.name or DEFAULT_NAME)
+        if not args.backend and not args.services:
+            if args.non_interactive or args.json or not sys.stdin.isatty():
+                raise ValueError("--backend service:port is required (or --services)")
+            args.backend = _prompt("Backend service:port (e.g. web:80)")
+        if args.services:
+            # name:onionport:host:port,name2:...
+            mappings: dict[str, list[str]] = {}
+            for spec in args.services.split(","):
+                parts = spec.split(":")
+                if len(parts) != 4:
+                    raise ValueError(f"--services entry must be "
+                                     f"name:onionport:host:port, got {spec!r}")
+                sname = validate_name(parts[0])
+                onp, host, port = parts[1], parts[2], parts[3]
+                if not onp.isdigit() or not (1 <= int(onp) <= 65535):
+                    raise ValueError(f"bad onion port in {spec!r}")
+                if not port.isdigit() or not (1 <= int(port) <= 65535):
+                    raise ValueError(f"bad backend port in {spec!r}")
+                mappings.setdefault(sname, []).append(f"{onp}:{host}:{port}")
+            if len(mappings) != 1:
+                raise ValueError("setup writes one service; use repeated runs or the "
+                                 "native <NAME>_TOR_SERVICE_HOSTS env form for many")
+            name = next(iter(mappings))
+            env_value = ",".join(mappings[name])
+            backend_host = mappings[name][0].split(":")[1]
+        else:
+            host, port = _parse_backend(args.backend)
+            env_value = f"{args.onion_port}:{host}:{port}"
+            backend_host = host
+        image = args.image
+        keys = args.keys
+        out = Path(args.out)
+        out.mkdir(parents=True, exist_ok=True)
+
+        compose = render_compose_fragment(name, env_value, image, backend_host, keys,
+                                          args.container)
+        deploy = render_deploy_sh(name, image, keys)
+        readme = render_readme_txt(name, env_value, image, keys, backend_host)
+
+        (out / "compose.service.yml").write_text(compose, encoding="utf-8")
+        dp = out / "deploy.sh"
+        dp.write_text(deploy, encoding="utf-8")
+        os.chmod(dp, 0o755)
+        (out / "README.txt").write_text(readme, encoding="utf-8")
+
+        descriptor = {
+            "name": name,
+            "env_var": f"{name.upper().replace('-', '_')}_TOR_SERVICE_HOSTS",
+            "env_value": env_value,
+            "backend": backend_host,
+            "image": image,
+            "keys": keys,
+            "container": args.container,
+            "onion_port": args.onion_port,
+            "output_dir": str(out.resolve()),
+            "merge": f"docker compose -f compose.yml -f {out}/compose.service.yml up -d",
+            "address_command": f"hiddenforge show --json --name {name}",
+            "ready_command": "hiddenforge status --json",
+            "bare_command": f"docker compose -f compose.yml -f {out}/compose.service.yml up -d",
+            "address_file": f"{keys}/{name}.onion",
+            "key_path": f"{keys}/{name}/{SECRET_FILE}",
+            "contract_version": CONTRACT_VERSION,
+            "hiddenforge_version": HIDDENFORGE_VERSION,
+        }
+        (out / "hiddenforge.json").write_text(
+            json.dumps(descriptor, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+        if args.json:
+            doc = {"ok": True, "exit_code": EXIT_OK, **descriptor}
+            print(json.dumps(doc, indent=2, sort_keys=True))
+            return EXIT_OK
+        _narrate(args, f"Wrote {out}/compose.service.yml")
+        _narrate(args, f"Wrote {out}/deploy.sh")
+        _narrate(args, f"Wrote {out}/README.txt")
+        _narrate(args, f"Wrote {out}/hiddenforge.json")
+        _narrate(args, "")
+        _narrate(args, "Next:")
+        _narrate(args, "  1. Put your backend on the `tor-internal` network, with no ports.")
+        _narrate(args, f"  2. docker compose -f compose.yml -f {out}/compose.service.yml up -d")
+        _narrate(args, f"  3. hiddenforge show --json --name {name}")
+        return EXIT_OK
+    except (ValueError, EOFError) as exc:
+        if isinstance(exc, EOFError):
+            return emit_json(EXIT_ABORTED, error="aborted at prompt (no TTY)")
+        return emit_json(EXIT_USAGE, error=str(exc))
+
+
+# ---------------------------------------------------------------------------
+# vanity (host wrapper around the in-image generator)
+# ---------------------------------------------------------------------------
+
+def cmd_vanity(args) -> int:
+    try:
+        validate_name(args.name)
+        if not PREFIX_RE.fullmatch(args.prefix):
+            raise ValueError(
+                f"invalid prefix {args.prefix!r}: use base32 characters a-z and 2-7 "
+                "(no 0,1,8,9), max 12")
+    except ValueError as exc:
+        return emit_json(EXIT_USAGE, error=str(exc))
+
+    keys = Path(args.keys).resolve()
+    keys.mkdir(parents=True, exist_ok=True)
+    target = keys / args.name
+    if (target.exists() or target.is_symlink()) and not args.force:
+        return emit_json(EXIT_USAGE, name=args.name, key_dir=str(target),
+                         error=f"{target} already exists; pass --force to archive it "
+                               "and generate a new address")
+
+    if shutil.which("docker") is None:
+        return emit_json(EXIT_USAGE, error="docker not found on PATH; vanity runs the "
+                                           "generator inside the hiddenforge image")
+
+    inner = ["vanity", "--prefix", args.prefix,
+             "--name", args.name, "--out", "/keys", "--json"]
+    if args.threads:
+        inner += ["--threads", str(args.threads)]
+    if args.bench:
+        inner += ["--bench", "--seconds", str(args.seconds)]
+    if args.force:
+        inner += ["--force"]
+    uid, gid = os.getuid(), os.getgid()
+    inner += ["--uid", str(uid), "--gid", str(gid)]
+    cmd = ["docker", "run", "--rm", "-v", f"{keys}:/keys", args.image, *inner]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    out = proc.stdout.strip()
+    if args.json:
+        doc = None
+        for line in reversed(out.splitlines()):
+            try:
+                doc = json.loads(line)
+                break
+            except json.JSONDecodeError:
+                continue
+        if doc is None:
+            return emit_json(EXIT_FAIL, error=f"generator produced no JSON "
+                             f"(rc={proc.returncode}): {proc.stderr.strip()[-400:]}")
+        if doc.get("key_path", "").startswith("/keys/"):
+            doc["key_path"] = str(keys / doc["key_path"][len("/keys/"):])
+        if doc.get("key_dir", "").startswith("/keys/"):
+            doc["key_dir"] = str(keys / doc["key_dir"][len("/keys/"):])
+        doc["image"] = args.image
+        sys.stdout.write(json.dumps(doc, sort_keys=True) + "\n")
+        return proc.returncode
+    if out:
+        print(out)
+    if proc.stderr.strip():
+        _eprint(proc.stderr.strip())
+    return proc.returncode
+
+
+# ---------------------------------------------------------------------------
+# backup / restore / rotate / encrypt-key / decrypt-key
+# ---------------------------------------------------------------------------
+
+def _pick_tool(preferred: str | None, out_suffix: str = "") -> str | None:
+    if preferred:
+        return preferred
+    if out_suffix.endswith(".age") and shutil.which("age"):
+        return "age"
+    if out_suffix.endswith(".gpg") and shutil.which("gpg"):
+        return "gpg"
+    for tool in ("age", "gpg"):
+        if shutil.which(tool):
+            return tool
+    return None
+
+
+def _passphrase(args) -> str | None:
+    if getattr(args, "passphrase_file", None):
+        data = Path(args.passphrase_file).read_bytes()
+        if len(data) > 4096:
+            raise ValueError("passphrase file too large")
+        return data.decode("utf-8").rstrip("\r\n")
+    return None
+
+
+def _tar_keys(keys: Path, max_bytes: int = 512 * 1024 * 1024) -> bytes:
+    """Deterministic tar of the key volume (regular files only, no symlinks)."""
+    import io
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.PAX_FORMAT) as tar:
+        total = 0
+        count = 0
+        for path in sorted(keys.rglob("*")):
+            if path.is_symlink():
+                continue
+            if not path.is_file():
+                continue
+            rel = path.relative_to(keys)
+            data = path.read_bytes()
+            total += len(data)
+            count += 1
+            if total > max_bytes:
+                raise ValueError("key volume is unexpectedly large")
+            info = tarfile.TarInfo(name=str(rel))
+            info.size = len(data)
+            info.mtime = 0
+            info.mode = 0o600
+            info.uid = info.gid = 0
+            info.uname = info.gname = ""
+            tar.addfile(info, io.BytesIO(data))
+        if count == 0:
+            raise ValueError(f"no key files found under {keys}")
+    return buf.getvalue()
+
+
+def _tar_sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _encrypt_bytes(tool: str, plaintext: bytes, passphrase: str | None) -> bytes:
+    if tool == "openssl":
+        raise ValueError("openssl is refused: it provides no authentication. Use age or gpg.")
+    if tool == "age":
+        if passphrase is None:
+            raise ValueError("age needs a passphrase; pass --passphrase-file (age with "
+                             "no passphrase source prompts on a TTY only)")
+        raise ValueError("age does not accept a passphrase non-interactively; use gpg, "
+                         "or run age interactively on the host")
+    if tool == "gpg":
+        if passphrase is None:
+            raise ValueError("gpg needs --passphrase-file for non-interactive use")
+        last_err = ""
+        # Prefer an AEAD cipher (OCB). Fall back to the default (CFB + MDC) only
+        # when the local gpg is too old to know --force-aead.
+        for aead in (["--force-aead"], []):
+            pass_fd, write_fd = os.pipe()
+            try:
+                os.write(write_fd, passphrase.encode())
+                os.close(write_fd)
+                proc = subprocess.run(
+                    ["gpg", "--symmetric", "--batch", "--yes", "--cipher-algo", "AES256",
+                     *aead, "--pinentry-mode", "loopback", "--passphrase-fd", str(pass_fd)],
+                    input=plaintext, capture_output=True, pass_fds=(pass_fd,))
+            finally:
+                try:
+                    os.close(pass_fd)
+                except OSError:
+                    pass
+            if proc.returncode == 0:
+                return proc.stdout
+            last_err = proc.stderr.decode(errors="replace").strip()
+            low = last_err.lower()
+            if aead and ("invalid option" in low or "unknown option" in low):
+                continue
+            break
+        raise RuntimeError(f"gpg failed: {last_err}")
+    raise ValueError(f"unknown tool {tool!r}")
+
+
+def cmd_backup(args) -> int:
+    try:
+        keys = Path(args.keys)
+        if not keys.is_dir():
+            raise ValueError(f"key directory {keys} does not exist")
+        tool = _pick_tool(args.tool, args.out)
+        if tool is None:
+            raise ValueError("no encryption tool found: install `age` (preferred) or `gpg`")
+        if tool == "openssl":
+            raise ValueError("openssl is refused for backup creation (no authentication)")
+        passphrase = _passphrase(args)
+        if passphrase is None and not sys.stdin.isatty():
+            raise ValueError("no passphrase source: pass --passphrase-file (or a TTY)")
+        plaintext = _tar_keys(keys)
+        if not plaintext:
+            raise ValueError("key directory is empty; nothing to back up")
+        src_sha = _tar_sha256(plaintext)
+        ciphertext = _encrypt_bytes(tool, plaintext, passphrase)
+        out = Path(args.out)
+        fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(ciphertext)
+        if args.json:
+            return emit_json(EXIT_OK, out=str(out), tool=tool, bytes=len(ciphertext),
+                             sha256=src_sha)
+        print(f"Wrote {out} ({len(ciphertext):,} bytes, {tool}, mode 0600)")
+        print(f"Plaintext manifest sha256: {src_sha}")
+        return EXIT_OK
+    except (ValueError, OSError, RuntimeError) as exc:
+        return emit_json(EXIT_USAGE if isinstance(exc, ValueError) else EXIT_FAIL,
+                         error=str(exc))
+
+
+def _decrypt_bytes(tool: str, ciphertext: bytes, passphrase: str | None) -> bytes:
+    if tool in ("age", "openssl"):
+        raise ValueError(f"{tool} decryption is not wired for non-interactive use; "
+                         "use gpg or decrypt with the tool that made the backup")
+    if tool == "gpg":
+        if passphrase is None:
+            raise ValueError("gpg needs --passphrase-file")
+        pass_fd, write_fd = os.pipe()
+        try:
+            os.write(write_fd, passphrase.encode())
+            os.close(write_fd)
+            proc = subprocess.run(
+                ["gpg", "--decrypt", "--batch", "--yes", "--pinentry-mode", "loopback",
+                 "--passphrase-fd", str(pass_fd)],
+                input=ciphertext, capture_output=True, pass_fds=(pass_fd,))
+        finally:
+            try:
+                os.close(pass_fd)
+            except OSError:
+                pass
+        if proc.returncode != 0:
+            detail = proc.stderr.decode(errors="replace").strip()
+            raise RuntimeError(f"gpg decrypt failed: {detail}")
+        return proc.stdout
+    raise ValueError(f"unknown tool {tool!r}")
+
+
+def cmd_restore(args) -> int:
+    try:
+        src = Path(args.input)
+        if not src.is_file():
+            raise ValueError(f"backup {src} does not exist")
+        tool = args.tool or ("age" if src.name.endswith(".age") else
+                             "gpg" if src.name.endswith(".gpg") else None)
+        if tool is None:
+            raise ValueError("cannot infer --tool from the input name; pass --tool")
+        passphrase = _passphrase(args)
+        if passphrase is None and not sys.stdin.isatty():
+            raise ValueError("no passphrase source: pass --passphrase-file (or a TTY)")
+        plaintext = _decrypt_bytes(tool, src.read_bytes(), passphrase)
+        keys = Path(args.keys)
+        keys.mkdir(parents=True, exist_ok=True)
+        conflicts: list[str] = []
+        import io
+        with tarfile.open(fileobj=io.BytesIO(plaintext), mode="r") as tar:
+            members = tar.getmembers()
+            for m in members:
+                if m.issym() or m.islnk() or m.isdev():
+                    raise ValueError(f"refusing unsafe archive member {m.name!r}")
+                name = Path(m.name)
+                if name.is_absolute() or ".." in name.parts:
+                    raise ValueError(f"refusing unsafe archive path {m.name!r}")
+                dest = keys / name
+                if dest.exists():
+                    conflicts.append(str(name))
+            if conflicts and not args.force:
+                return emit_json(EXIT_FAIL, input=str(src), keys=str(keys),
+                                 tool=tool, conflicts=conflicts,
+                                 error="refusing to overwrite existing key files; pass --force")
+            archived = None
+            if conflicts and args.force:
+                archived = keys / f".replaced-{int(time.time())}"
+                archived.mkdir(mode=0o700, exist_ok=True)
+                for c in conflicts:
+                    os.rename(keys / c, archived / c)
+            for m in members:
+                if not m.isfile():
+                    continue
+                dest = keys / m.name
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW,
+                             m.mode or 0o600)
+                with os.fdopen(fd, "wb") as fh:
+                    fh.write(tar.extractfile(m).read())
+        if args.json:
+            return emit_json(EXIT_OK, input=str(src), keys=str(keys), tool=tool,
+                             archived=str(archived) if archived else None)
+        print(f"Restored {src} into {keys}")
+        return EXIT_OK
+    except (ValueError, OSError, RuntimeError, tarfile.TarError) as exc:
+        return emit_json(EXIT_USAGE if isinstance(exc, ValueError) else EXIT_FAIL,
+                         error=str(exc))
+
+
+def cmd_rotate(args) -> int:
+    try:
+        keys = Path(args.keys)
+        if not keys.is_dir():
+            return emit_json(EXIT_USAGE, keys=str(keys),
+                             error=f"key directory {keys} does not exist")
+        if (args.confirm or "").strip() != "ROTATE":
+            return emit_json(EXIT_USAGE, keys=str(keys),
+                             error="refusing to destroy an identity without --confirm ROTATE")
+        if not os.access(keys, os.W_OK):
+            return emit_json(EXIT_FAIL, keys=str(keys), error="key directory is not writable")
+        archived = Path(f"{keys}.rotated-{int(time.time())}")
+        n = 1
+        while archived.exists():
+            archived = Path(f"{keys}.rotated-{int(time.time())}-{n}")
+            n += 1
+        os.rename(keys, archived)
+        keys.mkdir(mode=0o700)
+        if args.json:
+            return emit_json(EXIT_OK, keys=str(keys), archived=str(archived))
+        print(f"Moved the old identity to {archived}")
+        print(f"Created a fresh empty {keys}. The next container start generates a new address.")
+        return EXIT_OK
+    except OSError as exc:
+        return emit_json(EXIT_FAIL, error=str(exc))
+
+
+def cmd_encrypt_key(args) -> int:
+    # Offline at-rest encryption of a service key directory, using the same
+    # age/gpg machinery as backup. HiddenForge does not decrypt at boot (Tor
+    # needs the plaintext key in HiddenServiceDir); see docs/INTEGRATION.md.
+    return _encrypt_or_decrypt_dir(args, encrypt=True)
+
+
+def cmd_decrypt_key(args) -> int:
+    return _encrypt_or_decrypt_dir(args, encrypt=False)
+
+
+def _encrypt_or_decrypt_dir(args, encrypt: bool) -> int:
+    try:
+        keys = Path(args.keys)
+        name = validate_name(args.name)
+        d = keys / name
+        if encrypt and not d.is_dir():
+            raise ValueError(f"{d} does not exist")
+        tool = _pick_tool(args.tool, "")
+        if tool is None:
+            raise ValueError("no encryption tool found: install `age` (preferred) or `gpg`")
+        if tool == "openssl":
+            raise ValueError("openssl is refused (no authentication)")
+        passphrase = _passphrase(args)
+        if passphrase is None and not sys.stdin.isatty():
+            raise ValueError("no passphrase source: pass --passphrase-file (or a TTY)")
+        blob = keys / f"{name}.keys.tar"
+        if encrypt:
+            if blob.exists() and not args.force:
+                raise ValueError(f"{blob} exists; pass --force to overwrite")
+            data = _tar_keys(d)
+            fd = os.open(blob, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(data)
+            if args.delete_plaintext:
+                shutil.rmtree(d)
+            if args.json:
+                return emit_json(EXIT_OK, name=name, archive=str(blob), tool=tool,
+                                 deleted_plaintext=bool(args.delete_plaintext))
+            print(f"Wrote {blob} (0600)")
+            if args.delete_plaintext:
+                print(f"Removed plaintext {d}")
+            return EXIT_OK
+        # decrypt: restore the directory from the tar blob
+        if not blob.is_file():
+            raise ValueError(f"{blob} does not exist")
+        import io
+        with tarfile.open(fileobj=io.BytesIO(blob.read_bytes()), mode="r") as tar:
+            d.mkdir(parents=True, exist_ok=True, mode=0o700)
+            for m in tar.getmembers():
+                if not m.isfile() or Path(m.name).is_absolute() or ".." in Path(m.name).parts:
+                    continue
+                dest = d / m.name
+                fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW,
+                             0o600)
+                with os.fdopen(fd, "wb") as fh:
+                    fh.write(tar.extractfile(m).read())
+        if args.json:
+            return emit_json(EXIT_OK, name=name, key_dir=str(d))
+        print(f"Restored {d}")
+        return EXIT_OK
+    except (ValueError, OSError, RuntimeError, tarfile.TarError) as exc:
+        return emit_json(EXIT_USAGE if isinstance(exc, ValueError) else EXIT_FAIL,
+                         error=str(exc))
+
+
+# ---------------------------------------------------------------------------
+# argparse
+# ---------------------------------------------------------------------------
+
+def _add_json(sp):
+    sp.add_argument("--json", action="store_true",
+                    help="emit one JSON document on stdout; narration goes to stderr")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    ap = argparse.ArgumentParser(
+        prog="hiddenforge",
+        description="Hardened Tor v3 onion-service sidecar: operator CLI and machine "
+                    "contract.",
+        epilog="Every command accepts --json where it matters. See manifest.json / "
+               "`hiddenforge info --json` for the machine contract.",
+    )
+    sub = ap.add_subparsers(required=True, dest="command")
+
+    sp = sub.add_parser("setup", help="emit a compose fragment + deploy script")
+    sp.add_argument("-o", "--out", default="./hiddenforge-deploy")
+    sp.add_argument("--name", default=DEFAULT_NAME)
+    sp.add_argument("--backend", default=None, help="backend service:port (e.g. web:80)")
+    sp.add_argument("--onion-port", type=int, default=80)
+    sp.add_argument("--services", default=None,
+                    help="name:onionport:host:port[,...] (full form)")
+    sp.add_argument("--image", default=DEFAULT_IMAGE)
+    sp.add_argument("--keys", default=DEFAULT_KEYS)
+    sp.add_argument("--container", default=DEFAULT_CONTAINER)
+    sp.add_argument("--non-interactive", action="store_true")
+    _add_json(sp)
+    sp.set_defaults(func=cmd_setup)
+
+    sp = sub.add_parser("info", help="print the machine contract (manifest.json)")
+    _add_json(sp)
+    sp.set_defaults(func=cmd_info)
+
+    sp = sub.add_parser("version", help="print name, version, contract version")
+    _add_json(sp)
+    sp.set_defaults(func=cmd_version)
+
+    sp = sub.add_parser("show", help="print the .onion address(es)")
+    sp.add_argument("--keys", default=str(_default_keys()))
+    sp.add_argument("--name", default=None)
+    _add_json(sp)
+    sp.set_defaults(func=cmd_show)
+
+    sp = sub.add_parser("status", help="container/Tor/hidden-service readiness")
+    sp.add_argument("--container", default=DEFAULT_CONTAINER)
+    sp.add_argument("--keys", default=str(_default_keys()))
+    _add_json(sp)
+    sp.set_defaults(func=cmd_status)
+
+    sp = sub.add_parser("doctor", help="verify hardening of the running container")
+    sp.add_argument("--container", default=DEFAULT_CONTAINER)
+    sp.add_argument("--keys", default=str(_default_keys()))
+    sp.add_argument("--keys-only", action="store_true",
+                    help="skip docker inspect; check on-disk key hygiene only")
+    _add_json(sp)
+    sp.set_defaults(func=cmd_doctor)
+
+    sp = sub.add_parser("vanity", help="brute-force a vanity .onion prefix")
+    sp.add_argument("--prefix", required=True)
+    sp.add_argument("--name", default=DEFAULT_NAME)
+    sp.add_argument("--keys", default=str(_default_keys()))
+    sp.add_argument("--threads", type=int, default=0)
+    sp.add_argument("--bench", action="store_true")
+    sp.add_argument("--seconds", type=int, default=5)
+    sp.add_argument("--force", action="store_true")
+    sp.add_argument("--image", default=DEFAULT_IMAGE)
+    _add_json(sp)
+    sp.set_defaults(func=cmd_vanity)
+
+    sp = sub.add_parser("backup", help="encrypted offline backup of the key volume")
+    sp.add_argument("--keys", default=str(_default_keys()))
+    sp.add_argument("--out", required=True)
+    sp.add_argument("--tool", choices=["age", "gpg", "openssl"], default=None)
+    sp.add_argument("--passphrase-file", default=None)
+    _add_json(sp)
+    sp.set_defaults(func=cmd_backup)
+
+    sp = sub.add_parser("restore", help="restore a previous backup")
+    sp.add_argument("--keys", default=str(_default_keys()))
+    sp.add_argument("--input", required=True)
+    sp.add_argument("--tool", choices=["age", "gpg", "openssl"], default=None)
+    sp.add_argument("--passphrase-file", default=None)
+    sp.add_argument("--force", action="store_true")
+    _add_json(sp)
+    sp.set_defaults(func=cmd_restore)
+
+    sp = sub.add_parser("rotate", help="DESTRUCTIVE: archive the identity and start over")
+    sp.add_argument("--keys", default=str(_default_keys()))
+    sp.add_argument("--confirm", default=None, help="must be the literal ROTATE")
+    _add_json(sp)
+    sp.set_defaults(func=cmd_rotate)
+
+    for cmd, fn, helptext in (
+        ("encrypt-key", cmd_encrypt_key, "encrypt a service key directory at rest (offline)"),
+        ("decrypt-key", cmd_decrypt_key, "restore a key directory from its archive"),
+    ):
+        sp = sub.add_parser(cmd, help=helptext)
+        sp.add_argument("--keys", default=str(_default_keys()))
+        sp.add_argument("--name", required=True)
+        sp.add_argument("--tool", choices=["age", "gpg"], default=None)
+        sp.add_argument("--passphrase-file", default=None)
+        sp.add_argument("--delete-plaintext", action="store_true")
+        sp.add_argument("--force", action="store_true")
+        _add_json(sp)
+        sp.set_defaults(func=fn)
+
+    return ap
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    try:
+        return args.func(args)
+    except KeyboardInterrupt:
+        _eprint("interrupted")
+        return EXIT_ABORTED
+
+
+if __name__ == "__main__":
+    sys.exit(main())

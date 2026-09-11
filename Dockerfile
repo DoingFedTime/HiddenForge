@@ -1,3 +1,26 @@
+# ── Stage 1: mkp224o, the vanity-address generator ──────────────────────────
+# Vendored and built here so the runtime image ships one static, self-contained
+# binary and needs no libsodium. The generator source is a deterministic
+# `git archive` of cathugger/mkp224o @ 5172c0fd, verified by SHA256 before use;
+# see vendor/README.md (licence: CC0-1.0).
+FROM alpine:3.23.5@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc2d6daf40 AS mkp224o-build
+ARG SOURCE_DATE_EPOCH=0
+COPY vendor/mkp224o-5172c0fd.tar.gz /tmp/mkp224o.tar.gz
+RUN echo "1f951ed82577436fe2c160c01f7754170010137c2182eae7e47fce65f000dc8d  /tmp/mkp224o.tar.gz" \
+      | sha256sum -c - && \
+    apk add --no-cache build-base autoconf libsodium-dev libsodium-static && \
+    mkdir -p /src && tar -xzf /tmp/mkp224o.tar.gz -C /src --strip-components=1 && \
+    cd /src && ./autogen.sh && \
+    # CFLAGS pinned to -O3: upstream configure otherwise injects -march=native,
+    # which breaks bit-for-bit reproducibility and can emit instructions that
+    # fault on a different CPU than the build host.
+    CFLAGS="-O3" ./configure LDFLAGS="-static" && \
+    make -j"$(nproc)" && \
+    strip mkp224o && \
+    cp mkp224o /mkp224o && \
+    rm -f /var/log/apk.log
+
+# ── Stage 2: the runtime image ────────────────────────────────────────────
 FROM alpine:3.23.5@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc2d6daf40
 
 # SOURCE_DATE_EPOCH: a UNIX timestamp (set by the build to the source commit
@@ -7,6 +30,8 @@ ARG SOURCE_DATE_EPOCH=0
 
 ENV HOME=/var/lib/tor
 ENV PYTHONUNBUFFERED=1
+# Default key volume used by the in-image CLI (scripts/hiddenforge).
+ENV HIDDENFORGE_KEYS_DIR=/var/lib/tor/hidden_service
 # Suppress .pyc file generation — no bytecode debris on disk
 ENV PYTHONDONTWRITEBYTECODE=1
 # Silence the pip self-update check at build time
@@ -33,7 +58,7 @@ ENV PIP_DISABLE_PIP_VERSION_CHECK=1
 # rm apk.log because it records wall-clock operation times, which would also
 # break reproducibility.
 RUN apk add --no-cache \
-    tor=0.4.9.11-r0 \
+    tor=0.4.9.12-r0 \
     python3=3.12.14-r0 \
     su-exec=0.3-r0 \
     py3-pip=25.1.1-r1 && \
@@ -88,16 +113,23 @@ RUN mkdir -p ${HOME}/.tor /etc/tor && \
     chown -R tor:tor ${HOME} && \
     chmod 700 ${HOME}
 
-# Copy entrypoint, healthcheck, and the in-container smoke test only.
-# The host unit suite (test_validators/test_torrc_gen/conftest/golden) runs on
-# the build host / in CI — it is deliberately NOT shipped in the image.
+# Copy entrypoint, healthcheck, the operator CLI, the vanity wrapper, the
+# machine contract, and the in-container smoke test only.
+# The host unit suite runs on the build host / in CI - it is deliberately NOT
+# shipped in the image.
+COPY --from=mkp224o-build /mkp224o /usr/local/bin/mkp224o
 COPY entrypoint.py /usr/local/bin/entrypoint.py
 COPY healthcheck.py /usr/local/bin/healthcheck.py
+COPY vanity.py /usr/local/bin/vanity.py
+COPY scripts/hiddenforge /usr/local/bin/hiddenforge
+COPY manifest.json /opt/hiddenforge/manifest.json
 COPY tests/test_torrc.py /usr/local/bin/tests/test_torrc.py
-# 0755 so the unprivileged tor user can read+execute the healthcheck (the build
-# context files are 0660; COPY preserves that, leaving 'other' unable to read).
-# These scripts contain no secrets.
-RUN chmod 755 /usr/local/bin/entrypoint.py /usr/local/bin/healthcheck.py
+# 0755 so the unprivileged tor user can read+execute the healthcheck and CLI (the
+# build context files are 0660; COPY preserves that, leaving 'other' unable to
+# read). These scripts contain no secrets.
+RUN chmod 755 /usr/local/bin/entrypoint.py /usr/local/bin/healthcheck.py \
+              /usr/local/bin/vanity.py /usr/local/bin/hiddenforge \
+              /usr/local/bin/mkp224o
 
 # Persist hidden service keys across container restarts
 VOLUME ["/var/lib/tor/hidden_service/"]

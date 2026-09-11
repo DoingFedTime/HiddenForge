@@ -4,6 +4,91 @@ All notable changes to HiddenForge are documented here.
 
 ---
 
+## [2.1.0] - 2026-09-11
+
+Machine-first adoption: hiddenforge can now be integrated by a program, and the
+vanity generator ships inside the image. Everything below is additive; the
+existing `docker compose up -d` human path is unchanged.
+
+### Added
+- **`hiddenforge` operator CLI** (`scripts/hiddenforge`, stdlib-only): `setup`,
+  `info`, `version`, `show`, `status`, `doctor`, `vanity`, `backup`, `restore`,
+  `rotate`, `encrypt-key`, `decrypt-key`. Every command that matters supports
+  `--json`, prints exactly one JSON document on stdout (narration on stderr),
+  never prompts off a TTY, and uses the documented exit codes
+  (`0/1/2/3/4/130`).
+- **`setup` emits a mergeable fragment** (`compose.service.yml`) plus `deploy.sh`,
+  `README.txt`, and `hiddenforge.json`, so a consumer runs
+  `docker compose -f their.yml -f compose.service.yml up -d` without editing our
+  files. `--backend service:port --name name` is the simple form; the native
+  `{NAME}_TOR_SERVICE_HOSTS` is unchanged. `--image` is configurable, so no host
+  is hard-coded.
+- **`manifest.json`** (checked in and shipped in the image): name, version,
+  contract version, image reference, env contract, ports, volumes (with
+  `contains: ["keys","address"]`), tmpfs, health states and `ready_field`, the
+  address command and file paths, key formats/modes, and exit codes.
+  `info --json` prints the same bytes; `version --json` reports
+  `contract_version`. A test asserts the file and the code cannot drift.
+- **mkp224o is vendored and built into the image** (multi-stage, statically
+  linked, SHA256-verified archive; CC0-1.0). `hiddenforge vanity --prefix p
+  --name n` runs headless, writes a Tor-native key set, refuses to overwrite
+  without `--force` (archiving instead of deleting), and never prints key
+  material. `--bench` measures throughput and prints the honest difficulty table
+  (`32^length`) for prefixes 1..8. A test proves the generated `.onion` starts
+  with the requested prefix and that the address re-derives from the public key.
+- **Programmatic address discovery**: the entrypoint publishes a world-readable
+  `<keys>/<name>.onion` as soon as Tor writes the key, so a consumer can read the
+  address from the mount with no docker exec and no hiddenforge installed.
+  `show --json --name n` returns `onion`, `key_path`, and `name`.
+- **Granular readiness**: `healthcheck.py --json` distinguishes `process_up`,
+  `tor_bootstrapped`, `hidden_service_published`, and `vanguards` (Vanguards is
+  the guard-protection addon; its loss is otherwise invisible with
+  `logging: none`). `status --json` exposes the same plus `ready`, and never
+  reports ready before the address exists.
+- **Full key lifecycle, scriptable**: `backup`/`restore` (age preferred, gpg with
+  AEAD; `openssl` refused for creation because it is unauthenticated), `rotate`
+  requiring `--confirm ROTATE`, and `encrypt-key`/`decrypt-key`. Destructive
+  operations archive rather than delete. Documented: the key IS the address and
+  loss is permanent.
+- **`doctor`** verifies the running container's hardening (caps, `cap_drop ALL`,
+  `no-new-privileges`, read-only rootfs, `seccomp=unconfined`, AppArmor,
+  `pids_limit`, swap disabled, no published ports) plus on-disk key modes, and
+  has a `--keys-only` mode for use inside the container.
+- **In-image CLI dispatch**: `docker run <image> show|vanity|doctor|...` runs the
+  operator tools instead of booting Tor, so `docker pull` is the only install
+  step.
+- **`examples/demo`**: a throwaway nginx app published as a `.onion` by adding
+  only the emitted fragment.
+
+### Changed
+- **Refreshed the `tor` apk pin `0.4.9.11-r0` to `0.4.9.12-r0`.** Alpine pruned
+  `0.4.9.11-r0` from the 3.23 index, so the image could not be built from source
+  at all (the same failure mode documented for 2.0.2 and 2.0.4).
+- The key volume remains `0751` (traverse, not list). Because that means neither
+  the host user nor the `tor` user can enumerate it, `show`/`doctor` fall back to
+  the in-container healthcheck and the torrc for service names; the CLI never
+  regresses the 2.0.4 decision to withhold the service list.
+
+### Fixed
+- `emit_json` no longer drops null fields, so a polling consumer can tell
+  `onion: null` (not generated yet) from a missing key.
+- `status`/`doctor` now resolve Docker Compose service labels, so
+  `--container tor` works when the real container is `<project>-tor-1`.
+- Operator-supplied env values are escaped before being echoed at startup, so a
+  value containing ANSI escapes or newlines cannot forge log lines.
+
+### Tests
+- Host suite 169 → 245 tests: CLI contract, manifest equality, Tor v3 address
+  derivation against a real mkp224o-generated vector, name/traversal rejection,
+  compose-fragment emission, key modes, backup/restore round-trip (including
+  fail-closed wrong passphrase).
+- Live acceptance suite (`HIDDENFORGE_E2E=1`): validates the emitted fragment with
+  `docker compose config`, publishes the demo app and asserts the address file
+  parses and matches `show --json`, reaches `status.ready`, and runs a vanity
+  search whose result matches the prefix.
+
+---
+
 ## [2.0.5] - 2026-08-22
 
 ### Security

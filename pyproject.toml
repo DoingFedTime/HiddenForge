@@ -17,11 +17,15 @@ source = ["entrypoint"]
 [tool.coverage.report]
 show_missing = true
 # Coverage floor: CI fails if the pure-surface coverage regresses below this.
-# Current is ~49.8% because half of entrypoint.py is the privileged supervision
-# loop / signal handler / Vanguards management (integration surface, exercised by
-# the container smoke tests, not the host unit run). The floor sits just under
-# current so it catches a real regression (e.g. deleting validator tests) without
-# flapping. Raise it if the tested surface grows.
+# entrypoint.py is ~49% because half of it is the privileged supervision loop /
+# signal handler / Vanguards management (integration surface, exercised by the
+# in-container smoke test and the live E2E suite, not the host unit run). The CLI
+# (scripts/hiddenforge), vanity.py and healthcheck.py have their own suites in
+# tests/test_cli.py, tests/test_vanity.py and tests/test_backup.py but are not in
+# `source` above. The floor sits just under current so it catches a real
+# regression (e.g. deleting validator tests) without flapping.
+#
+# NB: entrypoint.py's 49% figure is measured with source=["entrypoint"].
 fail_under = 48
 # The supervision loop / signal handler / Vanguards management are integration
 # surface, not unit surface — excluded from the unit coverage gate honestly
@@ -50,10 +54,17 @@ select = ["E", "F", "W", "B", "S", "UP"]
 #   S603/S607 — subprocess calls to su-exec/tor by name with FIXED, validated
 #          argument lists and shell=False. No untrusted input reaches argv;
 #          partial paths resolve against the container's controlled PATH.
-"entrypoint.py" = ["S110", "S103", "S603", "S607"]
+"entrypoint.py" = ["S110", "S103", "S603", "S606", "S607"]
+# vanity.py runs a FIXED mkp224o argv (no shell, no untrusted input); S105/S108
+# are false positives on a key *filename* constant and the manifest's tmpfs path.
+"vanity.py" = ["S105", "S603", "S606", "S607", "S108"]
+# scripts/hiddenforge invokes docker/gpg/age by name with fixed argv (S603/S607),
+# chmods the generated deploy.sh 0755 (S103), names a key file constant (S105),
+# and carries /tmp paths as manifest data (S108).
+"scripts/*" = ["S103", "S105", "S108", "S603", "S606", "S607"]
 # Tests legitimately use bare asserts (S101) and set sys.path before importing
 # the module under test (E402, in the in-container smoke test).
-"tests/*" = ["S101", "E402"]
+"tests/*" = ["S101", "E402", "S603", "S607"]
 
 [tool.mutmut]
 paths_to_mutate = ["entrypoint.py"]

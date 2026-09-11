@@ -5,4 +5,8 @@
 !entrypoint.py
 !healthcheck.py
 !requirements.txt
+!vanity.py
+!manifest.json
+!scripts/
+!vendor/
 !tests/
