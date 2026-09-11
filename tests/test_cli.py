@@ -478,6 +478,7 @@ def test_status_ready_maps_healthcheck_fields(hf, tmp_path, capsys, monkeypatch)
         "tor_bootstrapped": True, "hidden_service_published": True,
         "vanguards": True, "reason": None,
         "services": [{"name": "app", "address": VECTOR_ONION, "published": True}]})
+    monkeypatch.setattr(hf, "_docker_exec_text", lambda c, a: None)
     rc = hf.main(["status", "--container", "tor", "--keys", str(tmp_path), "--json"])
     assert rc == 0
     doc = json.loads(capsys.readouterr().out)
@@ -486,6 +487,7 @@ def test_status_ready_maps_healthcheck_fields(hf, tmp_path, capsys, monkeypatch)
     assert doc["vanguards"] is True
     assert doc["address"] == VECTOR_ONION
     assert doc["restarts"] == 2
+    assert doc["dropped_mappings"] == []
 
 
 def test_status_not_ready_exits_4(hf, tmp_path, capsys, monkeypatch):
@@ -495,9 +497,27 @@ def test_status_not_ready_exits_4(hf, tmp_path, capsys, monkeypatch):
                    "StartedAt": "2026-01-01T00:00:00Z"}, "RestartCount": 0}, None))
     monkeypatch.setattr(hf, "_resolve_container", lambda c: "cid")
     monkeypatch.setattr(hf, "_docker_exec_json", lambda c, a: None)
+    monkeypatch.setattr(hf, "_docker_exec_text", lambda c, a: None)
     rc = hf.main(["status", "--container", "tor", "--keys", str(tmp_path), "--json"])
     assert rc == hf.EXIT_NOT_READY
     assert json.loads(capsys.readouterr().out)["ready"] is False
+
+
+def test_status_surfaces_dropped_mappings(hf, tmp_path, capsys, monkeypatch):
+    """A mapping that never made it into the torrc must be visible in status."""
+    os.chmod(tmp_path, 0o700)
+    monkeypatch.setattr(hf, "_docker_inspect", lambda c: (
+        {"State": {"Running": True, "Health": {"Status": "healthy"},
+                   "StartedAt": "x"}, "RestartCount": 0}, None))
+    monkeypatch.setattr(hf, "_resolve_container", lambda c: "cid")
+    monkeypatch.setattr(hf, "_docker_exec_json", lambda c, a: None)
+    monkeypatch.setattr(hf, "_docker_exec_text", lambda c, a:
+                        "BAD_TOR_SERVICE_HOSTS: no valid port mappings; service dropped\n")
+    rc = hf.main(["status", "--container", "tor", "--keys", str(tmp_path), "--json"])
+    assert rc == hf.EXIT_NOT_READY
+    doc = json.loads(capsys.readouterr().out)
+    assert doc["dropped_mappings"] == [
+        "BAD_TOR_SERVICE_HOSTS: no valid port mappings; service dropped"]
 
 
 def test_status_uninspectable_container_exits_2(hf, tmp_path, capsys, monkeypatch):
@@ -594,6 +614,24 @@ def test_sbom_zero_packages_fails(hf, tmp_path, capsys, monkeypatch):
         cmd, 0, json.dumps({"packages": []}), ""))
     rc = hf.main(["sbom", "--out", str(tmp_path / "s.json"), "--json"])
     assert rc == hf.EXIT_FAIL
+
+
+def test_age_paths_fail_cleanly_not_silently(hf, monkeypatch):
+    """age cannot be used with a passphrase file, and needs a real TTY."""
+    with pytest.raises(ValueError, match="age does not use --passphrase-file"):
+        hf._encrypt_bytes("age", b"x", "pw")
+    monkeypatch.setattr(sys, "stdin", type("S", (), {"isatty": lambda self: False})())
+    with pytest.raises(ValueError, match="interactive TTY"):
+        hf._encrypt_bytes("age", b"x", None)
+    with pytest.raises(ValueError, match="interactive TTY"):
+        hf._decrypt_bytes("age", b"x", None)
+
+
+def test_no_tool_error_hints_host_when_in_container(hf, monkeypatch):
+    monkeypatch.setattr(hf, "_in_container", lambda: True)
+    assert "HOST" in hf._no_tool_error()
+    monkeypatch.setattr(hf, "_in_container", lambda: False)
+    assert "HOST" not in hf._no_tool_error()
 
 
 def test_exit_codes_are_documented(hf):

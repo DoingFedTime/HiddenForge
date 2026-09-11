@@ -394,6 +394,37 @@ def test_valid_resolver_output_is_still_used(monkeypatch):
     assert "HiddenServicePort 80 10.1.2.3:8080" in torrc
 
 
+def test_dropped_mappings_are_recorded(monkeypatch):
+    """Skipped/dropped services and mappings must be reported, not silent.
+
+    The entrypoint writes these reasons to /var/lib/tor/dropped-mappings, which
+    `hiddenforge status` surfaces (i2pforge parity).
+    """
+    _set_services(
+        monkeypatch,
+        BAD_TOR_SERVICE_HOSTS="99999:127.0.0.1:8080",       # no valid ports
+        GOOD_TOR_SERVICE_HOSTS="80:127.0.0.1:8080,nope",   # one malformed
+    )
+    dropped = []
+    torrc, dirs = e.build_torrc_string(dropped=dropped)
+    assert dirs == ["/var/lib/tor/hidden_service/good"]
+    assert any("BAD_TOR_SERVICE_HOSTS" in d and "no valid port" in d for d in dropped)
+    assert any("GOOD_TOR_SERVICE_HOSTS" in d and "malformed" in d for d in dropped)
+    # Nothing dropped when everything is valid.
+    monkeypatch.delenv("BAD_TOR_SERVICE_HOSTS", raising=False)
+    _set_services(monkeypatch, GOOD_TOR_SERVICE_HOSTS="80:127.0.0.1:8080")
+    clean = []
+    e.build_torrc_string(dropped=clean)
+    assert clean == []
+
+
+def test_dropped_mappings_default_is_backwards_compatible(monkeypatch):
+    """Calling build_torrc_string() with no argument must still work."""
+    _set_services(monkeypatch, SERVICE_TOR_SERVICE_HOSTS="80:127.0.0.1:8080")
+    torrc, dirs = e.build_torrc_string()
+    assert dirs == ["/var/lib/tor/hidden_service/service"]
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Two env vars must never collapse into the same service directory
 # ─────────────────────────────────────────────────────────────────────────────

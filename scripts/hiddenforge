@@ -364,6 +364,8 @@ def build_manifest() -> dict:
                                    "/usr/local/bin/healthcheck.py"],
             "command": "hiddenforge status --json",
             "ready_field": "ready",
+            "dropped_mappings_field": "dropped_mappings",
+            "dropped_mappings_file": "/var/lib/tor/dropped-mappings",
             "states": {
                 "process_up": "running is true",
                 "tor_bootstrapped": "the control socket reports bootstrap 100%",
@@ -478,6 +480,27 @@ def cmd_show(args) -> int:
 # status
 # ---------------------------------------------------------------------------
 
+def _in_container() -> bool:
+    """True when this CLI is running inside the hiddenforge image.
+
+    The image deliberately ships no crypto tooling (backup/restore/encrypt-key/
+    decrypt-key need age or gpg), so the error for a missing tool must tell an
+    in-container user to run the command on the host, where it can work, rather
+    than to 'install' something into a read-only image.
+    """
+    if os.environ.get("HIDDENFORGE_IN_CONTAINER") == "1":
+        return True
+    return os.path.exists(TORRC_PATH)
+
+
+def _no_tool_error() -> str:
+    msg = "no encryption tool found: install `age` (preferred) or `gpg`"
+    if _in_container():
+        msg += (". The hiddenforge image ships no crypto tooling on purpose; run "
+                "this command on the HOST that holds your backup, not with docker exec")
+    return msg
+
+
 def _resolve_container(container: str) -> str | None:
     """Resolve a container reference: exact id/name, else Compose service label.
 
@@ -586,6 +609,11 @@ def cmd_status(args) -> int:
     if published is None:
         published = bool(addresses) and all(a["onion"] for a in addresses)
 
+    # Skipped/dropped mappings recorded by the entrypoint (i2pforge parity).
+    dropped_raw = (_docker_exec_text(resolved, ["cat", "/var/lib/tor/dropped-mappings"])
+                   if resolved else None)
+    dropped_mappings = [ln for ln in (dropped_raw or "").splitlines() if ln.strip()]
+
     healthy = health == "healthy"
     ready = bool(running and healthy and published and addresses
                  and all(a["onion"] for a in addresses))
@@ -605,6 +633,7 @@ def cmd_status(args) -> int:
         "restarts": restarts,
         "ready": ready,
         "reason": reason,
+        "dropped_mappings": dropped_mappings,
     }
 
     if args.json:
@@ -618,6 +647,8 @@ def cmd_status(args) -> int:
         print(f"address:    {a['name']} {a['onion'] or '(pending)'}")
     if reason:
         print(f"reason:     {reason}")
+    for d in dropped_mappings:
+        print(f"dropped mapping: {d}")
     print(f"ready:      {ready}")
     return EXIT_OK if ready else EXIT_NOT_READY
 
@@ -1330,7 +1361,7 @@ def cmd_backup(args) -> int:
             raise ValueError(f"key directory {keys} does not exist")
         tool = _pick_tool(args.tool, args.out, _non_interactive(args))
         if tool is None:
-            raise ValueError("no encryption tool found: install `age` (preferred) or `gpg`")
+            raise ValueError(_no_tool_error())
         if tool == "openssl":
             raise ValueError("openssl is refused for backup creation (no authentication)")
         passphrase = _passphrase(args)
@@ -1497,7 +1528,7 @@ def _encrypt_or_decrypt_dir(args, encrypt: bool) -> int:
         d = keys / name
         tool = _pick_tool(args.tool, "", _non_interactive(args))
         if tool is None:
-            raise ValueError("no encryption tool found: install `age` (preferred) or `gpg`")
+            raise ValueError(_no_tool_error())
         if tool == "openssl":
             raise ValueError("openssl is refused (no authentication)")
         passphrase = _passphrase(args)

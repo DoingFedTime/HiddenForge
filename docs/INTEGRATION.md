@@ -127,8 +127,13 @@ hiddenforge status --container tor --keys ./tor-keys --json
 {"container":"tor","running":true,"healthy":true,"health_status":"healthy",
  "tor_bootstrapped":true,"vanguards":true,"hidden_service_published":true,
  "addresses":[{"name":"myapp","onion":"....onion"}],
- "address":"....onion","ready":true,"restarts":0,"exit_code":0}
+ "address":"....onion","ready":true,"restarts":0,"dropped_mappings":[],"exit_code":0}
 ```
+
+`dropped_mappings` lists any service or port mapping that was rejected and left
+out of the torrc (a bad port, a malformed mapping, a name collision). It is empty
+when everything was accepted. Check it after any config change: a typo that
+silently removed a service shows up here instead of disappearing.
 
 Publish nothing until **`ready` is true**. It is the AND of:
 

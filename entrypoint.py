@@ -25,6 +25,7 @@ VANGUARDS_MAX_RESTARTS = 5     # failed starts/exits in quick succession before 
 VANGUARDS_RETRY_DELAY  = 10    # seconds between (re)start attempts
 HF_CLI           = '/usr/local/bin/hiddenforge'
 KEYS_ROOT        = '/var/lib/tor/hidden_service'
+DROPPED_MAPPINGS = '/var/lib/tor/dropped-mappings'
 ONION_RE         = re.compile(r'[a-z2-7]{56}\.onion')
 
 # Subcommands the image CLI (`docker run <image> <cmd>`) dispatches to an
@@ -257,7 +258,7 @@ def resolve_to_ip(host, label):
 # Tor configuration generation
 # ---------------------------------------------------------------------------
 
-def build_torrc_string():
+def build_torrc_string(dropped=None):
     """Validate env vars and assemble the torrc text — PURE, no filesystem side effects.
 
     Returns a tuple ``(torrc_content, hs_dirs)`` where ``hs_dirs`` is the list of
@@ -267,6 +268,11 @@ def build_torrc_string():
     or write access to ``/etc/tor`` and keeps the security-critical string
     assembly isolated from privileged operations.  The bytes it produces are
     identical to what the previous monolithic generator wrote.
+
+    If ``dropped`` is a list, a human-readable reason is appended for every
+    skipped or dropped service/mapping.  The entrypoint writes those to
+    /var/lib/tor/dropped-mappings so ``hiddenforge status`` can surface a
+    misconfiguration instead of failing silently.
     """
 
     # Tor's own seccomp sandbox can be disabled via env var for environments
@@ -334,6 +340,8 @@ VanguardsLiteEnabled 1
             service_name = validate_service_name(raw_name)
         except ValueError as e:
             print(f"Skipping invalid service name from {env_var}: {e}")
+            if dropped is not None:
+                dropped.append(f"{env_var}: invalid service name: {e}")
             continue
 
         # Two env vars can collapse to the same service name: names are
@@ -354,6 +362,10 @@ VanguardsLiteEnabled 1
                 "Service names are lowercased and underscores become hyphens, so "
                 "names that differ only in case or in _ vs - collide. Rename one."
             )
+            if dropped is not None:
+                dropped.append(
+                    f"{env_var}: service name '{service_name}' collides with "
+                    f"{seen_names[service_name]}")
             continue
         seen_names[service_name] = env_var
 
@@ -392,6 +404,9 @@ VanguardsLiteEnabled 1
         port_lines = []
         for host_mapping in service_hosts.split(','):
             if ':' not in host_mapping:
+                if host_mapping.strip() and dropped is not None:
+                    dropped.append(
+                        f"{env_var}: malformed mapping '{host_mapping.strip()}'")
                 continue
             parts = host_mapping.strip().split(':')
             try:
@@ -407,8 +422,14 @@ VanguardsLiteEnabled 1
                     port_lines.append(f"HiddenServicePort {hs_port} 127.0.0.1:{target_port}\n")
                 else:
                     print(f"Skipping malformed mapping: '{_safe(host_mapping)}'")
+                    if dropped is not None:
+                        dropped.append(
+                            f"{env_var}: malformed mapping '{host_mapping.strip()}'")
             except ValueError as e:
                 print(f"Skipping invalid mapping '{_safe(host_mapping)}': {e}")
+                if dropped is not None:
+                    dropped.append(
+                        f"{env_var}: invalid mapping '{host_mapping.strip()}': {e}")
 
         if not port_lines:
             # Drop the service entirely rather than emit a portless block that
@@ -419,6 +440,9 @@ VanguardsLiteEnabled 1
                 "start a hidden service with no ports, so emitting it would "
                 "take down every other service too. Fix this mapping."
             )
+            if dropped is not None:
+                dropped.append(
+                    f"{env_var}: no valid port mappings; service dropped")
             continue
 
         torrc_content += service_block + "".join(port_lines)
@@ -459,7 +483,8 @@ def generate_basic_torrc():
         # more surprising and no more secure. Keys stay in 0700 subdirectories.
         _chmod_dir_nofollow(parent_hs, 0o751)
 
-    torrc_content, hs_dirs = build_torrc_string()
+    dropped = []
+    torrc_content, hs_dirs = build_torrc_string(dropped=dropped)
 
     tor_pw = pwd.getpwnam('tor')
     for hs_dir in hs_dirs:
@@ -507,7 +532,33 @@ def generate_basic_torrc():
             os.close(meta_fd)
 
     print("Generated Tor configuration at /etc/tor/torrc")
-    return hs_dirs
+    return hs_dirs, dropped
+
+
+def _write_dropped_mappings(reasons, tor_pw):
+    """Record skipped/dropped mappings so `hiddenforge status` can surface them.
+
+    Mirrors i2pforge's /var/lib/i2pd/dropped-mappings. Lives in the
+    DataDirectory (a tmpfs, not the key volume), owned by tor, mode 0600, and is
+    removed when there is nothing to report so a stale file cannot mislead.
+    """
+    path = Path(DROPPED_MAPPINGS)
+    if not reasons:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            print(f"Warning: could not remove {DROPPED_MAPPINGS}: {exc}")
+        return
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, 'w') as fh:
+            fh.write('\n'.join(reasons) + '\n')
+        os.chown(path, tor_pw.pw_uid, tor_pw.pw_gid, follow_symlinks=False)
+        print(f"Recorded {len(reasons)} dropped mapping(s) in {DROPPED_MAPPINGS}")
+    except OSError as exc:
+        print(f"Warning: could not write {DROPPED_MAPPINGS}: {exc}")
 
 
 def _publish_addresses(hs_dirs, keys_root=KEYS_ROOT):
@@ -631,7 +682,7 @@ def main():
     # ── Generate torrc ──────────────────────────────────────────────────────
     try:
         print("Generating Tor configuration...")
-        hs_dirs = generate_basic_torrc()
+        hs_dirs, dropped = generate_basic_torrc()
         print("Tor configuration generated successfully.")
     except Exception as e:
         print(f"Error generating configuration: {e}")
@@ -662,6 +713,10 @@ def main():
         # DataDirectory cannot redirect the root chmod/chown elsewhere.
         _chmod_dir_nofollow(data_dir, 0o700, only_if_root_owned=True)
         os.chown(data_dir, tor_pw.pw_uid, tor_pw.pw_gid, follow_symlinks=False)
+
+    # Record any skipped/dropped mappings for `hiddenforge status` (i2pforge
+    # parity: the operator can see what did not make it into the torrc).
+    _write_dropped_mappings(dropped, tor_pw)
 
     # ── Start Tor ───────────────────────────────────────────────────────────
     print("Starting Tor...")

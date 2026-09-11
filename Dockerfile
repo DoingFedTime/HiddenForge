@@ -5,12 +5,21 @@
 # see vendor/README.md (licence: CC0-1.0).
 FROM alpine:3.23.5@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc2d6daf40 AS mkp224o-build
 ARG SOURCE_DATE_EPOCH=0
+# pipefail, so a failing `sha256sum -c` in the pipeline cannot be masked.
+SHELL ["/bin/ash", "-eo", "pipefail", "-c"]
+WORKDIR /src
 COPY vendor/mkp224o-5172c0fd.tar.gz /tmp/mkp224o.tar.gz
+# DL3018: these are BUILD-ONLY dependencies and are deliberately not
+# version-pinned. Alpine prunes superseded versions from its index (which has
+# already broken this image twice for pinned runtime packages), and none of them
+# ship in the final image -- the static mkp224o binary is the only artefact that
+# does. The runtime stage's apk add IS pinned, because those packages ship.
+# hadolint ignore=DL3018
 RUN echo "1f951ed82577436fe2c160c01f7754170010137c2182eae7e47fce65f000dc8d  /tmp/mkp224o.tar.gz" \
       | sha256sum -c - && \
     apk add --no-cache build-base autoconf libsodium-dev libsodium-static && \
-    mkdir -p /src && tar -xzf /tmp/mkp224o.tar.gz -C /src --strip-components=1 && \
-    cd /src && ./autogen.sh && \
+    tar -xzf /tmp/mkp224o.tar.gz -C /src --strip-components=1 && \
+    ./autogen.sh && \
     # CFLAGS pinned to -O3: upstream configure otherwise injects -march=native,
     # which breaks bit-for-bit reproducibility and can emit instructions that
     # fault on a different CPU than the build host.
@@ -32,6 +41,9 @@ ENV HOME=/var/lib/tor
 ENV PYTHONUNBUFFERED=1
 # Default key volume used by the in-image CLI (scripts/hiddenforge).
 ENV HIDDENFORGE_KEYS_DIR=/var/lib/tor/hidden_service
+# Lets the CLI give host-specific guidance when a command needs tooling that the
+# image deliberately does not ship (age/gpg for backup/encrypt-key).
+ENV HIDDENFORGE_IN_CONTAINER=1
 # Suppress .pyc file generation — no bytecode debris on disk
 ENV PYTHONDONTWRITEBYTECODE=1
 # Silence the pip self-update check at build time

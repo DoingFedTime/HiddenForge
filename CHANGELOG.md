@@ -80,6 +80,11 @@ existing `docker compose up -d` human path is unchanged.
   SSH-FIDO2 (and ML-DSA, when `pqsign` is present) signature; `sbom` runs a
   digest-pinned `anchore/syft` and writes normalised SPDX JSON. Both support
   `--json`.
+- **`dropped_mappings` visibility** (i2pforge parity): the entrypoint records a
+  reason for every skipped or dropped service/mapping in
+  `/var/lib/tor/dropped-mappings`, and `status --json` surfaces it as
+  `dropped_mappings`. A typo that silently removed a service before is now
+  visible from one command.
 
 ### Changed
 - **Refreshed the `tor` apk pin `0.4.9.11-r0` to `0.4.9.12-r0`.** Alpine pruned
@@ -97,6 +102,10 @@ existing `docker compose up -d` human path is unchanged.
   `--container tor` works when the real container is `<project>-tor-1`.
 - Operator-supplied env values are escaped before being echoed at startup, so a
   value containing ANSI escapes or newlines cannot forge log lines.
+- **A missing crypto tool now gives host-specific guidance inside the image.**
+  `backup`/`restore`/`encrypt-key`/`decrypt-key` need `age` or `gpg`, and the
+  image deliberately ships neither; the error used to say "install" something
+  into a read-only image. It now says to run the command on the host.
 - **Vanguards is now retried when it never started.** The supervisor previously
   only restarted it after an observed exit, so a `wait_for_socket` timeout or a
   raise on the first start left the addon permanently absent (healthcheck
