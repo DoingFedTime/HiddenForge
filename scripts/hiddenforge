@@ -1308,12 +1308,15 @@ def cmd_decrypt_key(args) -> int:
 
 
 def _encrypt_or_decrypt_dir(args, encrypt: bool) -> int:
+    """Wrap one service key directory in an authenticated, passphrase-protected
+    encrypted tar (age or gpg), or restore it. Offline only: HiddenForge does not
+    decrypt at boot, because Tor needs the plaintext secret key in
+    HiddenServiceDir (the mount), so runtime at-rest encryption would be theatre.
+    """
     try:
         keys = Path(args.keys)
         name = validate_name(args.name)
         d = keys / name
-        if encrypt and not d.is_dir():
-            raise ValueError(f"{d} does not exist")
         tool = _pick_tool(args.tool, "")
         if tool is None:
             raise ValueError("no encryption tool found: install `age` (preferred) or `gpg`")
@@ -1322,39 +1325,48 @@ def _encrypt_or_decrypt_dir(args, encrypt: bool) -> int:
         passphrase = _passphrase(args)
         if passphrase is None and not sys.stdin.isatty():
             raise ValueError("no passphrase source: pass --passphrase-file (or a TTY)")
-        blob = keys / f"{name}.keys.tar"
+        ext = "gpg" if tool == "gpg" else "age"
+        blob = keys / f"{name}.keys.tar.{ext}"
+
         if encrypt:
+            if not d.is_dir():
+                raise ValueError(f"{d} does not exist")
             if blob.exists() and not args.force:
                 raise ValueError(f"{blob} exists; pass --force to overwrite")
-            data = _tar_keys(d)
+            ciphertext = _encrypt_bytes(tool, _tar_keys(d), passphrase)
             fd = os.open(blob, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
             with os.fdopen(fd, "wb") as fh:
-                fh.write(data)
+                fh.write(ciphertext)
             if args.delete_plaintext:
                 shutil.rmtree(d)
             if args.json:
                 return emit_json(EXIT_OK, name=name, archive=str(blob), tool=tool,
+                                 bytes=len(ciphertext),
                                  deleted_plaintext=bool(args.delete_plaintext))
-            print(f"Wrote {blob} (0600)")
+            print(f"Wrote {blob} ({len(ciphertext):,} bytes, {tool}, mode 0600)")
             if args.delete_plaintext:
                 print(f"Removed plaintext {d}")
             return EXIT_OK
-        # decrypt: restore the directory from the tar blob
+
+        # decrypt
         if not blob.is_file():
             raise ValueError(f"{blob} does not exist")
         import io
-        with tarfile.open(fileobj=io.BytesIO(blob.read_bytes()), mode="r") as tar:
-            d.mkdir(parents=True, exist_ok=True, mode=0o700)
+        plaintext = _decrypt_bytes(tool, blob.read_bytes(), passphrase)
+        d.mkdir(parents=True, exist_ok=True, mode=0o700)
+        with tarfile.open(fileobj=io.BytesIO(plaintext), mode="r") as tar:
             for m in tar.getmembers():
-                if not m.isfile() or Path(m.name).is_absolute() or ".." in Path(m.name).parts:
+                rel = Path(m.name)
+                if not m.isfile() or rel.is_absolute() or ".." in rel.parts:
                     continue
-                dest = d / m.name
+                dest = d / rel
+                dest.parent.mkdir(parents=True, exist_ok=True)
                 fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW,
                              0o600)
                 with os.fdopen(fd, "wb") as fh:
                     fh.write(tar.extractfile(m).read())
         if args.json:
-            return emit_json(EXIT_OK, name=name, key_dir=str(d))
+            return emit_json(EXIT_OK, name=name, key_dir=str(d), tool=tool)
         print(f"Restored {d}")
         return EXIT_OK
     except (ValueError, OSError, RuntimeError, tarfile.TarError) as exc:

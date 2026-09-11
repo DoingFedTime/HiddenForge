@@ -68,6 +68,10 @@ decision not to do (reason given).
 - [x] **D4** `backup` refuses unauthenticated tools for creation (no openssl),
   in-memory round-trip verification (i2pforge parity).
 - [x] **D5** `encrypt-key` / `decrypt-key` with a documented at-rest envelope.
+  They produce a real authenticated encrypted tar (age preferred, gpg with AEAD);
+  a test asserts the blob does **not** contain tar member names (i.e. is actually
+  encrypted). They require `age`/`gpg` on the host and fail closed without one;
+  the image ships no crypto tooling.
   - [-] **D5a** Automatic decrypt-at-boot was **not** implemented: Tor requires
     the plaintext `hs_ed25519_secret_key` in `HiddenServiceDir`, which is the
     mount, so "plaintext only in tmpfs" cannot be true without writing it back to

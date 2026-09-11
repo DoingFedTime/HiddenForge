@@ -199,6 +199,11 @@ hiddenforge rotate  --keys ./tor-keys --confirm ROTATE --json     # DESTRUCTIVE
   secret key in `HiddenServiceDir`, which is the mount, so at-rest encryption is
   an offline/manual step, not runtime.
 
+> These four commands need `age` or `gpg` on the machine that runs them. The
+> image intentionally ships no crypto tooling, so run them **on the host** (where
+> your backup lives), not with `docker exec`. If no tool is present they fail
+> closed with exit 2 and a clear `error` field.
+
 All five accept `--json` and never prompt when stdin is not a TTY.
 
 ---

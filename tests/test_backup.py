@@ -113,3 +113,41 @@ def test_backup_empty_dir_refused(hf, tmp_path, capsys):
     rc = hf.main(["backup", "--keys", str(empty), "--out", str(tmp_path / "e.gpg"),
                   "--tool", "gpg", "--passphrase-file", str(pp), "--json"])
     assert rc == hf.EXIT_USAGE
+
+
+def test_encrypt_key_really_encrypts_and_roundtrips(hf, keys, tmp_path, capsys):
+    """encrypt-key must produce an *encrypted* blob, not a plain tar.
+
+    A tar stores member filenames in cleartext; if the secret key name appears in
+    the blob the data was not encrypted.
+    """
+    pp = tmp_path / "pp"
+    pp.write_text("a strong passphrase\n")
+    rc, doc = _run(hf, capsys, ["encrypt-key", "--keys", str(keys), "--name", "app",
+                                "--tool", "gpg", "--passphrase-file", str(pp),
+                                "--delete-plaintext", "--json"])
+    assert rc == 0 and doc["ok"] is True
+    blob = Path(doc["archive"])
+    assert blob.exists() and (os.stat(blob).st_mode & 0o777) == 0o600
+    assert not (keys / "app").exists(), "--delete-plaintext must remove the plaintext"
+    raw = blob.read_bytes()
+    assert b"hs_ed25519_secret_key" not in raw, "blob is not encrypted (tar names visible)"
+
+    rc, doc = _run(hf, capsys, ["decrypt-key", "--keys", str(keys), "--name", "app",
+                                "--tool", "gpg", "--passphrase-file", str(pp), "--json"])
+    assert rc == 0 and doc["ok"] is True
+    assert (keys / "app" / "hs_ed25519_secret_key").read_bytes() == b"\x22" * 96
+
+
+def test_decrypt_key_wrong_passphrase_fails_closed(hf, keys, tmp_path, capsys):
+    good = tmp_path / "good"
+    good.write_text("right\n")
+    bad = tmp_path / "bad"
+    bad.write_text("wrong\n")
+    assert hf.main(["encrypt-key", "--keys", str(keys), "--name", "app", "--tool", "gpg",
+                    "--passphrase-file", str(good), "--delete-plaintext", "--json"]) == 0
+    capsys.readouterr()
+    rc = hf.main(["decrypt-key", "--keys", str(keys), "--name", "app", "--tool", "gpg",
+                  "--passphrase-file", str(bad), "--json"])
+    assert rc == hf.EXIT_FAIL
+    assert not (keys / "app").exists()
