@@ -295,7 +295,7 @@ def test_no_injection_via_env_var_name(monkeypatch, evil_name):
     # Even a crafted env var NAME cannot inject: the derived service name is
     # validated and a failing service is skipped wholesale.
     monkeypatch.setenv(evil_name, "80:127.0.0.1:8080")
-    torrc, dirs = e.build_torrc_string()
+    torrc, _dirs = e.build_torrc_string()
     for token, line in directive_lines(torrc):
         assert token in ALLOWED_DIRECTIVES, f"INJECTED line: {line!r}"
     assert "ORPORT" not in torrc.upper().replace("ORPORT 9001", "X") or "ORPort" not in torrc
@@ -406,7 +406,7 @@ def test_dropped_mappings_are_recorded(monkeypatch):
         GOOD_TOR_SERVICE_HOSTS="80:127.0.0.1:8080,nope",   # one malformed
     )
     dropped = []
-    torrc, dirs = e.build_torrc_string(dropped=dropped)
+    _torrc, dirs = e.build_torrc_string(dropped=dropped)
     assert dirs == ["/var/lib/tor/hidden_service/good"]
     assert any("BAD_TOR_SERVICE_HOSTS" in d and "no valid port" in d for d in dropped)
     assert any("GOOD_TOR_SERVICE_HOSTS" in d and "malformed" in d for d in dropped)
@@ -421,7 +421,7 @@ def test_dropped_mappings_are_recorded(monkeypatch):
 def test_dropped_mappings_default_is_backwards_compatible(monkeypatch):
     """Calling build_torrc_string() with no argument must still work."""
     _set_services(monkeypatch, SERVICE_TOR_SERVICE_HOSTS="80:127.0.0.1:8080")
-    torrc, dirs = e.build_torrc_string()
+    _torrc, dirs = e.build_torrc_string()
     assert dirs == ["/var/lib/tor/hidden_service/service"]
 
 

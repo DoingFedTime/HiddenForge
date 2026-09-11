@@ -394,7 +394,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         rate = benchmark(args.seconds, threads)
-    except Exception as exc:  # noqa: BLE001 - surfaced as a clean error + exit code
+    except Exception as exc:
         return _emit(2, args.json, {"error": f"benchmark failed: {exc}"},
                      f"error: benchmark failed: {exc}")
 
@@ -414,9 +414,10 @@ def main(argv: list[str] | None = None) -> int:
         out = [f"mkp224o throughput: {rate:,.0f} keys/sec ({threads} threads, "
                f"{rate / threads:,.0f} keys/sec/thread)", "",
                "prefix len   average attempts        expected time"]
-        for row in table:
-            out.append(f"{row['prefix_len']:>9}   {row['average_attempts']:>18,}   "
-                       f"{row['estimated_human']:>13}")
+        out.extend(
+            f"{row['prefix_len']:>9}   {row['average_attempts']:>18,}   "
+            f"{row['estimated_human']:>13}"
+            for row in table)
         return _emit(0, False, payload, "\n".join(out))
 
     # Honest warning for prefixes that are effectively impossible here.
@@ -433,7 +434,7 @@ def main(argv: list[str] | None = None) -> int:
     except FileExistsError as exc:
         return _emit(2, args.json, {"error": str(exc), "name": args.name},
                      f"error: {exc}")
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return _emit(1, args.json, {"error": str(exc), "name": args.name},
                      f"error: {exc}")
 

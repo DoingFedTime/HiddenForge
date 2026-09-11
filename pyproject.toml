@@ -40,8 +40,9 @@ target-version = "py312"
 line-length = 100
 
 [tool.ruff.lint]
-# E/F/W pyflakes+pycodestyle, B bugbear, S flake8-bandit subset, UP pyupgrade
-select = ["E", "F", "W", "B", "S", "UP"]
+# E/F/W pyflakes+pycodestyle, B bugbear, S flake8-bandit subset, UP pyupgrade,
+# RUF ruff-native, PLW pylint-warnings, SIM flake8-simplify, PERF perflint
+select = ["E", "F", "W", "B", "S", "UP", "RUF", "PLW", "SIM", "PERF"]
 
 [tool.ruff.lint.per-file-ignores]
 # entrypoint.py is a privileged container supervisor; these rules flag
@@ -54,7 +55,9 @@ select = ["E", "F", "W", "B", "S", "UP"]
 #   S603/S607 — subprocess calls to su-exec/tor by name with FIXED, validated
 #          argument lists and shell=False. No untrusted input reaches argv;
 #          partial paths resolve against the container's controlled PATH.
-"entrypoint.py" = ["S110", "S103", "S603", "S606", "S607"]
+#   PLW0603 — the two module-level process handles exist so signal_handler() can
+#          terminate both children; they are the one deliberate use of `global`.
+"entrypoint.py" = ["S110", "S103", "S603", "S606", "S607", "PLW0603"]
 # vanity.py runs a FIXED mkp224o argv (no shell, no untrusted input); S105/S108
 # are false positives on a key *filename* constant and the manifest's tmpfs path.
 "vanity.py" = ["S105", "S603", "S606", "S607", "S108"]
@@ -64,7 +67,7 @@ select = ["E", "F", "W", "B", "S", "UP"]
 "scripts/*" = ["S103", "S105", "S108", "S603", "S606", "S607"]
 # Tests legitimately use bare asserts (S101) and set sys.path before importing
 # the module under test (E402, in the in-container smoke test).
-"tests/*" = ["S101", "E402", "S603", "S607"]
+"tests/*" = ["S101", "E402", "S603", "S607", "PLW1510"]
 
 [tool.mutmut]
 paths_to_mutate = ["entrypoint.py"]

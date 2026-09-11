@@ -110,6 +110,14 @@ existing `docker compose up -d` human path is unchanged.
   `backup`/`restore`/`encrypt-key`/`decrypt-key` need `age` or `gpg`, and the
   image deliberately ships neither; the error used to say "install" something
   into a read-only image. It now says to run the command on the host.
+- **`ruff` was not linting the CLI at all.** `scripts/hiddenforge` has no `.py`
+  extension, and `ruff check .` silently skips it, so the largest file in the
+  project was unlinted in CI. CI now runs `ruff check . scripts/hiddenforge`, the
+  ruleset is widened (RUF/PLW/SIM/PERF as well as E/F/W/B/S/UP), and the findings
+  are fixed. `mypy` errors in the CLI (5) are fixed too.
+- `HEALTHCHECK` uses the exec form instead of shell form (hadolint DL3025), and
+  the `# nosec` comment that made bandit parse its own explanation as test names
+  is cleaned up.
 - **Vanguards is now retried when it never started.** The supervisor previously
   only restarted it after an observed exit, so a `wait_for_socket` timeout or a
   raise on the first start left the addon permanently absent (healthcheck

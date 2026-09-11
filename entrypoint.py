@@ -477,11 +477,11 @@ def generate_basic_torrc():
     # (The per-service directories below remain 0700, owned by tor.)
     parent_hs = Path('/var/lib/tor/hidden_service')
     if parent_hs.exists():
-        # nosec B103 - 0o751 is the minimum that works: Tor (uid 100) is "other"
-        # relative to this root-owned bind mount and must be able to traverse it.
-        # The alternative, chowning the operator's host directory to uid 100, is
-        # more surprising and no more secure. Keys stay in 0700 subdirectories.
-        _chmod_dir_nofollow(parent_hs, 0o751)
+        # 0o751 is the minimum that works: Tor (uid 100) is "other" relative to
+        # this root-owned bind mount and must be able to traverse it. The
+        # alternative, chowning the operator's host directory to uid 100, is more
+        # surprising and no more secure. Keys stay in 0700 subdirectories.
+        _chmod_dir_nofollow(parent_hs, 0o751)  # nosec B103
 
     dropped = []
     torrc_content, hs_dirs = build_torrc_string(dropped=dropped)
@@ -611,6 +611,7 @@ def _control_socket_ready():
         return subprocess.run(
             ['su-exec', 'tor', 'test', '-S', CONTROL_SOCKET],
             capture_output=True,
+            check=False,
         ).returncode == 0
     except Exception:
         return False
@@ -657,7 +658,7 @@ def start_vanguards():
         '--disable_vanguards',   # avoid SETCONF conflict with Sandbox 1
     ]
     print(f"Starting Vanguards: {' '.join(cmd)}")
-    return subprocess.Popen(['su-exec', 'tor'] + cmd)
+    return subprocess.Popen(['su-exec', 'tor', *cmd])
 
 
 # ---------------------------------------------------------------------------

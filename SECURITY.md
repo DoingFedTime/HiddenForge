@@ -40,3 +40,31 @@ Out of scope:
 - Vulnerabilities in Vanguards (report to the [Vanguards repo](https://github.com/mikeperry-tor/vanguards))
 - Social engineering
 - Physical attacks on the host
+
+## Accepted findings (and why)
+
+Static scanners flag two things here that are deliberate. Both are recorded so a
+future reader does not "fix" them into a regression.
+
+**The container starts as root.** `hadolint`/Trivy DS-0002 and
+`semgrep dockerfile.security.missing-user-entrypoint` both want a `USER`
+instruction. The entrypoint needs root for exactly two things at startup: it
+chowns the operator's key bind mount to the `tor` user, and it uses `su-exec` to
+drop to `tor` before Tor and Vanguards run. A non-root `USER` would make both
+impossible. The processes that face the network (Tor, Vanguards, the CLI when it
+reads keys) run as `tor`; nothing stays root. The mitigation that matters is the
+capability set and `no-new-privileges`, which `hiddenforge doctor` verifies.
+
+**`setuptools` is listed in `requirements.txt` with a CVE against it.** It is a
+build-only dependency: `stem` is built from an sdist and needs it, and it is
+listed so `--require-hashes` can verify every downloaded file. It is uninstalled
+from the venv after the build (`pip uninstall -y pip setuptools wheel`), so it is
+not in the final image. Verified:
+
+```bash
+docker run --rm --entrypoint python3 sambent.dev/sam/hiddenforge:latest -c \
+  "import setuptools"    # ModuleNotFoundError: No module named 'setuptools'
+```
+
+A finding against a package that does not ship is not a finding against the
+image, but the reason is written down rather than silently suppressed.

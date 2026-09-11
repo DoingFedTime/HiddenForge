@@ -154,6 +154,6 @@ VOLUME ["/var/lib/tor/hidden_service/"]
 # start-period is 120s: circuit-establish + descriptor publish with PoW and 6
 # intro points can exceed the previous 90s; failures during it don't count.
 HEALTHCHECK --interval=60s --timeout=10s --start-period=120s --retries=3 \
-    CMD su-exec tor python3 /usr/local/bin/healthcheck.py || exit 1
+    CMD ["su-exec", "tor", "python3", "/usr/local/bin/healthcheck.py"]
 
 ENTRYPOINT ["python3", "/usr/local/bin/entrypoint.py"]

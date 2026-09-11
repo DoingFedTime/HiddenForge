@@ -33,7 +33,7 @@ def test_service_name_accepts_valid(good):
         "Web",                     # mixed case
         "web service",             # space
         "wéb",                     # non-ASCII
-        "ｗｅｂ",                   # fullwidth homoglyph
+        "ｗｅｂ",                   # fullwidth homoglyph (intentional)  # noqa: RUF001
         "",                        # empty
         "web.app",                 # dot not allowed
         "web_app",                 # underscore not allowed (transform happens earlier)

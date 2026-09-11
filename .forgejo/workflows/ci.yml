@@ -40,7 +40,9 @@ jobs:
         run: |
           python3 -m venv /tmp/hf-lint
           /tmp/hf-lint/bin/pip install --quiet ruff==0.15.16
-          /tmp/hf-lint/bin/ruff check .
+          # scripts/hiddenforge has no .py extension, so it must be named
+          # explicitly: `ruff check .` silently skips it.
+          /tmp/hf-lint/bin/ruff check . scripts/hiddenforge
 
   unit:
     runs-on: docker

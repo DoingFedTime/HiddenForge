@@ -39,6 +39,7 @@ import sys
 import tarfile
 import time
 from pathlib import Path
+import contextlib
 
 # ---------------------------------------------------------------------------
 # Constants (single source of truth for the CLI; manifest.json mirrors this and
@@ -230,7 +231,7 @@ def address_for(keys: Path, name: str) -> dict:
     d = keys / name
     published_path = keys / f"{name}.onion"
     onion = read_onion_file(d / HOSTNAME_FILE)
-    source = "hostname"
+    source: str | None = "hostname"
     if onion is None:
         onion = read_onion_file(published_path)
         source = "published"
@@ -269,9 +270,9 @@ def _torrc_service_names(keys: Path) -> list[str]:
         if not m:
             continue
         d = Path(m.group(1))
-        if str(d.parent) == str(keys) or d.parent == keys:
-            if NAME_RE.fullmatch(d.name) and d.name not in names:
-                names.append(d.name)
+        if ((str(d.parent) == str(keys) or d.parent == keys)
+                and NAME_RE.fullmatch(d.name) and d.name not in names):
+            names.append(d.name)
     return names
 
 
@@ -307,12 +308,15 @@ def _run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
     """
     kw.setdefault("capture_output", True)
     kw.setdefault("text", True)
+    check = kw.pop("check", False)
     timeout = kw.pop("timeout", 600)
     try:
-        return subprocess.run(cmd, timeout=timeout, **kw)
+        return subprocess.run(cmd, timeout=timeout, check=check, **kw)
     except subprocess.TimeoutExpired as exc:
-        out = exc.stdout if isinstance(exc.stdout, str) else (exc.stdout or b"").decode(errors="replace")
-        err = exc.stderr if isinstance(exc.stderr, str) else (exc.stderr or b"").decode(errors="replace")
+        out = (exc.stdout if isinstance(exc.stdout, str)
+               else (exc.stdout or b"").decode(errors="replace"))
+        err = (exc.stderr if isinstance(exc.stderr, str)
+               else (exc.stderr or b"").decode(errors="replace"))
         return subprocess.CompletedProcess(cmd, 124, out, err + f" (timed out after {timeout}s)")
 
 
@@ -615,7 +619,8 @@ def cmd_status(args) -> int:
 
     # Granular readiness from the in-container healthcheck, if reachable.
     resolved = _resolve_container(container)
-    hc = _docker_exec_json(resolved, ["python3", "/usr/local/bin/healthcheck.py", "--json"]) if resolved else None
+    hc = (_docker_exec_json(resolved, ["python3", "/usr/local/bin/healthcheck.py", "--json"])
+          if resolved else None)
     if hc is not None:
         bootstrapped = hc.get("tor_bootstrapped")
         published = hc.get("hidden_service_published")
@@ -808,7 +813,7 @@ def cmd_doctor(args) -> int:
         checks.append(_check(True, "AppArmor profile is applied",
                              "host has no AppArmor; skipped", severity="warn"))
 
-    pids = hc.get("PidsLimit")
+    pids = hc.get("PidsLimit") or 0
     checks.append(_check(bool(pids) and 0 < int(pids) <= 512,
                          "process count is capped at 512 or fewer", f"PidsLimit={pids}"))
 
@@ -837,10 +842,10 @@ def cmd_doctor(args) -> int:
                              "could not read /etc/tor/torrc (container stopping?)",
                              severity="warn"))
     else:
-        missing = [d for d in HARDENING_DIRECTIVES if d not in torrc]
+        missing_directives = [d for d in HARDENING_DIRECTIVES if d not in torrc]
         checks.append(_check(
-            not missing, "generated torrc contains every hardening directive",
-            "missing: " + "; ".join(missing) if missing else "all present"))
+            not missing_directives, "generated torrc contains every hardening directive",
+            "missing: " + "; ".join(missing_directives) if missing_directives else "all present"))
 
     # On-disk key hygiene (host side; no docker exec needed).
     _append_key_checks(checks, Path(args.keys))
@@ -903,7 +908,9 @@ def render_compose_fragment(services: dict[str, list[str]], image: str, keys: st
         tor_tmpfs += ",uid=100,gid=101,mode=0700"
     compose_cmd = "podman-compose" if runtime == "podman" else "docker compose"
     example = sorted(services)[0]
-    return f"""# hiddenforge compose fragment (contract v{HIDDENFORGE_VERSION}, contract {CONTRACT_VERSION}).
+    header = (f"# hiddenforge compose fragment "
+              f"(contract v{HIDDENFORGE_VERSION}, contract {CONTRACT_VERSION}).")
+    return f"""{header}
 # Merge it into YOUR compose file; do not edit it:
 #
 #   {compose_cmd} -f compose.yml -f compose.service.yml up -d
@@ -1249,7 +1256,7 @@ def cmd_vanity(args) -> int:
     uid, gid = os.getuid(), os.getgid()
     inner += ["--uid", str(uid), "--gid", str(gid)]
     cmd = [eng, "run", "--rm", "-v", f"{keys}:/keys", args.image, *inner]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
     out = proc.stdout.strip()
     if args.json:
         doc = None
@@ -1356,7 +1363,8 @@ def _encrypt_bytes(tool: str, plaintext: bytes, passphrase: str | None) -> bytes
         if not sys.stdin.isatty():
             raise ValueError("age needs an interactive TTY to prompt for a passphrase; "
                              "pass --tool gpg for non-interactive use")
-        proc = subprocess.run(["age", "-p"], input=plaintext, stdout=subprocess.PIPE)
+        proc = subprocess.run(["age", "-p"], input=plaintext, stdout=subprocess.PIPE,
+                              check=False)
         if proc.returncode != 0:
             raise RuntimeError("age failed")
         return proc.stdout
@@ -1374,12 +1382,10 @@ def _encrypt_bytes(tool: str, plaintext: bytes, passphrase: str | None) -> bytes
                 proc = subprocess.run(
                     ["gpg", "--symmetric", "--batch", "--yes", "--cipher-algo", "AES256",
                      *aead, "--pinentry-mode", "loopback", "--passphrase-fd", str(pass_fd)],
-                    input=plaintext, capture_output=True, pass_fds=(pass_fd,))
+                    input=plaintext, capture_output=True, pass_fds=(pass_fd,), check=False)
             finally:
-                try:
+                with contextlib.suppress(OSError):
                     os.close(pass_fd)
-                except OSError:
-                    pass
             if proc.returncode == 0:
                 return proc.stdout
             last_err = proc.stderr.decode(errors="replace").strip()
@@ -1429,7 +1435,8 @@ def _decrypt_bytes(tool: str, ciphertext: bytes, passphrase: str | None) -> byte
         if not sys.stdin.isatty():
             raise ValueError("age needs an interactive TTY to prompt for a passphrase; "
                              "use gpg for non-interactive restores")
-        proc = subprocess.run(["age", "-d"], input=ciphertext, stdout=subprocess.PIPE)
+        proc = subprocess.run(["age", "-d"], input=ciphertext, stdout=subprocess.PIPE,
+                              check=False)
         if proc.returncode != 0:
             raise RuntimeError("age decrypt failed")
         return proc.stdout
@@ -1445,12 +1452,10 @@ def _decrypt_bytes(tool: str, ciphertext: bytes, passphrase: str | None) -> byte
             proc = subprocess.run(
                 ["gpg", "--decrypt", "--batch", "--yes", "--pinentry-mode", "loopback",
                  "--passphrase-fd", str(pass_fd)],
-                input=ciphertext, capture_output=True, pass_fds=(pass_fd,))
+                input=ciphertext, capture_output=True, pass_fds=(pass_fd,), check=False)
         finally:
-            try:
+            with contextlib.suppress(OSError):
                 os.close(pass_fd)
-            except OSError:
-                pass
         if proc.returncode != 0:
             detail = proc.stderr.decode(errors="replace").strip()
             raise RuntimeError(f"gpg decrypt failed: {detail}")
@@ -1509,8 +1514,11 @@ def cmd_restore(args) -> int:
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW,
                              m.mode or 0o600)
+                src_fh = tar.extractfile(m)
+                if src_fh is None:
+                    continue
                 with os.fdopen(fd, "wb") as fh:
-                    fh.write(tar.extractfile(m).read())
+                    fh.write(src_fh.read())
         if args.json:
             return emit_json(EXIT_OK, input=str(src), keys=str(keys), tool=tool,
                              archived=str(archived) if archived else None)
@@ -1621,8 +1629,11 @@ def _encrypt_or_decrypt_dir(args, encrypt: bool) -> int:
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW,
                              0o600)
+                src_fh = tar.extractfile(m)
+                if src_fh is None:
+                    continue
                 with os.fdopen(fd, "wb") as fh:
-                    fh.write(tar.extractfile(m).read())
+                    fh.write(src_fh.read())
         if args.json:
             return emit_json(EXIT_OK, name=name, key_dir=str(d), tool=tool)
         print(f"Restored {d}")
@@ -1657,7 +1668,7 @@ def _verify_ssh_signature(sigdir: Path, identity: str,
     proc = subprocess.run(
         ["ssh-keygen", "-Y", "verify", "-f", str(allowed), "-I", identity,
          "-n", "file", "-s", str(sig)],
-        input=digest_bytes, capture_output=True, timeout=60)
+        input=digest_bytes, capture_output=True, timeout=60, check=False)
     detail = (proc.stderr or proc.stdout).decode(errors="replace").strip()
     return proc.returncode == 0, detail
 
