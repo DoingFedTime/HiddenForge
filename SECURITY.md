@@ -68,3 +68,23 @@ docker run --rm --entrypoint python3 sambent.dev/sam/hiddenforge:latest -c \
 
 A finding against a package that does not ship is not a finding against the
 image, but the reason is written down rather than silently suppressed.
+
+**semgrep's `dangerous-subprocess-use`, `dangerous-os-exec` and
+`arbitrary-sleep` rules fire on this project.** All of them are structural false
+positives, and each was reviewed rather than waved away:
+
+- Every `subprocess` call uses a **fixed argv list** with `shell=False`, and no
+  value reaches it that has not already been validated or checked against a
+  fixed set. There is no string-built command anywhere.
+- `os.execvp` in `dispatch_subcommand` is how `docker run <image> show` becomes
+  the CLI instead of booting Tor. It execs a fixed in-image path with the
+  operator's arguments and no shell. It is deliberate: replacing PID 1 keeps
+  signals (`docker stop`) going straight to the CLI, which matters when a
+  `vanity` search runs for hours.
+- The `time.sleep` calls are the polling loops in `wait_for_socket` and the
+  Vanguards supervisor. They are bounded and part of the control flow, not a
+  delay primitive.
+
+These are recorded per rule so a future run does not re-litigate them, and so
+that nobody "fixes" the exec into a subprocess call and loses the signal
+behaviour.
