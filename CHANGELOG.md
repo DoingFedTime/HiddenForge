@@ -64,11 +64,12 @@ existing `docker compose up -d` human path is unchanged.
   directory, and address). `--runtime podman` emits a Podman-correct fragment
   and deploy script; `--force` is required to overwrite an existing output
   directory.
-- **All checks run locally** (no hosted CI): `ruff`, the host
-  unit tests with the coverage floor, an image build with smoke checks (CLI
-  dispatch, the in-container torrc test, vanity generation), and the live
-  acceptance suite (`HIDDENFORGE_E2E=1`). Building, scanning, SBOMs, pushing to
-  `sambent.dev`, and signing are separate local steps.
+- **CI for the Forgejo instance** (`.forgejo/workflows/ci.yml`, the Forgejo-native
+  path): lint (hadolint, ruff, `py_compile`), host unit + property tests with the
+  coverage floor, and a build job that runs the in-container torrc test, the CLI
+  contract checks, a vanity smoke test, and the live acceptance suite. It targets
+  the self-hosted runner labelled `docker` (compute is local). Publishing the image to
+  `sambent.dev` and signing it remain separate local steps.
 - **Podman parity in the CLI**: `status`, `doctor`, and `vanity` use `docker` or
   `podman` (whichever is present; override with `HIDDENFORGE_ENGINE`), and
   container lookup also understands podman-compose's service label.

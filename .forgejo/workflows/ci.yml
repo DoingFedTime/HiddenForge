@@ -1,0 +1,93 @@
+# Forgejo Actions CI for HiddenForge.
+#
+# Runs on the project's Forgejo instance (sambent.dev). Not GitHub, not Docker Hub.
+# Workflows live in .forgejo/ (the Forgejo-native path; Forgejo also reads
+# .github/workflows for compatibility).
+#
+# Jobs target the self-hosted runner labelled `docker`. Publishing the built
+# image and signing its digest are separate, deliberate local steps (signing
+# needs a hardware key), so they are not in this file.
+name: ci
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: docker
+    steps:
+      - uses: actions/checkout@v4
+      - name: hadolint Dockerfile
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: Dockerfile
+          failure-threshold: warning
+      - name: python syntax (every shipped .py plus the extensionless CLI)
+        run: |
+          python3 -m py_compile entrypoint.py healthcheck.py vanity.py
+          python3 -m py_compile scripts/hiddenforge
+      - name: ruff
+        run: |
+          python3 -m venv /tmp/hf-lint
+          /tmp/hf-lint/bin/pip install --quiet ruff==0.15.16
+          /tmp/hf-lint/bin/ruff check .
+
+  unit:
+    runs-on: docker
+    steps:
+      - uses: actions/checkout@v4
+      - name: host unit + property tests (coverage floor enforced)
+        run: |
+          python3 -m venv /tmp/hf-unit
+          /tmp/hf-unit/bin/pip install --quiet \
+            pytest==9.0.3 hypothesis==6.155.1 coverage==7.14.1 pytest-cov==7.1.0
+          /tmp/hf-unit/bin/python -m pytest -q --cov=entrypoint --cov-report=term
+      - name: manifest.json must match the code
+        run: python3 -c "import json; json.load(open('manifest.json'))"
+
+  build-and-test:
+    runs-on: docker
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: build the image locally
+        run: |
+          docker build \
+            --build-arg SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)" \
+            -t sambent.dev/sam/hiddenforge:ci .
+
+      - name: in-container torrc smoke test
+        run: docker run --rm sambent.dev/sam/hiddenforge:ci \
+               python3 /usr/local/bin/tests/test_torrc.py
+
+      - name: CLI machine contract
+        run: |
+          docker run --rm sambent.dev/sam/hiddenforge:ci version --json
+          docker run --rm sambent.dev/sam/hiddenforge:ci info --json > /dev/null
+
+      - name: vanity generator smoke (result matches the prefix)
+        run: |
+          mkdir -p /tmp/hf-keys && chmod 700 /tmp/hf-keys
+          docker run --rm -v /tmp/hf-keys:/keys sambent.dev/sam/hiddenforge:ci \
+            vanity --prefix a --name ci --out /keys --threads 2 \
+            --uid "$(id -u)" --gid "$(id -g)" --json
+          grep -q '^a' /tmp/hf-keys/ci/hostname
+
+      - name: live acceptance suite (backend + emitted fragment + real .onion)
+        env:
+          HIDDENFORGE_E2E: "1"
+          HIDDENFORGE_TEST_IMAGE: sambent.dev/sam/hiddenforge:ci
+        run: |
+          python3 -m venv /tmp/hf-e2e
+          /tmp/hf-e2e/bin/pip install --quiet pytest==9.0.3
+          /tmp/hf-e2e/bin/python -m pytest tests/test_e2e_live.py -v
