@@ -692,6 +692,13 @@ def main():
     # generate_basic_torrc(); doing it again here by PATH would reopen the
     # symlink race that descriptor exists to close.
 
+    # Record skipped/dropped mappings BEFORE /var/lib/tor is handed to the tor
+    # user. Under rootless Podman container root has no DAC_OVERRIDE, so once the
+    # directory is tor-owned 0700 it can no longer write there at all; writing it
+    # afterwards silently failed and the status feature was dead on the exact
+    # runtime the project recommends for high-risk deployments.
+    _write_dropped_mappings(dropped, tor_pw)
+
     # ── Fix DataDirectory ownership ─────────────────────────────────────────
     # Docker's tmpfs uid=/gid= mount options pre-set ownership at mount time,
     # but Podman does not support those options.  We explicitly chown the
@@ -713,10 +720,6 @@ def main():
         # DataDirectory cannot redirect the root chmod/chown elsewhere.
         _chmod_dir_nofollow(data_dir, 0o700, only_if_root_owned=True)
         os.chown(data_dir, tor_pw.pw_uid, tor_pw.pw_gid, follow_symlinks=False)
-
-    # Record any skipped/dropped mappings for `hiddenforge status` (i2pforge
-    # parity: the operator can see what did not make it into the torrc).
-    _write_dropped_mappings(dropped, tor_pw)
 
     # ── Start Tor ───────────────────────────────────────────────────────────
     print("Starting Tor...")
