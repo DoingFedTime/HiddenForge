@@ -616,6 +616,30 @@ def test_sbom_zero_packages_fails(hf, tmp_path, capsys, monkeypatch):
     assert rc == hf.EXIT_FAIL
 
 
+def test_run_times_out_instead_of_hanging(hf):
+    proc = hf._run(["sleep", "30"], timeout=1)
+    assert proc.returncode == 124
+    assert "timed out" in proc.stderr
+
+
+def test_write_text_nofollow_refuses_symlink_target(hf, tmp_path):
+    """A symlink planted at an output path must not have its target truncated."""
+    target = tmp_path / "target"
+    target.write_text("original")
+    link = tmp_path / "link"
+    link.symlink_to(target)
+    with pytest.raises(OSError):
+        hf._write_text_nofollow(link, "overwrite")
+    assert target.read_text() == "original"
+
+
+def test_write_text_nofollow_sets_mode(hf, tmp_path):
+    p = tmp_path / "f"
+    hf._write_text_nofollow(p, "x", 0o755)
+    assert p.read_text() == "x"
+    assert stat.S_IMODE(os.stat(p).st_mode) == 0o755
+
+
 def test_age_paths_fail_cleanly_not_silently(hf, monkeypatch):
     """age cannot be used with a passphrase file, and needs a real TTY."""
     with pytest.raises(ValueError, match="age does not use --passphrase-file"):

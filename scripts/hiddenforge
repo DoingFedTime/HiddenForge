@@ -189,6 +189,24 @@ def _read_nofollow(path: Path, max_bytes: int = 8192) -> bytes:
         os.close(fd)
 
 
+def _write_text_nofollow(path: Path, text: str, mode: int = 0o644) -> None:
+    """Write text through an O_NOFOLLOW descriptor, setting the mode on that fd.
+
+    Path.write_text() follows a final-component symlink, so a symlink planted at
+    an output path (setup's fragment or deploy script, sbom's JSON) would have
+    its target truncated. O_NOFOLLOW refuses instead, and fchmod on a dup of the
+    same fd sets the mode with no path-based TOCTOU window.
+    """
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, mode)
+    meta = os.dup(fd)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        os.fchmod(meta, mode)
+    finally:
+        os.close(meta)
+
+
 def read_pubkey(path: Path) -> bytes:
     data = _read_nofollow(path)
     if len(data) == TAG_LEN + PUBKEY_LEN and data.startswith(PUBLIC_TAG):
@@ -281,7 +299,21 @@ def service_names(keys: Path) -> list[str]:
 
 
 def _run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, capture_output=True, text=True, **kw)
+    """Run a command with a bounded timeout, always returning a CompletedProcess.
+
+    A hung docker/skopeo/syft call must not hang the CLI forever; on timeout we
+    return rc 124 with a marker in stderr, which the callers already treat as
+    failure (they check returncode and surface stderr).
+    """
+    kw.setdefault("capture_output", True)
+    kw.setdefault("text", True)
+    timeout = kw.pop("timeout", 600)
+    try:
+        return subprocess.run(cmd, timeout=timeout, **kw)
+    except subprocess.TimeoutExpired as exc:
+        out = exc.stdout if isinstance(exc.stdout, str) else (exc.stdout or b"").decode(errors="replace")
+        err = exc.stderr if isinstance(exc.stderr, str) else (exc.stderr or b"").decode(errors="replace")
+        return subprocess.CompletedProcess(cmd, 124, out, err + f" (timed out after {timeout}s)")
 
 
 def _engine() -> str | None:
@@ -1091,16 +1123,15 @@ def cmd_setup(args) -> int:
                              "pass --force to overwrite")
 
         image, keys, container, runtime = args.image, args.keys, args.container, args.runtime
-        (out / "compose.service.yml").write_text(
-            render_compose_fragment(services, image, keys, container, runtime),
-            encoding="utf-8")
-        dp = out / "deploy.sh"
-        dp.write_text(render_deploy_sh(services, keys, container, runtime),
-                      encoding="utf-8")
-        os.chmod(dp, 0o755)
-        (out / "README.txt").write_text(
-            render_readme_txt(services, image, keys, container, runtime),
-            encoding="utf-8")
+        _write_text_nofollow(
+            out / "compose.service.yml",
+            render_compose_fragment(services, image, keys, container, runtime))
+        _write_text_nofollow(
+            out / "deploy.sh",
+            render_deploy_sh(services, keys, container, runtime), mode=0o755)
+        _write_text_nofollow(
+            out / "README.txt",
+            render_readme_txt(services, image, keys, container, runtime))
 
         compose_cmd = "podman-compose" if runtime == "podman" else "docker compose"
         svc_list = [
@@ -1136,8 +1167,9 @@ def cmd_setup(args) -> int:
             "contract_version": CONTRACT_VERSION,
             "hiddenforge_version": HIDDENFORGE_VERSION,
         }
-        (out / "hiddenforge.json").write_text(
-            json.dumps(descriptor, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        _write_text_nofollow(
+            out / "hiddenforge.json",
+            json.dumps(descriptor, indent=2, sort_keys=True) + "\n")
 
         if args.json:
             doc = {"ok": True, "exit_code": EXIT_OK, **descriptor}
@@ -1455,10 +1487,16 @@ def cmd_restore(args) -> int:
                                  error="refusing to overwrite existing key files; pass --force")
             archived = None
             if conflicts and args.force:
-                archived = keys / f".replaced-{int(time.time())}"
+                # Unique archive dir, and create the parent of each nested
+                # conflict: key files live under <name>/, so archiving
+                # "app/hs_ed25519_secret_key" needs .replaced-<t>/app to exist or
+                # os.rename raises FileNotFoundError and the restore aborts.
+                archived = _unique_dir(keys, ".replaced")
                 archived.mkdir(mode=0o700, exist_ok=True)
                 for c in conflicts:
-                    os.rename(keys / c, archived / c)
+                    dst = archived / c
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    os.rename(keys / c, dst)
             for m in members:
                 if not m.isfile():
                     continue
@@ -1478,6 +1516,16 @@ def cmd_restore(args) -> int:
                          error=str(exc))
 
 
+def _unique_dir(base: Path, suffix: str) -> Path:
+    """A non-existent sibling path ``<base><suffix>-<epoch>[-n]>``."""
+    candidate = Path(f"{base}{suffix}-{int(time.time())}")
+    n = 1
+    while candidate.exists():
+        candidate = Path(f"{base}{suffix}-{int(time.time())}-{n}")
+        n += 1
+    return candidate
+
+
 def cmd_rotate(args) -> int:
     try:
         keys = Path(args.keys)
@@ -1489,11 +1537,7 @@ def cmd_rotate(args) -> int:
                              error="refusing to destroy an identity without --confirm ROTATE")
         if not os.access(keys, os.W_OK):
             return emit_json(EXIT_FAIL, keys=str(keys), error="key directory is not writable")
-        archived = Path(f"{keys}.rotated-{int(time.time())}")
-        n = 1
-        while archived.exists():
-            archived = Path(f"{keys}.rotated-{int(time.time())}-{n}")
-            n += 1
+        archived = _unique_dir(keys, ".rotated")
         os.rename(keys, archived)
         keys.mkdir(mode=0o700)
         if args.json:
@@ -1608,7 +1652,7 @@ def _verify_ssh_signature(sigdir: Path, identity: str,
     proc = subprocess.run(
         ["ssh-keygen", "-Y", "verify", "-f", str(allowed), "-I", identity,
          "-n", "file", "-s", str(sig)],
-        input=digest_bytes, capture_output=True)
+        input=digest_bytes, capture_output=True, timeout=60)
     detail = (proc.stderr or proc.stdout).decode(errors="replace").strip()
     return proc.returncode == 0, detail
 
@@ -1703,8 +1747,7 @@ def cmd_sbom(args) -> int:
         if packages == 0:
             raise RuntimeError("syft returned an SBOM with zero packages")
         out = Path(args.out)
-        out.write_text(json.dumps(doc, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        os.chmod(out, 0o644)
+        _write_text_nofollow(out, json.dumps(doc, indent=2, sort_keys=True) + "\n", 0o644)
         if args.json:
             return emit_json(EXIT_OK, out=str(out), image=image, packages=packages,
                              syft_image=args.syft_image)

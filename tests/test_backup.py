@@ -105,6 +105,30 @@ def test_restore_refuses_conflict_without_force(hf, keys, tmp_path, capsys):
     assert "app/hs_ed25519_secret_key" in doc["conflicts"]
 
 
+def test_restore_force_archives_nested_conflicts(hf, keys, tmp_path, capsys):
+    """Regression: archiving a conflict under <name>/ needs its parent dir.
+
+    os.rename into .replaced-<t>/app/... used to raise FileNotFoundError because
+    the nested parent was never created, so restore --force aborted.
+    """
+    pp = tmp_path / "pp"
+    pp.write_text("pass\n")
+    out = tmp_path / "keys.tar.gpg"
+    assert hf.main(["backup", "--keys", str(keys), "--out", str(out), "--tool", "gpg",
+                    "--passphrase-file", str(pp), "--json"]) == 0
+    capsys.readouterr()
+    # Make the on-disk key differ so the restore is a genuine conflict.
+    (keys / "app" / "hs_ed25519_secret_key").write_bytes(b"\x33" * 96)
+    rc = hf.main(["restore", "--keys", str(keys), "--input", str(out), "--tool", "gpg",
+                  "--passphrase-file", str(pp), "--force", "--json"])
+    assert rc == 0, capsys.readouterr().out
+    doc = json.loads(capsys.readouterr().out)
+    archived = Path(doc["archived"])
+    assert (archived / "app" / "hs_ed25519_secret_key").exists(), \
+        "nested conflict was not archived"
+    assert (keys / "app" / "hs_ed25519_secret_key").read_bytes() == b"\x22" * 96
+
+
 def test_backup_empty_dir_refused(hf, tmp_path, capsys):
     empty = tmp_path / "empty"
     empty.mkdir()
