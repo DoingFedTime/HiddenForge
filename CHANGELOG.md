@@ -118,6 +118,17 @@ existing `docker compose up -d` human path is unchanged.
 - `HEALTHCHECK` uses the exec form instead of shell form (hadolint DL3025), and
   the `# nosec` comment that made bandit parse its own explanation as test names
   is cleaned up.
+- **The shipped compose files could stop Tor from starting on a busy host.**
+  Both set `ulimits.nproc: 256`. RLIMIT_NPROC is counted per **host** uid, and
+  the tor user is uid 100 -- shared with other containers (i2pforge's i2pd is
+  also uid 100). On a host already running >=256 threads as uid 100, `su-exec`'s
+  `setuid()` fails with EAGAIN and Tor never starts; with `logging: driver: none`
+  the only symptom is a silent restart loop. Reproduced live (uid 100 at 366
+  threads): the old file never published an address, the fixed file publishes in
+  6 seconds. `nproc` is removed from both compose files -- the generated fragment
+  never set it -- `pids_limit` remains the per-container cap, and the entrypoint
+  now probes `su-exec tor true` at startup and fails with a named error instead
+  of looping.
 - **Vanguards is now retried when it never started.** The supervisor previously
   only restarted it after an observed exit, so a `wait_for_socket` timeout or a
   raise on the first start left the addon permanently absent (healthcheck

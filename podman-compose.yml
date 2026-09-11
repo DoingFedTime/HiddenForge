@@ -74,9 +74,11 @@ services:
       nofile:
         soft: 8192
         hard: 8192
-      nproc:
-        soft: 256
-        hard: 256
+      # NOTE: `nproc` is deliberately NOT set here. RLIMIT_NPROC is counted per
+      # HOST uid, and the tor user is uid 100, which other containers share
+      # (i2pforge's i2pd is also uid 100). On a host already running >= the
+      # limit as uid 100, su-exec's setuid() fails with EAGAIN and Tor never
+      # starts. `pids_limit` is the per-container cap that actually works.
 
     # ── Suppress host-side log file ───────────────────────────────────────
     logging:

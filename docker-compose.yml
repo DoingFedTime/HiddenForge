@@ -61,9 +61,14 @@ services:
       nofile:                      # Tor opens many sockets under load
         soft: 8192
         hard: 8192
-      nproc:
-        soft: 256
-        hard: 256
+      # NOTE: `nproc` is deliberately NOT set here. RLIMIT_NPROC is counted per
+      # HOST uid, and the tor user is uid 100, which other containers share
+      # (i2pforge's i2pd is also uid 100). On a host already running >= the
+      # limit as uid 100, su-exec's setuid() fails with EAGAIN ("Resource
+      # temporarily unavailable") and Tor never starts -- visible only as a
+      # restart loop with no logs. Fork-bomb containment comes from
+      # `pids_limit` instead, which is a per-container cgroup and does not
+      # depend on what else is on the host.
 
     # ── Suppress host-side log file ───────────────────────────────────────
     # Docker writes container stdout to a JSON file on the host by default.

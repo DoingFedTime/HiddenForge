@@ -641,6 +641,31 @@ def wait_for_socket(timeout=120):
     print("Control socket ready.")
 
 
+def _assert_can_drop_privileges():
+    """Fail fast if su-exec cannot switch to the tor user.
+
+    setuid() returns EAGAIN when the target uid is already at RLIMIT_NPROC.
+    RLIMIT_NPROC is counted per HOST uid (containers share the host user
+    namespace unless userns-remap is configured), and the tor user is uid 100 --
+    shared with other containers such as i2pforge's i2pd. A compose file that
+    sets a low ``ulimits.nproc`` therefore stops Tor from starting, and with
+    ``logging: driver: none`` the only symptom is a silent restart loop. One
+    probe turns that into a named error.
+    """
+    result = subprocess.run(
+        ['su-exec', 'tor', 'true'], capture_output=True, check=False
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or b'').decode(errors='replace').strip()
+        raise RuntimeError(
+            "cannot switch to the tor user: "
+            f"{detail or 'su-exec failed'}. If this deployment sets a low "
+            "`ulimits.nproc`, remove it: RLIMIT_NPROC is counted per host uid, "
+            "and uid 100 is shared with other containers (i2pforge's i2pd is "
+            "also uid 100). Use `pids_limit` for process containment instead."
+        )
+
+
 def start_vanguards():
     """Launch the Vanguards addon as the tor user via the control socket.
 
@@ -679,6 +704,14 @@ def main():
     signal.signal(signal.SIGINT,  signal_handler)
 
     tor_pw = pwd.getpwnam('tor')
+
+    # Fail loudly if we cannot drop to the tor user, rather than looping on a Tor
+    # that never starts (see _assert_can_drop_privileges).
+    try:
+        _assert_can_drop_privileges()
+    except RuntimeError as e:
+        print(f"FATAL: {e}")
+        sys.exit(1)
 
     # ── Generate torrc ──────────────────────────────────────────────────────
     try:

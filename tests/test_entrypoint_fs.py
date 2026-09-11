@@ -10,6 +10,8 @@ import stat
 import subprocess
 from collections import namedtuple
 
+import pytest
+
 import entrypoint as e
 
 TorPw = namedtuple("TorPw", "pw_uid pw_gid")
@@ -110,6 +112,20 @@ def test_dispatch_reports_missing_cli(monkeypatch, capsys):
     monkeypatch.setattr(e, "HF_CLI", "/nonexistent/hiddenforge")
     assert e.dispatch_subcommand(["show"]) == 2
     assert "not found" in capsys.readouterr().err
+
+
+def test_assert_can_drop_privileges_ok(monkeypatch):
+    monkeypatch.setattr(e.subprocess, "run", lambda *a, **k: (
+        subprocess.CompletedProcess(a[0], 0, b"", b"")))
+    e._assert_can_drop_privileges()   # must not raise
+
+
+def test_assert_can_drop_privileges_reports_nproc_eagain(monkeypatch):
+    """A setuid EAGAIN must name the real cause, not loop silently."""
+    monkeypatch.setattr(e.subprocess, "run", lambda *a, **k: (
+        subprocess.CompletedProcess(a[0], 1, b"", b"Resource temporarily unavailable")))
+    with pytest.raises(RuntimeError, match="nproc"):
+        e._assert_can_drop_privileges()
 
 
 def test_safe_escapes_control_characters():
