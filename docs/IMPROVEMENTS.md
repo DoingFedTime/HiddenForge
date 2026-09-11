@@ -126,8 +126,8 @@ decision not to do (reason given).
   (`HARDENING_DIRECTIVES`) and asserted by the generator tests/smoke test.
 - [x] **H5** `pyproject.toml` coverage comment corrected to the measured ~49% and
   the floor rationale restated.
-- [ ] **H6** Deduplicate `ALLOWED_DIRECTIVES` between `test_torrc_gen.py` and
-  `test_fuzz.py` (still duplicated).
+- [x] **H6** `ALLOWED_DIRECTIVES` now lives in one place (`tests/directives.py`)
+  and is imported by both `test_torrc_gen.py` and `test_fuzz.py`.
 - [x] **H7** Vanguards is retried when it never started: the supervisor now
   retries with a bounded budget and backoff instead of only reacting to an
   observed exit.

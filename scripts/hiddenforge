@@ -276,6 +276,22 @@ def _run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, capture_output=True, text=True, **kw)
 
 
+def _engine() -> str | None:
+    """Container engine to use: docker, else podman, else None.
+
+    Override with HIDDENFORGE_ENGINE. Everything that shells out (inspect, exec,
+    run) goes through this so a Podman-only host is a first-class citizen.
+    """
+    override = os.environ.get("HIDDENFORGE_ENGINE")
+    if override in ("docker", "podman"):
+        return override
+    if shutil.which("docker"):
+        return "docker"
+    if shutil.which("podman"):
+        return "podman"
+    return None
+
+
 # ---------------------------------------------------------------------------
 # manifest / info / version
 # ---------------------------------------------------------------------------
@@ -459,24 +475,31 @@ def _resolve_container(container: str) -> str | None:
 
     With Docker Compose the container is named `<project>-<service>-1`, so
     `docker inspect tor` fails even though the service is running. Fall back to
-    the compose service label so `hiddenforge status` works out of the box.
+    the compose service label (Docker's, then podman-compose's) so
+    `hiddenforge status` works out of the box under either engine.
     """
-    if _run(["docker", "inspect", container]).returncode == 0:
+    eng = _engine()
+    if eng is None:
+        return None
+    if _run([eng, "inspect", container]).returncode == 0:
         return container
-    proc = _run(["docker", "ps", "--filter",
-                 f"label=com.docker.compose.service={container}",
-                 "--format", "{{.ID}}"])
-    ids = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
-    return ids[0] if ids else None
+    for label in ("com.docker.compose.service", "io.podman.compose.service"):
+        proc = _run([eng, "ps", "--filter", f"label={label}={container}",
+                     "--format", "{{.ID}}"])
+        ids = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+        if ids:
+            return ids[0]
+    return None
 
 
 def _docker_inspect(container: str) -> tuple[dict | None, str | None]:
-    if shutil.which("docker") is None:
-        return None, "docker not found on PATH"
+    eng = _engine()
+    if eng is None:
+        return None, "neither docker nor podman found on PATH"
     resolved = _resolve_container(container)
     if resolved is None:
         return None, f"container or compose service {container!r} not found"
-    proc = _run(["docker", "inspect", resolved])
+    proc = _run([eng, "inspect", resolved])
     if proc.returncode != 0:
         return None, (proc.stderr.strip() or f"container {container!r} not found")
     try:
@@ -490,9 +513,12 @@ def _docker_inspect(container: str) -> tuple[dict | None, str | None]:
 
 def _docker_exec_json(container: str, argv: list[str]) -> dict | None:
     """Best-effort in-container JSON query; returns None if unavailable."""
+    eng = _engine()
+    if eng is None or container is None:
+        return None
     candidates = [
-        ["docker", "exec", container, *argv],
-        ["docker", "exec", container, "su-exec", "tor", *argv],
+        [eng, "exec", container, *argv],
+        [eng, "exec", container, "su-exec", "tor", *argv],
     ]
     for cmd in candidates:
         proc = _run(cmd)
@@ -605,8 +631,11 @@ def _caps_ok(caps) -> set[str]:
 
 def _docker_exec_text(container: str, argv: list[str]) -> str | None:
     """Best-effort in-container command capturing stdout; None if unavailable."""
-    for prefix in (["docker", "exec", container, "su-exec", "tor"],
-                   ["docker", "exec", container]):
+    eng = _engine()
+    if eng is None or container is None:
+        return None
+    for prefix in ([eng, "exec", container, "su-exec", "tor"],
+                   [eng, "exec", container]):
         proc = _run([*prefix, *argv])
         if proc.returncode == 0:
             return proc.stdout
@@ -698,7 +727,7 @@ def cmd_doctor(args) -> int:
 
     apparmor = info.get("AppArmorProfile") or next(
         (s.split("=", 1)[1] for s in secopt if s.startswith("apparmor=")), "")
-    dockerinfo = _run(["docker", "info", "--format", "{{json .SecurityOptions}}"])
+    dockerinfo = _run([_engine() or "docker", "info", "--format", "{{json .SecurityOptions}}"])
     host_has_apparmor = dockerinfo.returncode == 0 and "apparmor" in dockerinfo.stdout.lower()
     if host_has_apparmor:
         checks.append(_check(bool(apparmor) and apparmor != "unconfined",
@@ -1128,9 +1157,10 @@ def cmd_vanity(args) -> int:
                          error=f"{target} already exists; pass --force to archive it "
                                "and generate a new address")
 
-    if shutil.which("docker") is None:
-        return emit_json(EXIT_USAGE, error="docker not found on PATH; vanity runs the "
-                                           "generator inside the hiddenforge image")
+    eng = _engine()
+    if eng is None:
+        return emit_json(EXIT_USAGE, error="neither docker nor podman found on PATH; "
+                                           "vanity runs the generator inside the image")
 
     inner = ["vanity", "--prefix", args.prefix,
              "--name", args.name, "--out", "/keys", "--json"]
@@ -1142,7 +1172,7 @@ def cmd_vanity(args) -> int:
         inner += ["--force"]
     uid, gid = os.getuid(), os.getgid()
     inner += ["--uid", str(uid), "--gid", str(gid)]
-    cmd = ["docker", "run", "--rm", "-v", f"{keys}:/keys", args.image, *inner]
+    cmd = [eng, "run", "--rm", "-v", f"{keys}:/keys", args.image, *inner]
     proc = subprocess.run(cmd, capture_output=True, text=True)
     out = proc.stdout.strip()
     if args.json:

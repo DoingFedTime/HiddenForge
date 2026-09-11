@@ -444,6 +444,78 @@ def test_doctor_passes_when_torrc_is_complete(hf, tmp_path, capsys, monkeypatch)
 # exit-code contract
 # ─────────────────────────────────────────────────────────────────────────────
 
+# ─────────────────────────────────────────────────────────────────────────────
+# setup golden snapshots (lock the emitted contract output)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_setup_output_matches_golden(hf, tmp_path, capsys):
+    rc = hf.main(["setup", "--backend", "web:80", "--name", "blog",
+                  "--keys", "./tor-keys", "-o", str(tmp_path), "--json"])
+    assert rc == 0
+    capsys.readouterr()
+    for name in ("compose.service.yml", "deploy.sh", "README.txt"):
+        expected = (REPO / "tests" / "golden_setup" / name).read_text()
+        got = (tmp_path / name).read_text()
+        assert got == expected, (
+            f"{name} drifted from tests/golden_setup/{name}; regenerate the golden "
+            "if the change is intended"
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# status (docker/podman inspect + healthcheck mapping)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_status_ready_maps_healthcheck_fields(hf, tmp_path, capsys, monkeypatch):
+    os.chmod(tmp_path, 0o700)
+    _write_service(tmp_path, "app", VECTOR_PUB_HEX, VECTOR_ONION)
+    monkeypatch.setattr(hf, "_docker_inspect", lambda c: (
+        {"State": {"Running": True, "Health": {"Status": "healthy"},
+                   "StartedAt": "2026-01-01T00:00:00Z"},
+         "RestartCount": 2}, None))
+    monkeypatch.setattr(hf, "_resolve_container", lambda c: "cid")
+    monkeypatch.setattr(hf, "_docker_exec_json", lambda c, a: {
+        "tor_bootstrapped": True, "hidden_service_published": True,
+        "vanguards": True, "reason": None,
+        "services": [{"name": "app", "address": VECTOR_ONION, "published": True}]})
+    rc = hf.main(["status", "--container", "tor", "--keys", str(tmp_path), "--json"])
+    assert rc == 0
+    doc = json.loads(capsys.readouterr().out)
+    assert doc["ready"] is True
+    assert doc["tor_bootstrapped"] is True
+    assert doc["vanguards"] is True
+    assert doc["address"] == VECTOR_ONION
+    assert doc["restarts"] == 2
+
+
+def test_status_not_ready_exits_4(hf, tmp_path, capsys, monkeypatch):
+    os.chmod(tmp_path, 0o700)
+    monkeypatch.setattr(hf, "_docker_inspect", lambda c: (
+        {"State": {"Running": True, "Health": {"Status": "starting"},
+                   "StartedAt": "2026-01-01T00:00:00Z"}, "RestartCount": 0}, None))
+    monkeypatch.setattr(hf, "_resolve_container", lambda c: "cid")
+    monkeypatch.setattr(hf, "_docker_exec_json", lambda c, a: None)
+    rc = hf.main(["status", "--container", "tor", "--keys", str(tmp_path), "--json"])
+    assert rc == hf.EXIT_NOT_READY
+    assert json.loads(capsys.readouterr().out)["ready"] is False
+
+
+def test_status_uninspectable_container_exits_2(hf, tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(hf, "_docker_inspect", lambda c: (None, "not found"))
+    rc = hf.main(["status", "--container", "nope", "--keys", str(tmp_path), "--json"])
+    assert rc == hf.EXIT_USAGE
+    assert json.loads(capsys.readouterr().out)["running"] is False
+
+
+def test_engine_override(hf, monkeypatch):
+    monkeypatch.setenv("HIDDENFORGE_ENGINE", "podman")
+    assert hf._engine() == "podman"
+    monkeypatch.setenv("HIDDENFORGE_ENGINE", "docker")
+    assert hf._engine() == "docker"
+    monkeypatch.delenv("HIDDENFORGE_ENGINE")
+    assert hf._engine() in ("docker", "podman", None)
+
+
 def test_exit_codes_are_documented(hf):
     m = hf.build_manifest()
     for code in ("0", "1", "2", "3", "4", "130"):

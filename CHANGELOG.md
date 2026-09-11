@@ -68,6 +68,11 @@ existing `docker compose up -d` human path is unchanged.
   floor, an image build with smoke checks (CLI dispatch, the in-container torrc
   test, vanity generation), and the live acceptance suite. Actions are pinned by
   commit SHA.
+- **Podman parity in the CLI**: `status`, `doctor`, and `vanity` use `docker` or
+  `podman` (whichever is present; override with `HIDDENFORGE_ENGINE`), and
+  container lookup also understands podman-compose's service label.
+- **Golden snapshots** for the emitted `compose.service.yml`, `deploy.sh`, and
+  `README.txt`, so the integration contract cannot drift silently.
 
 ### Changed
 - **Refreshed the `tor` apk pin `0.4.9.11-r0` to `0.4.9.12-r0`.** Alpine pruned

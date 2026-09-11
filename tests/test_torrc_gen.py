@@ -10,23 +10,10 @@ import os
 import pytest
 
 import entrypoint as e
+from directives import ALLOWED_DIRECTIVES
 
 GOLDEN_DIR = os.path.join(os.path.dirname(__file__), "golden")
 
-# Every directive token that may legitimately begin a non-comment torrc line.
-# The injection-proof test asserts NOTHING outside this set ever appears.
-ALLOWED_DIRECTIVES = {
-    "ControlSocket", "SocksPort", "DataDirectory", "ClientOnly", "ExitPolicy",
-    "Log", "SafeLogging", "HeartbeatPeriod", "Sandbox",
-    "DisableDebuggerAttachment", "AvoidDiskWrites", "FetchUselessDescriptors",
-    "VanguardsLiteEnabled",
-    "HiddenServiceDir", "HiddenServiceVersion", "HiddenServiceNumIntroductionPoints",
-    "HiddenServiceMaxStreams", "HiddenServiceMaxStreamsCloseCircuit",
-    "HiddenServicePoWDefensesEnabled", "HiddenServicePoWQueueRate",
-    "HiddenServicePoWQueueBurst", "HiddenServicePort",
-    "HiddenServiceEnableIntroDoSDefense", "HiddenServiceEnableIntroDoSRatePerSec",
-    "HiddenServiceEnableIntroDoSBurstPerSec",
-}
 
 
 def _set_services(monkeypatch, **services):

@@ -1,0 +1,59 @@
+# hiddenforge compose fragment (contract v2.1.0, contract 1).
+# Merge it into YOUR compose file; do not edit it:
+#
+#   docker compose -f compose.yml -f compose.service.yml up -d
+#
+# Your backend service must join the `tor-internal` network below and must NOT
+# publish any ports. hiddenforge reaches it by service name; the resolved IP is
+# pinned into the torrc at container start.
+#
+# Address:  hiddenforge show --json --name blog
+# Ready:    hiddenforge status --json   (poll the `ready` field)
+#
+# Threat model: state-level adversary. Do not weaken these flags.
+
+networks:
+  tor-internal:
+    internal: true
+  tor-external: {}
+
+services:
+  tor:
+    image: sambent.dev/sam/hiddenforge:latest
+    restart: unless-stopped
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID]
+    security_opt:
+      - no-new-privileges:true
+      - seccomp=unconfined
+      - apparmor=docker-default
+    read_only: true
+    pids_limit: 256
+    mem_limit: 512m
+    memswap_limit: 512m
+    cpus: 1.0
+    ulimits:
+      nofile:
+        soft: 8192
+        hard: 8192
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m
+      - /etc/tor:rw,noexec,nosuid,nodev,size=8m
+      - /var/lib/tor:rw,noexec,nosuid,nodev,size=64m,uid=100,gid=101,mode=0700
+    logging:
+      driver: none
+    environment:
+      BLOG_TOR_SERVICE_HOSTS: "80:web:80"
+    volumes:
+      - ./tor-keys:/var/lib/tor/hidden_service
+    networks:
+      - tor-internal
+      - tor-external
+    healthcheck:
+      test: ["CMD", "su-exec", "tor", "python3", "/usr/local/bin/healthcheck.py"]
+      interval: 60s
+      timeout: 10s
+      start_period: 120s
+      retries: 3
+    depends_on:
+      - web

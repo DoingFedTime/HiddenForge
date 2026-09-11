@@ -12,22 +12,7 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 import entrypoint as e
-
-# Mirrors tests/test_torrc_gen.ALLOWED_DIRECTIVES (kept local to avoid a
-# cross-test-module import). If a directive is added to the generator, both
-# lists must be updated — the golden tests will fail loudly if they drift.
-ALLOWED_DIRECTIVES = {
-    "ControlSocket", "SocksPort", "DataDirectory", "ClientOnly", "ExitPolicy",
-    "Log", "SafeLogging", "HeartbeatPeriod", "Sandbox",
-    "DisableDebuggerAttachment", "AvoidDiskWrites", "FetchUselessDescriptors",
-    "VanguardsLiteEnabled",
-    "HiddenServiceDir", "HiddenServiceVersion", "HiddenServiceNumIntroductionPoints",
-    "HiddenServiceMaxStreams", "HiddenServiceMaxStreamsCloseCircuit",
-    "HiddenServicePoWDefensesEnabled", "HiddenServicePoWQueueRate",
-    "HiddenServicePoWQueueBurst", "HiddenServicePort",
-    "HiddenServiceEnableIntroDoSDefense", "HiddenServiceEnableIntroDoSRatePerSec",
-    "HiddenServiceEnableIntroDoSBurstPerSec",
-}
+from directives import ALLOWED_DIRECTIVES
 
 # Strategy for values set via os.environ. Excludes:
 #   - NUL: the OS forbids it in env var values.
