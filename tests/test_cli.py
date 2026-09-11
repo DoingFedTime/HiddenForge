@@ -245,6 +245,49 @@ def test_setup_multi_service_form(hf, tmp_path, capsys):
     assert desc["env_value"] == "80:web:80"
 
 
+def test_setup_ip_backend_omits_depends_on(hf, tmp_path, capsys):
+    """An IP-literal backend must not emit `depends_on: [<ip>]`.
+
+    That produces `service "tor" depends on undefined service "172.17.0.2"` and
+    makes `docker compose config` reject the whole project.
+    """
+    rc = hf.main(["setup", "--backend", "172.17.0.2:80", "--name", "ipapp",
+                  "-o", str(tmp_path), "--json"])
+    assert rc == 0
+    capsys.readouterr()
+    frag = (tmp_path / "compose.service.yml").read_text()
+    assert "depends_on" not in frag
+    assert "IPAPP_TOR_SERVICE_HOSTS" in frag
+
+
+def test_setup_service_backend_emits_depends_on(hf, tmp_path, capsys):
+    assert hf.main(["setup", "--backend", "web:80", "--name", "blog",
+                    "-o", str(tmp_path), "--json"]) == 0
+    capsys.readouterr()
+    frag = (tmp_path / "compose.service.yml").read_text()
+    assert "depends_on" in frag and "- web" in frag
+
+
+def test_rewrite_key_paths_rewrites_every_field(hf, tmp_path):
+    """Regression: address_path/public_key_path used to be left as /keys/...
+
+    The host consumer would then be handed container paths that do not exist on
+    its filesystem.
+    """
+    doc = {
+        "key_path": "/keys/app/hs_ed25519_secret_key",
+        "key_dir": "/keys/app",
+        "address_path": "/keys/app/hostname",
+        "public_key_path": "/keys/app/hs_ed25519_public_key",
+        "onion": "x.onion",
+    }
+    out = hf._rewrite_key_paths(doc, tmp_path)
+    for field in ("key_path", "key_dir", "address_path", "public_key_path"):
+        assert out[field].startswith(str(tmp_path)), field
+        assert "/keys/" not in out[field], field
+    assert out["onion"] == "x.onion"
+
+
 def test_setup_requires_backend_non_interactive(hf, tmp_path, capsys, monkeypatch):
     monkeypatch.setattr(sys, "stdin", type("S", (), {"isatty": lambda self: False})())
     rc = hf.main(["setup", "-o", str(tmp_path), "--json", "--non-interactive"])

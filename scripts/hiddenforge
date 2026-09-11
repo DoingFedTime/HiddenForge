@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import base64
 import hashlib
+import ipaddress
 import json
 import os
 import re
@@ -738,8 +739,23 @@ def cmd_doctor(args) -> int:
 # setup: compose fragment + deploy script + README + descriptor
 # ---------------------------------------------------------------------------
 
+def _is_ip_literal(value: str) -> bool:
+    try:
+        ipaddress.ip_address(value)
+        return True
+    except ValueError:
+        return False
+
+
 def render_compose_fragment(name: str, env_value: str, image: str, backend: str,
                             keys: str, container: str) -> str:
+    # depends_on only makes sense for a Compose *service* name. An IP-literal
+    # backend (or a bare hostname that is not a service) would produce
+    # `depends_on: [172.17.0.2]` and make `docker compose config` fail.
+    dep_block = ""
+    if backend and CONTAINER_RE.fullmatch(backend) and not _is_ip_literal(backend):
+        dep_block = ("    depends_on:\n"
+                     f"      - {backend}\n")
     return f"""# hiddenforge compose fragment (contract v{HIDDENFORGE_VERSION}, contract {CONTRACT_VERSION}).
 # Merge it into YOUR compose file; do not edit it:
 #
@@ -797,9 +813,7 @@ services:
       timeout: 10s
       start_period: 120s
       retries: 3
-    depends_on:
-      - {backend if backend and CONTAINER_RE.fullmatch(backend) else 'your-backend'}
-"""
+{dep_block}"""
 
 
 def render_deploy_sh(name: str, image: str, keys_dir: str) -> str:
@@ -992,6 +1006,20 @@ def cmd_setup(args) -> int:
 # vanity (host wrapper around the in-image generator)
 # ---------------------------------------------------------------------------
 
+def _rewrite_key_paths(doc: dict, keys: Path, container_prefix: str = "/keys/") -> dict:
+    """Rewrite generator-reported container paths to host paths.
+
+    The in-image generator reports /keys/...; the host consumer needs paths in
+    its own key directory. Every path field must be rewritten - leaving one as a
+    container path is silently wrong.
+    """
+    for field in ("key_path", "key_dir", "address_path", "public_key_path"):
+        val = doc.get(field)
+        if isinstance(val, str) and val.startswith(container_prefix):
+            doc[field] = str(keys / val[len(container_prefix):])
+    return doc
+
+
 def cmd_vanity(args) -> int:
     try:
         validate_name(args.name)
@@ -1038,10 +1066,7 @@ def cmd_vanity(args) -> int:
         if doc is None:
             return emit_json(EXIT_FAIL, error=f"generator produced no JSON "
                              f"(rc={proc.returncode}): {proc.stderr.strip()[-400:]}")
-        if doc.get("key_path", "").startswith("/keys/"):
-            doc["key_path"] = str(keys / doc["key_path"][len("/keys/"):])
-        if doc.get("key_dir", "").startswith("/keys/"):
-            doc["key_dir"] = str(keys / doc["key_dir"][len("/keys/"):])
+        doc = _rewrite_key_paths(doc, keys)
         doc["image"] = args.image
         sys.stdout.write(json.dumps(doc, sort_keys=True) + "\n")
         return proc.returncode
@@ -1056,17 +1081,28 @@ def cmd_vanity(args) -> int:
 # backup / restore / rotate / encrypt-key / decrypt-key
 # ---------------------------------------------------------------------------
 
-def _pick_tool(preferred: str | None, out_suffix: str = "") -> str | None:
+def _pick_tool(preferred: str | None, out_suffix: str = "",
+               non_interactive: bool = False) -> str | None:
     if preferred:
         return preferred
     if out_suffix.endswith(".age") and shutil.which("age"):
         return "age"
     if out_suffix.endswith(".gpg") and shutil.which("gpg"):
         return "gpg"
+    # age can only prompt for its passphrase on a TTY, so when we already have a
+    # passphrase (or there is no TTY) gpg is the only usable default.
+    if non_interactive:
+        if shutil.which("gpg"):
+            return "gpg"
+        return "age" if shutil.which("age") else None
     for tool in ("age", "gpg"):
         if shutil.which(tool):
             return tool
     return None
+
+
+def _non_interactive(args) -> bool:
+    return bool(getattr(args, "passphrase_file", None)) or not sys.stdin.isatty()
 
 
 def _passphrase(args) -> str | None:
@@ -1116,11 +1152,18 @@ def _encrypt_bytes(tool: str, plaintext: bytes, passphrase: str | None) -> bytes
     if tool == "openssl":
         raise ValueError("openssl is refused: it provides no authentication. Use age or gpg.")
     if tool == "age":
-        if passphrase is None:
-            raise ValueError("age needs a passphrase; pass --passphrase-file (age with "
-                             "no passphrase source prompts on a TTY only)")
-        raise ValueError("age does not accept a passphrase non-interactively; use gpg, "
-                         "or run age interactively on the host")
+        # age -p prompts on the controlling TTY and cannot be fed a passphrase
+        # non-interactively; the ciphertext comes back on stdout.
+        if passphrase is not None:
+            raise ValueError("age does not use --passphrase-file; pass --tool gpg for "
+                             "non-interactive use")
+        if not sys.stdin.isatty():
+            raise ValueError("age needs an interactive TTY to prompt for a passphrase; "
+                             "pass --tool gpg for non-interactive use")
+        proc = subprocess.run(["age", "-p"], input=plaintext, stdout=subprocess.PIPE)
+        if proc.returncode != 0:
+            raise RuntimeError("age failed")
+        return proc.stdout
     if tool == "gpg":
         if passphrase is None:
             raise ValueError("gpg needs --passphrase-file for non-interactive use")
@@ -1157,7 +1200,7 @@ def cmd_backup(args) -> int:
         keys = Path(args.keys)
         if not keys.is_dir():
             raise ValueError(f"key directory {keys} does not exist")
-        tool = _pick_tool(args.tool, args.out)
+        tool = _pick_tool(args.tool, args.out, _non_interactive(args))
         if tool is None:
             raise ValueError("no encryption tool found: install `age` (preferred) or `gpg`")
         if tool == "openssl":
@@ -1186,9 +1229,16 @@ def cmd_backup(args) -> int:
 
 
 def _decrypt_bytes(tool: str, ciphertext: bytes, passphrase: str | None) -> bytes:
-    if tool in ("age", "openssl"):
-        raise ValueError(f"{tool} decryption is not wired for non-interactive use; "
-                         "use gpg or decrypt with the tool that made the backup")
+    if tool == "age":
+        if not sys.stdin.isatty():
+            raise ValueError("age needs an interactive TTY to prompt for a passphrase; "
+                             "use gpg for non-interactive restores")
+        proc = subprocess.run(["age", "-d"], input=ciphertext, stdout=subprocess.PIPE)
+        if proc.returncode != 0:
+            raise RuntimeError("age decrypt failed")
+        return proc.stdout
+    if tool == "openssl":
+        raise ValueError("openssl decryption is not supported; use gpg or age")
     if tool == "gpg":
         if passphrase is None:
             raise ValueError("gpg needs --passphrase-file")
@@ -1317,7 +1367,7 @@ def _encrypt_or_decrypt_dir(args, encrypt: bool) -> int:
         keys = Path(args.keys)
         name = validate_name(args.name)
         d = keys / name
-        tool = _pick_tool(args.tool, "")
+        tool = _pick_tool(args.tool, "", _non_interactive(args))
         if tool is None:
             raise ValueError("no encryption tool found: install `age` (preferred) or `gpg`")
         if tool == "openssl":

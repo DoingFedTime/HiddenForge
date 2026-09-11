@@ -115,6 +115,20 @@ def test_backup_empty_dir_refused(hf, tmp_path, capsys):
     assert rc == hf.EXIT_USAGE
 
 
+def test_backup_default_tool_works_non_interactively(hf, keys, tmp_path, capsys):
+    """Regression: the default used to pick age, which cannot take a passphrase
+    file, so `backup --out x --passphrase-file pp` failed whenever age was
+    installed and no --tool was given."""
+    pp = tmp_path / "pp"
+    pp.write_text("a passphrase\n")
+    out = tmp_path / "keys.tar"  # no suffix hint
+    rc, doc = _run(hf, capsys, ["backup", "--keys", str(keys), "--out", str(out),
+                                "--passphrase-file", str(pp), "--json"])
+    assert rc == 0 and doc["ok"], doc
+    assert doc["tool"] == "gpg"
+    assert out.exists()
+
+
 def test_encrypt_key_really_encrypts_and_roundtrips(hf, keys, tmp_path, capsys):
     """encrypt-key must produce an *encrypted* blob, not a plain tar.
 
