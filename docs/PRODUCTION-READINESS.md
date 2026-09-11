@@ -6,12 +6,12 @@ check, not a code change. Work top-down; record the evidence.
 
 | # | Claim to prove | How | Status |
 |---|---|---|---|
-| R1 | The image builds **bit-for-bit reproducibly** | two `buildx` builds with the same `SOURCE_DATE_EPOCH`, compare the OCI index digest | **done** — identical `sha256:7c343d91c21e5b0ecd89be0b256a78a1af0c940876530dc3abe5e1f42550d4a0` |
+| R1 | The image builds **bit-for-bit reproducibly** | two `buildx` builds with the same `SOURCE_DATE_EPOCH`, compare the OCI index digest | **done** — identical `sha256:7c343d91…`, and re-verified after the OpenSSL pin (`sha256:6996b0f5…` twice) |
 | R2 | **Multiple onions** from one container actually work | two-service fragment + real stack, wait for both address files, assert they differ | **done** — `blog` and `tips` both published, distinct, both reported by `show`/`status` |
 | R3 | The **committed `docker-compose.yml`** boots end to end | `docker compose up -d` with the shipped file, wait for the address | **done** — but it first **failed**, exposing the `ulimits.nproc` bug below; after the fix it publishes in 6s |
 | R4 | `sbom` really produces a valid SPDX document | run it against the built image (syft), validate JSON + package count | **done** — SPDX-2.3, 43 packages, normalised namespace |
 | R5 | `verify-image` **resolves the registry digest** and compares it | run without `--skip-registry` against `sambent.dev` | **done** — registry digest equals the signed 2.0.4 digest; YubiKey signature valid |
-| R6 | The **arm64** image builds (the Dockerfile claims multi-arch) | `buildx --platform linux/arm64` | **blocked** - no arm64 builder, no local qemu build (see below) |
+| R6 | The **arm64** image builds (the Dockerfile claims multi-arch) | `buildx --platform linux/arm64` | **blocked, partial-verified** — no builder available; see below |
 | R7 | The **built image** (not just the source) is clean | trivy/grype against the image, including the base layer | **done** — first scan 20 CVEs (2 HIGH, OpenSSL), fixed, rescan **0 findings** |
 | R8 | Every **in-image CLI subcommand** works with the final image | `docker run <image> <cmd>` for each | **done** — version/info/show/doctor/vanity/encrypt-key/setup all behave; one cosmetic warning on a fresh anonymous volume |
 
@@ -34,5 +34,16 @@ row is re-verified.
   but the image should not ship a known-vulnerable OpenSSL. `openssl=3.5.8-r0`
   is now pinned explicitly in the apk install instead of inherited from the
   base digest, and the image rescan is **0 findings**.
-- **R6 is blocked, not skipped:** no arm64-capable builder was available, so the arm64 build has not been run
-  yet. Run it on a machine that has one: `docker buildx build --platform linux/arm64 .`
+- **R6 is blocked by the environment, not the code.** A full arm64 build needs
+  qemu or an arm64 builder: neither was available, and local has no `binfmt_misc` qemu handler (`docker run
+  --platform linux/arm64 alpine` fails `exec format error`). Installing qemu on
+  this box was not done. What *was* verified:
+  - the pinned base digest `sha256:fd791d74…` **is the multi-arch index**
+    (`linux/arm64/v8` present), so `--platform linux/arm64` resolves correctly;
+  - **every pinned apk version exists for aarch64** in the 3.23 index:
+    tor `0.4.9.12-r0`, python3 `3.12.14-r0`, openssl `3.5.8-r0`,
+    libsodium-static `1.0.20-r1`, build-base, autoconf, su-exec, py3-pip;
+  - the mkp224o builder uses plain `./configure` (no `--enable-amd64-*` flag),
+    so there is no amd64 assumption in the build.
+
+  Run this once a builder exists (an arm64 engine, or qemu installed): `docker buildx build --platform linux/arm64,linux/amd64 .`
