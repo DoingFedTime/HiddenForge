@@ -896,6 +896,11 @@ def render_compose_fragment(services: dict[str, list[str]], image: str, keys: st
     dep_block = ("    depends_on:\n" + "".join(f"      - {h}\n" for h in hosts)
                  if hosts else "")
     apparmor = "      - apparmor=docker-default\n" if runtime == "docker" else ""
+    # Podman rejects the Docker-only uid=/gid=/mode= tmpfs options (the entrypoint
+    # chowns /var/lib/tor at startup instead), so only Docker gets them.
+    tor_tmpfs = "- /var/lib/tor:rw,noexec,nosuid,nodev,size=64m"
+    if runtime == "docker":
+        tor_tmpfs += ",uid=100,gid=101,mode=0700"
     compose_cmd = "podman-compose" if runtime == "podman" else "docker compose"
     example = sorted(services)[0]
     return f"""# hiddenforge compose fragment (contract v{HIDDENFORGE_VERSION}, contract {CONTRACT_VERSION}).
@@ -938,7 +943,7 @@ services:
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=64m
       - /etc/tor:rw,noexec,nosuid,nodev,size=8m
-      - /var/lib/tor:rw,noexec,nosuid,nodev,size=64m,uid=100,gid=101,mode=0700
+      {tor_tmpfs}
     logging:
       driver: none
     environment:

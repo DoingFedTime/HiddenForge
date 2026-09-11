@@ -334,6 +334,9 @@ def test_setup_podman_runtime_omits_apparmor(hf, tmp_path, capsys):
                     "-o", str(tmp_path), "--json"]) == 0
     frag = (tmp_path / "compose.service.yml").read_text()
     assert "apparmor" not in frag
+    # Podman rejects the Docker-only tmpfs options; the entrypoint chowns
+    # /var/lib/tor itself, so they must not be emitted for podman.
+    assert "uid=100" not in frag and "mode=0700" not in frag
     assert "podman-compose" in (tmp_path / "deploy.sh").read_text()
 
 
