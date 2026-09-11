@@ -516,6 +516,86 @@ def test_engine_override(hf, monkeypatch):
     assert hf._engine() in ("docker", "podman", None)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# verify-image / sbom
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _sigdir(tmp_path, digest="sha256:abc"):
+    d = tmp_path / "sig"
+    d.mkdir()
+    (d / "hiddenforge.digest").write_text(digest)
+    (d / "allowed-signers").write_text("x")
+    (d / "hiddenforge.digest.sig").write_text("x")
+    (d / "sambent-mldsa.pub").write_text("x")
+    (d / "hiddenforge.digest.mldsa").write_text("x")
+    return d
+
+
+def test_verify_image_ok(hf, tmp_path, capsys, monkeypatch):
+    d = _sigdir(tmp_path)
+    monkeypatch.setattr(hf, "_resolve_registry_digest", lambda i: ("sha256:abc", None))
+    monkeypatch.setattr(hf, "_verify_ssh_signature", lambda s, i, b: (True, "Good"))
+    monkeypatch.setattr(hf, "_verify_mldsa_signature", lambda s: (None, "pqsign not installed"))
+    rc = hf.main(["verify-image", "example/img:1", "--sigdir", str(d), "--json"])
+    assert rc == 0
+    doc = json.loads(capsys.readouterr().out)
+    assert doc["digest_match"] is True and doc["ssh_fido2"] is True
+
+
+def test_verify_image_digest_mismatch_fails(hf, tmp_path, capsys, monkeypatch):
+    d = _sigdir(tmp_path)
+    monkeypatch.setattr(hf, "_resolve_registry_digest", lambda i: ("sha256:deadbeef", None))
+    monkeypatch.setattr(hf, "_verify_ssh_signature", lambda s, i, b: (True, "Good"))
+    monkeypatch.setattr(hf, "_verify_mldsa_signature", lambda s: (None, "n/a"))
+    rc = hf.main(["verify-image", "example/img:1", "--sigdir", str(d), "--json"])
+    assert rc == hf.EXIT_FAIL
+    doc = json.loads(capsys.readouterr().out)
+    assert doc["digest_match"] is False
+    assert any("registry" in f for f in doc["failures"])
+
+
+def test_verify_image_bad_sigdir_exit_2(hf, tmp_path, capsys):
+    rc = hf.main(["verify-image", "--sigdir", str(tmp_path / "nope"), "--json"])
+    assert rc == hf.EXIT_USAGE
+
+
+def test_verify_image_skip_registry(hf, tmp_path, capsys, monkeypatch):
+    d = _sigdir(tmp_path)
+    monkeypatch.setattr(hf, "_verify_ssh_signature", lambda s, i, b: (True, "Good"))
+    monkeypatch.setattr(hf, "_verify_mldsa_signature", lambda s: (True, "ok"))
+    rc = hf.main(["verify-image", "--sigdir", str(d), "--skip-registry", "--json"])
+    assert rc == 0
+    doc = json.loads(capsys.readouterr().out)
+    assert doc["digest_match"] is None
+
+
+def test_sbom_writes_normalised_spdx(hf, tmp_path, capsys, monkeypatch):
+    import subprocess as sp
+    fake = {"packages": [{"name": "a"}, {"name": "b"}],
+            "creationInfo": {"created": "2020-01-01T00:00:00Z"},
+            "documentNamespace": "random"}
+    monkeypatch.setattr(hf, "_engine", lambda: "docker")
+    monkeypatch.setattr(hf, "_run", lambda cmd, **kw: sp.CompletedProcess(
+        cmd, 0, json.dumps(fake), ""))
+    out = tmp_path / "sbom.json"
+    rc = hf.main(["sbom", "--image", "example/img:1", "--out", str(out), "--json"])
+    assert rc == 0
+    doc = json.loads(capsys.readouterr().out)
+    assert doc["packages"] == 2
+    written = json.loads(out.read_text())
+    assert written["documentNamespace"] == "https://sambent.dev/sbom/hiddenforge"
+    assert "created" not in written["creationInfo"]
+
+
+def test_sbom_zero_packages_fails(hf, tmp_path, capsys, monkeypatch):
+    import subprocess as sp
+    monkeypatch.setattr(hf, "_engine", lambda: "docker")
+    monkeypatch.setattr(hf, "_run", lambda cmd, **kw: sp.CompletedProcess(
+        cmd, 0, json.dumps({"packages": []}), ""))
+    rc = hf.main(["sbom", "--out", str(tmp_path / "s.json"), "--json"])
+    assert rc == hf.EXIT_FAIL
+
+
 def test_exit_codes_are_documented(hf):
     m = hf.build_manifest()
     for code in ("0", "1", "2", "3", "4", "130"):

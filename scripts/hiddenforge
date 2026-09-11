@@ -16,6 +16,8 @@ Subcommands:
     rotate       DESTRUCTIVE: archive the current identity and start over
     encrypt-key  Encrypt a service key directory at rest (age/gpg), offline
     decrypt-key  Reverse of encrypt-key
+    verify-image Verify the signed image digest (ssh-fido2 + ML-DSA)
+    sbom         Generate an SPDX SBOM for an image
 
 Machine contract (stable): every command that matters supports --json, prints
 exactly one JSON document on stdout, sends narration to stderr, never prompts
@@ -51,6 +53,12 @@ DEFAULT_CONTAINER = "tor"
 DEFAULT_NAME = "myapp"
 DEFAULT_KEYS = "./tor-keys"
 TOR_VERSION = "0.4.9.12"
+DEFAULT_SIGNATURE_DIR = "signatures"
+SIGNED_DIGEST_FILE = "hiddenforge.digest"
+DEFAULT_SIGN_IDENTITY = "sam@sambent.com"
+# anchore/syft pinned by digest (no mutable tag), resolved from the registry.
+SYFT_IMAGE = ("anchore/syft@sha256:"
+              "95fe0835e5bebc6f8b1f8acef68d47d63d594ef4c0f25c097ff853b23cbac74c")
 
 EXIT_OK = 0
 EXIT_FAIL = 1
@@ -1545,6 +1553,138 @@ def _encrypt_or_decrypt_dir(args, encrypt: bool) -> int:
 
 
 # ---------------------------------------------------------------------------
+# verify-image / sbom (supply chain)
+# ---------------------------------------------------------------------------
+
+def _resolve_registry_digest(image: str) -> tuple[str | None, str | None]:
+    """Registry digest for an image reference, via skopeo (no pull needed)."""
+    if shutil.which("skopeo") is None:
+        return None, "skopeo not found on PATH"
+    proc = _run(["skopeo", "inspect", "--format", "{{.Digest}}", f"docker://{image}"])
+    if proc.returncode != 0:
+        return None, (proc.stderr.strip() or "skopeo failed")
+    return proc.stdout.strip(), None
+
+
+def _verify_ssh_signature(sigdir: Path, identity: str,
+                          digest_bytes: bytes) -> tuple[bool | None, str]:
+    sig = sigdir / "hiddenforge.digest.sig"
+    allowed = sigdir / "allowed-signers"
+    if not sig.is_file() or not allowed.is_file():
+        return None, "hiddenforge.digest.sig or allowed-signers missing"
+    if shutil.which("ssh-keygen") is None:
+        return None, "ssh-keygen not found"
+    proc = subprocess.run(
+        ["ssh-keygen", "-Y", "verify", "-f", str(allowed), "-I", identity,
+         "-n", "file", "-s", str(sig)],
+        input=digest_bytes, capture_output=True)
+    detail = (proc.stderr or proc.stdout).decode(errors="replace").strip()
+    return proc.returncode == 0, detail
+
+
+def _verify_mldsa_signature(sigdir: Path) -> tuple[bool | None, str]:
+    pub = sigdir / "sambent-mldsa.pub"
+    sig = sigdir / "hiddenforge.digest.mldsa"
+    dig = sigdir / SIGNED_DIGEST_FILE
+    if not (pub.is_file() and sig.is_file()):
+        return None, "ML-DSA public key or signature missing"
+    if shutil.which("pqsign") is None:
+        return None, "pqsign not installed (optional)"
+    proc = _run(["pqsign", "verify", "--pub", str(pub), "--sig", str(sig),
+                 "--in", str(dig)])
+    return proc.returncode == 0, (proc.stderr.strip() or proc.stdout.strip())
+
+
+def cmd_verify_image(args) -> int:
+    try:
+        image = args.image or build_manifest()["image"]
+        sigdir = Path(args.sigdir)
+        digest_file = sigdir / SIGNED_DIGEST_FILE
+        if not digest_file.is_file():
+            raise ValueError(f"{digest_file} not found; is --sigdir correct?")
+        signed = digest_file.read_text().strip()
+        if not signed.startswith("sha256:"):
+            raise ValueError(f"{digest_file} does not contain a sha256 digest")
+
+        registry, reg_err = (None, None)
+        if not args.skip_registry:
+            registry, reg_err = _resolve_registry_digest(image)
+        digest_match = None if registry is None else (registry == signed)
+
+        ssh_ok, ssh_detail = _verify_ssh_signature(sigdir, args.identity,
+                                                   digest_file.read_bytes())
+        pq_ok, pq_detail = _verify_mldsa_signature(sigdir)
+
+        failures = []
+        if not args.skip_registry:
+            if registry is None:
+                failures.append(f"could not resolve registry digest: {reg_err}")
+            elif not digest_match:
+                failures.append("registry digest does not match the signed digest")
+        if ssh_ok is not True:
+            failures.append(f"SSH-FIDO2 signature: {ssh_detail}")
+        if pq_ok is False:
+            failures.append(f"ML-DSA signature: {pq_detail}")
+        ok = not failures
+
+        doc = {
+            "image": image,
+            "registry_digest": registry,
+            "signed_digest": signed,
+            "digest_match": digest_match,
+            "ssh_fido2": ssh_ok,
+            "ssh_fido2_detail": ssh_detail,
+            "mldsa": pq_ok,
+            "mldsa_detail": pq_detail,
+            "failures": failures,
+        }
+        if args.json:
+            return emit_json(EXIT_OK if ok else EXIT_FAIL, **doc)
+        print(f"image:           {image}")
+        print(f"signed digest:   {signed}")
+        print(f"registry digest: {registry or '(not checked)'}")
+        print(f"ssh-fido2:       {ssh_ok} ({ssh_detail})")
+        print(f"mldsa:           {pq_ok} ({pq_detail})")
+        print("VERIFIED" if ok else "NOT VERIFIED: " + "; ".join(failures))
+        return EXIT_OK if ok else EXIT_FAIL
+    except ValueError as exc:
+        return emit_json(EXIT_USAGE, error=str(exc))
+
+
+def cmd_sbom(args) -> int:
+    try:
+        eng = _engine()
+        if eng is None:
+            raise ValueError("neither docker nor podman found on PATH")
+        if eng != "docker":
+            raise ValueError("sbom currently requires the docker engine for its socket")
+        image = args.image or build_manifest()["image"]
+        proc = _run([eng, "run", "--rm",
+                     "-v", "/var/run/docker.sock:/var/run/docker.sock",
+                     args.syft_image, image, "-o", "spdx-json", "-q"])
+        if proc.returncode != 0:
+            raise RuntimeError((proc.stderr.strip() or "syft failed")[-400:])
+        doc = json.loads(proc.stdout)
+        # Normalise the two nondeterministic fields so the SBOM is stable.
+        doc["documentNamespace"] = "https://sambent.dev/sbom/hiddenforge"
+        doc.get("creationInfo", {}).pop("created", None)
+        packages = len(doc.get("packages", []))
+        if packages == 0:
+            raise RuntimeError("syft returned an SBOM with zero packages")
+        out = Path(args.out)
+        out.write_text(json.dumps(doc, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        os.chmod(out, 0o644)
+        if args.json:
+            return emit_json(EXIT_OK, out=str(out), image=image, packages=packages,
+                             syft_image=args.syft_image)
+        print(f"Wrote {out} ({packages} packages)")
+        return EXIT_OK
+    except (ValueError, OSError, RuntimeError, json.JSONDecodeError) as exc:
+        return emit_json(EXIT_USAGE if isinstance(exc, ValueError) else EXIT_FAIL,
+                         error=str(exc))
+
+
+# ---------------------------------------------------------------------------
 # argparse
 # ---------------------------------------------------------------------------
 
@@ -1658,6 +1798,22 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--force", action="store_true")
         _add_json(sp)
         sp.set_defaults(func=fn)
+
+    sp = sub.add_parser("verify-image", help="verify the signed image digest")
+    sp.add_argument("image", nargs="?", default=None)
+    sp.add_argument("--sigdir", default=DEFAULT_SIGNATURE_DIR)
+    sp.add_argument("--identity", default=DEFAULT_SIGN_IDENTITY)
+    sp.add_argument("--skip-registry", action="store_true",
+                    help="verify signatures only; do not query the registry")
+    _add_json(sp)
+    sp.set_defaults(func=cmd_verify_image)
+
+    sp = sub.add_parser("sbom", help="generate an SPDX SBOM for an image")
+    sp.add_argument("--image", default=None)
+    sp.add_argument("--out", default="./hiddenforge.spdx.json")
+    sp.add_argument("--syft-image", default=SYFT_IMAGE)
+    _add_json(sp)
+    sp.set_defaults(func=cmd_sbom)
 
     return ap
 

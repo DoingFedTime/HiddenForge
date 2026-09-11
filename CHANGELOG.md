@@ -73,6 +73,11 @@ existing `docker compose up -d` human path is unchanged.
   container lookup also understands podman-compose's service label.
 - **Golden snapshots** for the emitted `compose.service.yml`, `deploy.sh`, and
   `README.txt`, so the integration contract cannot drift silently.
+- **`verify-image` and `sbom`**: `verify-image` resolves the registry digest with
+  `skopeo`, compares it to `signatures/hiddenforge.digest`, and verifies the
+  SSH-FIDO2 (and ML-DSA, when `pqsign` is present) signature; `sbom` runs a
+  digest-pinned `anchore/syft` and writes normalised SPDX JSON. Both support
+  `--json`.
 
 ### Changed
 - **Refreshed the `tor` apk pin `0.4.9.11-r0` to `0.4.9.12-r0`.** Alpine pruned

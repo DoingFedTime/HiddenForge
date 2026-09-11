@@ -65,7 +65,8 @@ hiddenforge show --keys ./tor-keys --name myapp --json
 ```
 
 Subcommands: `setup`, `info`, `version`, `show`, `status`, `doctor`, `vanity`,
-`backup`, `restore`, `rotate`, `encrypt-key`, `decrypt-key`. Every one supports
+`backup`, `restore`, `rotate`, `encrypt-key`, `decrypt-key`, `verify-image`,
+`sbom`. Every one supports
 `--json`, never prompts off a TTY, and uses stable exit codes. `vanity --bench`
 prints the honest time estimate for a prefix on your machine before you start.
 
@@ -212,6 +213,14 @@ Releases up to 2.0.3 additionally carried a cosign signature (`cosign.pub` is
 kept in the repo so those older releases stay verifiable). From 2.0.4 cosign is
 no longer used: it was the last part of the flow that depended on external
 tooling, and the ML-DSA + hardware pair is the attestation.
+
+The CLI wraps the digest check and the signature check in one command:
+
+```bash
+hiddenforge verify-image sambent.dev/sam/hiddenforge:latest --json
+docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+  sambent.dev/sam/hiddenforge:latest sbom --out /tmp/hf.spdx.json
+```
 
 For the strongest guarantee, pin the verified digest in your compose file instead
 of the mutable `:latest` tag. Full step-by-step verification, both signatures

@@ -266,6 +266,30 @@ hiddenforge version --json     # {"name","version","contract_version","ok","exit
 address command and file paths, the key file formats/modes, and the exit codes.
 Pin `contract_version`; it only changes if a field is removed or changes meaning.
 
+### Verify the image, and generate an SBOM
+
+```bash
+hiddenforge verify-image sambent.dev/sam/hiddenforge:latest --json
+```
+
+Resolves the registry digest with `skopeo` (no pull), compares it to
+`signatures/hiddenforge.digest`, and verifies the SSH-FIDO2 (YubiKey) signature
+over that digest. ML-DSA (post-quantum) is also checked when `pqsign` is
+installed; if not, it is reported as `null` (optional) rather than a failure. A
+present-but-invalid signature is a failure. `--skip-registry` verifies the
+signatures alone. Result fields: `registry_digest`, `signed_digest`,
+`digest_match`, `ssh_fido2`, `mldsa`, `failures`. Exit `0` verified, `1` not
+verified, `2` bad arguments.
+
+```bash
+hiddenforge sbom --image sambent.dev/sam/hiddenforge:latest --out hf.spdx.json --json
+```
+
+Runs a digest-pinned `anchore/syft` over the image and writes a normalised SPDX
+JSON document (`documentNamespace` and `creationInfo.created` are pinned so the
+output is stable). Requires the docker engine (for its socket). Exit `0` written,
+`1` syft failed or produced zero packages.
+
 ### Exit codes
 
 | code | meaning |
