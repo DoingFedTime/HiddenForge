@@ -64,10 +64,11 @@ existing `docker compose up -d` human path is unchanged.
   directory, and address). `--runtime podman` emits a Podman-correct fragment
   and deploy script; `--force` is required to overwrite an existing output
   directory.
-- **CI** (`.github/workflows/ci.yml`): lint, host unit tests with the coverage
-  floor, an image build with smoke checks (CLI dispatch, the in-container torrc
-  test, vanity generation), and the live acceptance suite. Actions are pinned by
-  commit SHA.
+- **All checks run locally** (no hosted CI): `ruff`, the host
+  unit tests with the coverage floor, an image build with smoke checks (CLI
+  dispatch, the in-container torrc test, vanity generation), and the live
+  acceptance suite (`HIDDENFORGE_E2E=1`). Building, scanning, SBOMs, pushing to
+  `sambent.dev`, and signing are separate local steps.
 - **Podman parity in the CLI**: `status`, `doctor`, and `vanity` use `docker` or
   `podman` (whichever is present; override with `HIDDENFORGE_ENGINE`), and
   container lookup also understands podman-compose's service label.
