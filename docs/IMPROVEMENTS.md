@@ -113,10 +113,10 @@ decision not to do (reason given).
 
 ## H. Code quality / efficiency (from the SME review)
 
-- [ ] **H1** `_chown_r` ordering pinned by a regression test (the symlink
-  rejection depends on `_chmod_dir_nofollow` running first). The primitive itself
-  is covered by `test_privileged_fs.py`; the call *order* is not separately
-  pinned yet.
+- [x] **H1** The `_chmod_dir_nofollow(hs_dir)` → `_chown_r(hs_dir)` ordering is
+  pinned by a source-order regression test in `test_privileged_fs.py` (the
+  primitives were already covered; the order is what makes the symlink
+  rejection effective).
 - [x] **H2** Sanitise the "Service hosts:" startup echo (control characters from
   env could inject into logs/terminals).
 - [-] **H3** Service-name collisions were already handled in `entrypoint.py`

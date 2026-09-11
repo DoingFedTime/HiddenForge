@@ -192,3 +192,20 @@ def test_chown_r_still_chowns_the_legitimate_tree(tmp_path, monkeypatch):
     assert "hs_ed25519_secret_key" in seen
     assert "authorized_clients" in seen
     assert "a.auth" in seen
+
+
+def test_generate_torrc_checks_symlink_before_chown():
+    """The symlink rejection depends on the *order* of these two calls.
+
+    ``Path.mkdir(exist_ok=True)`` succeeds through a symlink, so
+    ``_chmod_dir_nofollow`` (which refuses a symlink via O_NOFOLLOW) must run
+    before ``_chown_r``. If the two are ever reordered, a symlinked service
+    directory would be chowned - a root-privileged escape. Pinned here because
+    the individual primitives being correct is not enough.
+    """
+    import inspect
+    src = inspect.getsource(e.generate_basic_torrc)
+    assert "_chmod_dir_nofollow(hs_dir" in src, "chmod call not found"
+    assert "_chown_r(hs_dir" in src, "chown call not found"
+    assert src.index("_chmod_dir_nofollow(hs_dir") < src.index("_chown_r(hs_dir"), \
+        "_chown_r now runs before the symlink check; that reopens the escape"
