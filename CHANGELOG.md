@@ -70,6 +70,10 @@ existing `docker compose up -d` human path is unchanged.
   contract checks, a vanity smoke test, and the live acceptance suite. It targets
   the self-hosted runner labelled `docker` (compute is local). Publishing the image to
   `sambent.dev` and signing it remain separate local steps.
+- **A working self-hosted runner**: Forgejo runner v13.1.0, SHA256-verified,
+  registered to `sambent.dev` with host-mode labels `docker`/`ubuntu-latest`,
+  so a push actually executes the CI. Actions are enabled for the repository.
+  How CI runs: [docs/CI.md](docs/CI.md).
 - **Podman parity in the CLI**: `status`, `doctor`, and `vanity` use `docker` or
   `podman` (whichever is present; override with `HIDDENFORGE_ENGINE`), and
   container lookup also understands podman-compose's service label.
