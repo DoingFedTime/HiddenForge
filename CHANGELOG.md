@@ -129,6 +129,12 @@ existing `docker compose up -d` human path is unchanged.
   never set it -- `pids_limit` remains the per-container cap, and the entrypoint
   now probes `su-exec tor true` at startup and fails with a named error instead
   of looping.
+- **OpenSSL pinned to 3.5.8-r0.** Scanning the built image found 20 CVEs in the
+  OpenSSL the base digest ships (3.5.7-r0), 2 of them HIGH. The HIGH ones are
+  QUIC-server issues and Tor speaks no QUIC, so they were not reachable -- but the
+  image should not ship a knowingly vulnerable TLS stack. `openssl=3.5.8-r0` is
+  now pinned explicitly in the apk install rather than inherited from the base,
+  and `trivy image` reports the image clean.
 - **Vanguards is now retried when it never started.** The supervisor previously
   only restarted it after an observed exit, so a `wait_for_socket` timeout or a
   raise on the first start left the addon permanently absent (healthcheck

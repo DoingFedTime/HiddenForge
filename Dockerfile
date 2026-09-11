@@ -69,11 +69,16 @@ ENV PIP_DISABLE_PIP_VERSION_CHECK=1
 #
 # rm apk.log because it records wall-clock operation times, which would also
 # break reproducibility.
+# openssl is pinned EXPLICITLY rather than inherited from the base digest. The
+# base image ships 3.5.7-r0, against which Alpine's index now carries 3.5.8-r0
+# (CVE-2026-14456 and a batch of other OpenSSL issues). Pin the fix so the image
+# does not silently depend on whichever OpenSSL the base happens to contain.
 RUN apk add --no-cache \
     tor=0.4.9.12-r0 \
     python3=3.12.14-r0 \
     su-exec=0.3-r0 \
-    py3-pip=25.1.1-r1 && \
+    py3-pip=25.1.1-r1 \
+    openssl=3.5.8-r0 && \
     rm -f /var/log/apk.log && \
     # apk stamps a new account's shadow "last-change" field with the current day
     # (days since 1970) when it creates the tor user. Pin every account's field
