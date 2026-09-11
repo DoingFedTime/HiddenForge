@@ -59,6 +59,15 @@ existing `docker compose up -d` human path is unchanged.
   step.
 - **`examples/demo`**: a throwaway nginx app published as a `.onion` by adding
   only the emitted fragment.
+- **Multi-service `setup`**: `--service name:onionport:host:port` is repeatable,
+  so several onions are emitted at once (each with its own env var, key
+  directory, and address). `--runtime podman` emits a Podman-correct fragment
+  and deploy script; `--force` is required to overwrite an existing output
+  directory.
+- **CI** (`.github/workflows/ci.yml`): lint, host unit tests with the coverage
+  floor, an image build with smoke checks (CLI dispatch, the in-container torrc
+  test, vanity generation), and the live acceptance suite. Actions are pinned by
+  commit SHA.
 
 ### Changed
 - **Refreshed the `tor` apk pin `0.4.9.11-r0` to `0.4.9.12-r0`.** Alpine pruned
@@ -76,6 +85,15 @@ existing `docker compose up -d` human path is unchanged.
   `--container tor` works when the real container is `<project>-tor-1`.
 - Operator-supplied env values are escaped before being echoed at startup, so a
   value containing ANSI escapes or newlines cannot forge log lines.
+- **Vanguards is now retried when it never started.** The supervisor previously
+  only restarted it after an observed exit, so a `wait_for_socket` timeout or a
+  raise on the first start left the addon permanently absent (healthcheck
+  unhealthy, no recovery short of a container restart). It is now retried with a
+  bounded budget and a backoff; a missing control socket does not consume the
+  budget.
+- **`doctor` verifies the generated torrc** still contains every hardening
+  directive (`ClientOnly 1`, `SafeLogging 1`, `VanguardsLiteEnabled 1`, PoW,
+  Intro-point DoS, ...), not just the Docker flags and on-disk key modes.
 
 ### Tests
 - Host suite 169 → 245 tests: CLI contract, manifest equality, Tor v3 address

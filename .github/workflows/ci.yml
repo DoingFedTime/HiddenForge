@@ -1,0 +1,81 @@
+name: CI
+
+# Lint, host unit tests, an image build with smoke checks, and the live
+# end-to-end acceptance suite. Every action is pinned by commit SHA.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      # actions/checkout v5.1.0
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      # actions/setup-python v5.6.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.12"
+      - run: pip install --disable-pip-version-check ruff==0.15.16
+      - run: ruff check .
+
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.12"
+      - name: Install test dependencies
+        run: |
+          pip install --disable-pip-version-check \
+            pytest==9.0.3 hypothesis==6.155.1 coverage==7.14.1 pytest-cov==7.1.0
+      - name: Host unit tests (with coverage floor)
+        run: python -m pytest -q --cov=entrypoint --cov-report=term
+      - name: manifest.json must match the code
+        run: python -c "import json;json.load(open('manifest.json'))"
+
+  integration:
+    # Build the real image, smoke-test it, then run the live acceptance suite
+    # (starts a backend + the emitted compose fragment; Tor publishes a .onion).
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.12"
+      - name: Build the image
+        run: |
+          docker build \
+            --build-arg SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)" \
+            -t sambent.dev/sam/hiddenforge:latest .
+      - name: "Smoke: CLI dispatch and machine contract"
+        run: |
+          docker run --rm sambent.dev/sam/hiddenforge:latest version --json
+          docker run --rm sambent.dev/sam/hiddenforge:latest info --json > /dev/null
+      - name: "Smoke: in-container torrc test"
+        run: docker run --rm sambent.dev/sam/hiddenforge:latest python3 /usr/local/bin/tests/test_torrc.py
+      - name: "Smoke: vanity generator"
+        run: |
+          mkdir -p /tmp/hf-keys && chmod 700 /tmp/hf-keys
+          docker run --rm -v /tmp/hf-keys:/keys sambent.dev/sam/hiddenforge:latest \
+            vanity --prefix a --name ci --out /keys --threads 2 \
+            --uid "$(id -u)" --gid "$(id -g)" --json
+          grep -q '^a' /tmp/hf-keys/ci/hostname
+      - name: Install test dependencies
+        run: pip install --disable-pip-version-check pytest==9.0.3
+      - name: Live acceptance suite
+        env:
+          HIDDENFORGE_E2E: "1"
+        run: python -m pytest tests/test_e2e_live.py -v

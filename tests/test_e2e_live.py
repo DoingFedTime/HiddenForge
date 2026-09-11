@@ -140,6 +140,17 @@ def test_demo_publishes_and_show_agrees(tmp_path):
                 break
             time.sleep(5)
         assert ready, "status never reported ready"
+
+        # doctor must verify the running container end to end, including that
+        # the generated torrc still carries every hardening directive.
+        doc = subprocess.run(
+            [str(CLI), "doctor", "--container", "tor",
+             "--keys", str(tmp_path / "tor-keys"), "--json"],
+            capture_output=True, text=True)
+        ddoc = json.loads(doc.stdout)
+        assert ddoc["ok"], f"doctor failures: {ddoc.get('failures')}"
+        assert any(c["check"].startswith("generated torrc") and c["ok"]
+                   for c in ddoc["checks"]), "doctor did not check the torrc"
     finally:
         subprocess.run(_compose(tmp_path, "down", "-v"),
                        capture_output=True, timeout=120)

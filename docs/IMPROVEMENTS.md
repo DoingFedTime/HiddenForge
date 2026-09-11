@@ -128,9 +128,9 @@ decision not to do (reason given).
   the floor rationale restated.
 - [ ] **H6** Deduplicate `ALLOWED_DIRECTIVES` between `test_torrc_gen.py` and
   `test_fuzz.py` (still duplicated).
-- [ ] **H7** Make the `wait_for_socket` timeout and Vanguards start failure
-  retryable at the supervisor level (currently a never-started addon is surfaced
-  by the healthcheck, not retried).
+- [x] **H7** Vanguards is retried when it never started: the supervisor now
+  retries with a bounded budget and backoff instead of only reacting to an
+  observed exit.
 
 ## I. Things deliberately NOT changed
 

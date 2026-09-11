@@ -603,6 +603,16 @@ def _caps_ok(caps) -> set[str]:
     return out
 
 
+def _docker_exec_text(container: str, argv: list[str]) -> str | None:
+    """Best-effort in-container command capturing stdout; None if unavailable."""
+    for prefix in (["docker", "exec", container, "su-exec", "tor"],
+                   ["docker", "exec", container]):
+        proc = _run([*prefix, *argv])
+        if proc.returncode == 0:
+            return proc.stdout
+    return None
+
+
 def _append_key_checks(checks: list[dict], keys: Path) -> None:
     """Verify on-disk key hygiene. Reads only modes/sizes, never key bytes."""
     if not keys.is_dir():
@@ -717,6 +727,21 @@ def cmd_doctor(args) -> int:
     checks.append(_check(logdriver == "none", "logging driver is 'none' (no host log)",
                          f"LogConfig.Type={logdriver!r}", severity="warn"))
 
+    # The generated torrc must still carry every hardening directive. Docker
+    # flags do not prove the Tor config was not weakened, and a compromised or
+    # reconstructed /etc/tor/torrc would otherwise pass doctor silently.
+    resolved = _resolve_container(container)
+    torrc = _docker_exec_text(resolved, ["cat", "/etc/tor/torrc"]) if resolved else None
+    if torrc is None:
+        checks.append(_check(True, "generated torrc is readable",
+                             "could not read /etc/tor/torrc (container stopping?)",
+                             severity="warn"))
+    else:
+        missing = [d for d in HARDENING_DIRECTIVES if d not in torrc]
+        checks.append(_check(
+            not missing, "generated torrc contains every hardening directive",
+            "missing: " + "; ".join(missing) if missing else "all present"))
+
     # On-disk key hygiene (host side; no docker exec needed).
     _append_key_checks(checks, Path(args.keys))
     failures = [c for c in checks if not c["ok"] and c["severity"] == "fail"]
@@ -747,25 +772,42 @@ def _is_ip_literal(value: str) -> bool:
         return False
 
 
-def render_compose_fragment(name: str, env_value: str, image: str, backend: str,
-                            keys: str, container: str) -> str:
-    # depends_on only makes sense for a Compose *service* name. An IP-literal
-    # backend (or a bare hostname that is not a service) would produce
-    # `depends_on: [172.17.0.2]` and make `docker compose config` fail.
-    dep_block = ""
-    if backend and CONTAINER_RE.fullmatch(backend) and not _is_ip_literal(backend):
-        dep_block = ("    depends_on:\n"
-                     f"      - {backend}\n")
+def _env_var(name: str) -> str:
+    return f"{name.upper().replace('-', '_')}_TOR_SERVICE_HOSTS"
+
+
+def render_compose_fragment(services: dict[str, list[str]], image: str, keys: str,
+                            container: str, runtime: str = "docker") -> str:
+    """Render the mergeable compose fragment for one or more services.
+
+    `services` maps a service name to a list of ``onion_port:host:port``
+    mappings. Output is deterministic (sorted); with one service it is identical
+    to the previous single-service output.
+    """
+    env_lines = "".join(
+        f'      {_env_var(n)}: "{",".join(v)}"\n' for n, v in sorted(services.items())
+    )
+    hosts = sorted({
+        m.split(":")[1]
+        for mappings in services.values() for m in mappings
+        if len(m.split(":")) == 3
+    } - {""})
+    hosts = [h for h in hosts if CONTAINER_RE.fullmatch(h) and not _is_ip_literal(h)]
+    dep_block = ("    depends_on:\n" + "".join(f"      - {h}\n" for h in hosts)
+                 if hosts else "")
+    apparmor = "      - apparmor=docker-default\n" if runtime == "docker" else ""
+    compose_cmd = "podman-compose" if runtime == "podman" else "docker compose"
+    example = sorted(services)[0]
     return f"""# hiddenforge compose fragment (contract v{HIDDENFORGE_VERSION}, contract {CONTRACT_VERSION}).
 # Merge it into YOUR compose file; do not edit it:
 #
-#   docker compose -f compose.yml -f compose.service.yml up -d
+#   {compose_cmd} -f compose.yml -f compose.service.yml up -d
 #
 # Your backend service must join the `tor-internal` network below and must NOT
 # publish any ports. hiddenforge reaches it by service name; the resolved IP is
 # pinned into the torrc at container start.
 #
-# Address:  hiddenforge show --json --name {name}
+# Address:  hiddenforge show --json --name {example}
 # Ready:    hiddenforge status --json   (poll the `ready` field)
 #
 # Threat model: state-level adversary. Do not weaken these flags.
@@ -784,8 +826,7 @@ services:
     security_opt:
       - no-new-privileges:true
       - seccomp=unconfined
-      - apparmor=docker-default
-    read_only: true
+{apparmor}    read_only: true
     pids_limit: 256
     mem_limit: 512m
     memswap_limit: 512m
@@ -801,8 +842,7 @@ services:
     logging:
       driver: none
     environment:
-      {name.upper().replace('-', '_')}_TOR_SERVICE_HOSTS: "{env_value}"
-    volumes:
+{env_lines}    volumes:
       - {keys}:/var/lib/tor/hidden_service
     networks:
       - tor-internal
@@ -816,76 +856,94 @@ services:
 {dep_block}"""
 
 
-def render_deploy_sh(name: str, image: str, keys_dir: str) -> str:
+def render_deploy_sh(services: dict[str, list[str]], keys_dir: str,
+                     container: str, runtime: str = "docker") -> str:
+    names = " ".join(sorted(services))
+    if runtime == "podman":
+        engine_check = ("if ! command -v podman-compose >/dev/null 2>&1; then\n"
+                        '    echo "podman-compose not installed." >&2\n'
+                        "    exit 1\nfi")
+        up = "podman-compose"
+    else:
+        engine_check = ("if ! command -v docker >/dev/null 2>&1; then\n"
+                        '    echo "docker not installed. Install Docker Engine first." >&2\n'
+                        "    exit 1\nfi")
+        up = "docker compose"
     return f"""#!/usr/bin/env bash
 # hiddenforge, one-shot deploy. Generated by `hiddenforge setup`.
+# Usage: ./deploy.sh [path/to/your-compose.yml]
 set -euo pipefail
 cd "$(dirname "$0")"
 
-if ! command -v docker >/dev/null 2>&1; then
-    echo "docker not installed. Install Docker Engine first." >&2
-    exit 1
-fi
+BASE="${{1:-compose.yml}}"
+{engine_check}
 
 echo "==> Preparing key directory {keys_dir}"
 mkdir -p "{keys_dir}"
 chmod 700 "{keys_dir}" 2>/dev/null || :
 
 echo "==> Bringing the stack up"
-docker compose up -d
+{up} -f "$BASE" -f compose.service.yml up -d
 
-echo "==> Waiting for the .onion address (up to 180 seconds)"
-onion=""
-for _ in $(seq 1 180); do
-    onion=$(docker compose exec -T {name} cat \\
-        /var/lib/tor/hidden_service/{name}/hostname 2>/dev/null || true)
-    if [ -n "$onion" ]; then break; fi
-    sleep 1
+echo "==> Waiting for the .onion address(es) (up to 180s each)"
+for svc in {names}; do
+    onion=""
+    for _ in $(seq 1 180); do
+        onion=$({up} -f "$BASE" -f compose.service.yml exec -T {container} \\
+            cat /var/lib/tor/hidden_service/$svc/hostname 2>/dev/null || true)
+        if [ -n "$onion" ]; then break; fi
+        sleep 1
+    done
+    echo
+    echo "================================================================="
+    if [ -n "$onion" ]; then
+        echo "$svc .onion: $onion"
+        echo "Persisted to: {keys_dir}/$svc/hostname and {keys_dir}/$svc.onion"
+    else
+        echo "$svc: address not ready yet; check the container logs"
+    fi
 done
-
-echo
-echo "================================================================="
-if [ -n "$onion" ]; then
-    echo "Your .onion address: $onion"
-    echo "Persisted to: {keys_dir}/{name}/hostname and {keys_dir}/{name}.onion"
-else
-    echo "(address not ready yet; check: docker compose logs {name})"
-fi
 echo "BACK UP THE ENTIRE {keys_dir} DIRECTORY. It IS your address."
 echo "================================================================="
 """
 
 
-def render_readme_txt(name: str, env_value: str, image: str, keys_dir: str,
-                      backend: str) -> str:
+def render_readme_txt(services: dict[str, list[str]], image: str, keys_dir: str,
+                      container: str, runtime: str = "docker") -> str:
+    services_block = "\n".join(
+        f'  {n}: {_env_var(n)}="{",".join(v)}"' for n, v in sorted(services.items())
+    )
+    names = ", ".join(sorted(services))
+    compose_cmd = "podman-compose" if runtime == "podman" else "docker compose"
     return f"""hiddenforge, your setup
 =========================
 
-Service:   {name}
-Backend:   {backend}
-Mapping:   {name.upper().replace('-', '_')}_TOR_SERVICE_HOSTS="{env_value}"
+Services:
+{services_block}
 Image:     {image}
 Keys:      {keys_dir}
 
 How to bring it up
 ------------------
-1. Make sure your backend service joins the `tor-internal` network and has no
+1. Make sure every backend service joins the `tor-internal` network and has no
    published ports.
-2. ./deploy.sh
+2. ./deploy.sh   (or: {compose_cmd} -f compose.yml -f compose.service.yml up -d)
 
-Where the address lives
------------------------
-  {keys_dir}/{name}/hostname   <- Tor's own hostname file
-  {keys_dir}/{name}.onion      <- world-readable copy written at startup
+Where the addresses live
+------------------------
+  {keys_dir}/<service>/hostname   <- Tor's own hostname file
+  {keys_dir}/<service>.onion      <- world-readable copy written at startup
 
-Read it any time:
-  hiddenforge show --json --name {name}
+Read one any time:
+  hiddenforge show --keys {keys_dir} --name <service> --json
 
-BACK UP THE ENTIRE {keys_dir} DIRECTORY. The key IS the .onion address.
-Losing it loses the address permanently.
+Services: {names}
 
-If you recreate the backend container, restart hiddenforge so it re-resolves
-the backend IP:  docker compose restart {name}
+BACK UP THE ENTIRE {keys_dir} DIRECTORY. A key IS a .onion address.
+Losing it loses that address permanently.
+
+If you recreate a backend container, restart hiddenforge so it re-resolves the
+backend IP:  {compose_cmd} restart {container}
 """
 
 
@@ -912,70 +970,101 @@ def _parse_backend(backend: str) -> tuple[str, str]:
     return host, port
 
 
+def _parse_service_spec(spec: str) -> tuple[str, str]:
+    """Parse `name:onion_port:host:port` into (name, 'onion_port:host:port')."""
+    parts = spec.split(":")
+    if len(parts) != 4:
+        raise ValueError(f"service mapping must be name:onionport:host:port, got {spec!r}")
+    sname = validate_name(parts[0])
+    onp, host, port = parts[1], parts[2], parts[3]
+    if not onp.isdigit() or not (1 <= int(onp) <= 65535):
+        raise ValueError(f"bad onion port in {spec!r}")
+    if not port.isdigit() or not (1 <= int(port) <= 65535):
+        raise ValueError(f"bad backend port in {spec!r}")
+    if not re.fullmatch(r"[a-zA-Z0-9._\-]{1,253}", host):
+        raise ValueError(f"invalid backend host in {spec!r}")
+    return sname, f"{onp}:{host}:{port}"
+
+
 def cmd_setup(args) -> int:
     try:
-        name = validate_name(args.name or DEFAULT_NAME)
-        if not args.backend and not args.services:
-            if args.non_interactive or args.json or not sys.stdin.isatty():
-                raise ValueError("--backend service:port is required (or --services)")
-            args.backend = _prompt("Backend service:port (e.g. web:80)")
-        if args.services:
-            # name:onionport:host:port,name2:...
-            mappings: dict[str, list[str]] = {}
-            for spec in args.services.split(","):
-                parts = spec.split(":")
-                if len(parts) != 4:
-                    raise ValueError(f"--services entry must be "
-                                     f"name:onionport:host:port, got {spec!r}")
-                sname = validate_name(parts[0])
-                onp, host, port = parts[1], parts[2], parts[3]
-                if not onp.isdigit() or not (1 <= int(onp) <= 65535):
-                    raise ValueError(f"bad onion port in {spec!r}")
-                if not port.isdigit() or not (1 <= int(port) <= 65535):
-                    raise ValueError(f"bad backend port in {spec!r}")
-                mappings.setdefault(sname, []).append(f"{onp}:{host}:{port}")
-            if len(mappings) != 1:
-                raise ValueError("setup writes one service; use repeated runs or the "
-                                 "native <NAME>_TOR_SERVICE_HOSTS env form for many")
-            name = next(iter(mappings))
-            env_value = ",".join(mappings[name])
-            backend_host = mappings[name][0].split(":")[1]
-        else:
+        services: dict[str, list[str]] = {}
+
+        def add(sname: str, mapping: str) -> None:
+            bucket = services.setdefault(sname, [])
+            if mapping not in bucket:
+                bucket.append(mapping)
+
+        # Three ways in, all mergeable: --services (legacy comma list), --service
+        # (repeatable), and --backend/--name (the simple single-service form).
+        for spec in (args.services or "").split(","):
+            if spec.strip():
+                add(*_parse_service_spec(spec.strip()))
+        for spec in (args.service or []):
+            add(*_parse_service_spec(spec))
+        if args.backend:
             host, port = _parse_backend(args.backend)
-            env_value = f"{args.onion_port}:{host}:{port}"
-            backend_host = host
-        image = args.image
-        keys = args.keys
+            add(validate_name(args.name or DEFAULT_NAME),
+                f"{args.onion_port}:{host}:{port}")
+        if not services:
+            if args.non_interactive or args.json or not sys.stdin.isatty():
+                raise ValueError("--backend service:port is required "
+                                 "(or --service/--services)")
+            host, port = _parse_backend(_prompt("Backend service:port (e.g. web:80)"))
+            add(validate_name(args.name or DEFAULT_NAME),
+                f"{args.onion_port}:{host}:{port}")
+
         out = Path(args.out)
         out.mkdir(parents=True, exist_ok=True)
+        existing = [p for p in ("compose.service.yml", "deploy.sh", "README.txt",
+                                "hiddenforge.json") if (out / p).exists()]
+        if existing and not args.force:
+            raise ValueError(f"{out} already contains {', '.join(existing)}; "
+                             "pass --force to overwrite")
 
-        compose = render_compose_fragment(name, env_value, image, backend_host, keys,
-                                          args.container)
-        deploy = render_deploy_sh(name, image, keys)
-        readme = render_readme_txt(name, env_value, image, keys, backend_host)
-
-        (out / "compose.service.yml").write_text(compose, encoding="utf-8")
+        image, keys, container, runtime = args.image, args.keys, args.container, args.runtime
+        (out / "compose.service.yml").write_text(
+            render_compose_fragment(services, image, keys, container, runtime),
+            encoding="utf-8")
         dp = out / "deploy.sh"
-        dp.write_text(deploy, encoding="utf-8")
+        dp.write_text(render_deploy_sh(services, keys, container, runtime),
+                      encoding="utf-8")
         os.chmod(dp, 0o755)
-        (out / "README.txt").write_text(readme, encoding="utf-8")
+        (out / "README.txt").write_text(
+            render_readme_txt(services, image, keys, container, runtime),
+            encoding="utf-8")
 
+        compose_cmd = "podman-compose" if runtime == "podman" else "docker compose"
+        svc_list = [
+            {
+                "name": n,
+                "env_var": _env_var(n),
+                "env_value": ",".join(v),
+                "address_command": f"hiddenforge show --json --name {n}",
+                "address_file": f"{keys}/{n}.onion",
+                "key_path": f"{keys}/{n}/{SECRET_FILE}",
+            }
+            for n, v in sorted(services.items())
+        ]
+        first = svc_list[0]
         descriptor = {
-            "name": name,
-            "env_var": f"{name.upper().replace('-', '_')}_TOR_SERVICE_HOSTS",
-            "env_value": env_value,
-            "backend": backend_host,
+            "name": first["name"],
+            "env_var": first["env_var"],
+            "env_value": first["env_value"],
+            "services": svc_list,
+            "backend": services[first["name"]][0].split(":")[1],
             "image": image,
             "keys": keys,
-            "container": args.container,
+            "container": container,
+            "runtime": runtime,
             "onion_port": args.onion_port,
             "output_dir": str(out.resolve()),
-            "merge": f"docker compose -f compose.yml -f {out}/compose.service.yml up -d",
-            "address_command": f"hiddenforge show --json --name {name}",
+            "merge": f"{compose_cmd} -f compose.yml -f {out}/compose.service.yml up -d",
+            "address_command": f"hiddenforge show --json --name {first['name']}",
             "ready_command": "hiddenforge status --json",
-            "bare_command": f"docker compose -f compose.yml -f {out}/compose.service.yml up -d",
-            "address_file": f"{keys}/{name}.onion",
-            "key_path": f"{keys}/{name}/{SECRET_FILE}",
+            "bare_command": f"{compose_cmd} -f compose.yml -f {out}/compose.service.yml up -d",
+            "address_file": first["address_file"],
+            "key_path": first["key_path"],
             "contract_version": CONTRACT_VERSION,
             "hiddenforge_version": HIDDENFORGE_VERSION,
         }
@@ -992,9 +1081,10 @@ def cmd_setup(args) -> int:
         _narrate(args, f"Wrote {out}/hiddenforge.json")
         _narrate(args, "")
         _narrate(args, "Next:")
-        _narrate(args, "  1. Put your backend on the `tor-internal` network, with no ports.")
-        _narrate(args, f"  2. docker compose -f compose.yml -f {out}/compose.service.yml up -d")
-        _narrate(args, f"  3. hiddenforge show --json --name {name}")
+        _narrate(args, "  1. Put each backend on the `tor-internal` network, with no ports.")
+        _narrate(args, f"  2. {compose_cmd} -f compose.yml -f {out}/compose.service.yml up -d")
+        for n in sorted(services):
+            _narrate(args, f"  3. hiddenforge show --json --name {n}")
         return EXIT_OK
     except (ValueError, EOFError) as exc:
         if isinstance(exc, EOFError):
@@ -1448,11 +1538,16 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--name", default=DEFAULT_NAME)
     sp.add_argument("--backend", default=None, help="backend service:port (e.g. web:80)")
     sp.add_argument("--onion-port", type=int, default=80)
+    sp.add_argument("--service", action="append", default=None,
+                    help="name:onionport:host:port (repeatable; multi-service)")
     sp.add_argument("--services", default=None,
-                    help="name:onionport:host:port[,...] (full form)")
+                    help="name:onionport:host:port[,...] (full form, may be multi-service)")
     sp.add_argument("--image", default=DEFAULT_IMAGE)
     sp.add_argument("--keys", default=DEFAULT_KEYS)
     sp.add_argument("--container", default=DEFAULT_CONTAINER)
+    sp.add_argument("--runtime", choices=["docker", "podman"], default="docker")
+    sp.add_argument("--force", action="store_true",
+                    help="overwrite an existing output directory")
     sp.add_argument("--non-interactive", action="store_true")
     _add_json(sp)
     sp.set_defaults(func=cmd_setup)

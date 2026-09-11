@@ -301,6 +301,42 @@ def test_setup_rejects_bad_backend(hf, tmp_path, capsys):
     assert rc == hf.EXIT_USAGE
 
 
+def test_setup_multi_service_merges_and_emits(hf, tmp_path, capsys):
+    rc = hf.main(["setup", "--service", "blog:80:web:80",
+                  "--service", "blog:443:web:443",
+                  "--service", "tips:80:tips:8080",
+                  "-o", str(tmp_path), "--json"])
+    assert rc == 0
+    desc = json.loads(capsys.readouterr().out)
+    assert [s["name"] for s in desc["services"]] == ["blog", "tips"]
+    blog = next(s for s in desc["services"] if s["name"] == "blog")
+    assert blog["env_value"] == "80:web:80,443:web:443"
+    frag = (tmp_path / "compose.service.yml").read_text()
+    # Values must be joined strings, not a Python list repr.
+    assert 'BLOG_TOR_SERVICE_HOSTS: "80:web:80,443:web:443"' in frag
+    assert 'TIPS_TOR_SERVICE_HOSTS: "80:tips:8080"' in frag
+    assert "- tips" in frag and "- web" in frag
+
+
+def test_setup_refuses_without_force_and_overwrites_with_it(hf, tmp_path, capsys):
+    assert hf.main(["setup", "--backend", "web:80", "-o", str(tmp_path),
+                    "--json"]) == 0
+    capsys.readouterr()
+    rc = hf.main(["setup", "--backend", "web:80", "-o", str(tmp_path), "--json"])
+    assert rc == hf.EXIT_USAGE
+    assert "force" in json.loads(capsys.readouterr().out)["error"]
+    assert hf.main(["setup", "--backend", "web:80", "-o", str(tmp_path),
+                    "--force", "--json"]) == 0
+
+
+def test_setup_podman_runtime_omits_apparmor(hf, tmp_path, capsys):
+    assert hf.main(["setup", "--backend", "web:80", "--runtime", "podman",
+                    "-o", str(tmp_path), "--json"]) == 0
+    frag = (tmp_path / "compose.service.yml").read_text()
+    assert "apparmor" not in frag
+    assert "podman-compose" in (tmp_path / "deploy.sh").read_text()
+
+
 def test_setup_rejects_bad_name(hf, tmp_path, capsys):
     rc = hf.main(["setup", "--backend", "web:80", "--name", "../evil",
                   "-o", str(tmp_path), "--json"])
@@ -356,6 +392,52 @@ def test_rotate_archives_identity(hf, tmp_path, capsys):
     archived = Path(doc["archived"])
     assert archived.is_dir() and (archived / "app").is_dir()
     assert tmp_path.is_dir() and not (tmp_path / "app").exists()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# doctor: torrc hardening directives
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _fake_inspect():
+    return {
+        "HostConfig": {
+            "CapDrop": ["ALL"],
+            "CapAdd": ["CHOWN", "DAC_OVERRIDE", "FOWNER", "SETUID", "SETGID"],
+            "SecurityOpt": ["no-new-privileges:true", "seccomp=unconfined",
+                            "apparmor=docker-default"],
+            "ReadonlyRootfs": True,
+            "PidsLimit": 256,
+            "Memory": 536870912,
+            "MemorySwap": 536870912,
+            "LogConfig": {"Type": "none"},
+        },
+        "NetworkSettings": {"Ports": {}},
+        "AppArmorProfile": "docker-default",
+        "State": {"Running": True},
+    }
+
+
+def test_doctor_flags_missing_torrc_directive(hf, tmp_path, capsys, monkeypatch):
+    os.chmod(tmp_path, 0o700)
+    monkeypatch.setattr(hf, "_docker_inspect", lambda c: (_fake_inspect(), None))
+    monkeypatch.setattr(hf, "_resolve_container", lambda c: "cid")
+    monkeypatch.setattr(hf, "_docker_exec_text", lambda c, a: "ClientOnly 1\n")
+    rc = hf.main(["doctor", "--container", "tor", "--keys", str(tmp_path), "--json"])
+    assert rc == hf.EXIT_FAIL
+    doc = json.loads(capsys.readouterr().out)
+    assert any("hardening directive" in f for f in doc["failures"])
+
+
+def test_doctor_passes_when_torrc_is_complete(hf, tmp_path, capsys, monkeypatch):
+    os.chmod(tmp_path, 0o700)
+    torrc = "\n".join(hf.HARDENING_DIRECTIVES)
+    monkeypatch.setattr(hf, "_docker_inspect", lambda c: (_fake_inspect(), None))
+    monkeypatch.setattr(hf, "_resolve_container", lambda c: "cid")
+    monkeypatch.setattr(hf, "_docker_exec_text", lambda c, a: torrc)
+    rc = hf.main(["doctor", "--container", "tor", "--keys", str(tmp_path), "--json"])
+    assert rc == 0
+    doc = json.loads(capsys.readouterr().out)
+    assert doc["ok"] is True
 
 
 # ─────────────────────────────────────────────────────────────────────────────

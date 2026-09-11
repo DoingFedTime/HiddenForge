@@ -40,6 +40,25 @@ Your app **must**:
 
 That is the entire contract. The shipped `examples/demo` is a working consumer.
 
+### Multiple services, and Podman
+
+`--service` is repeatable, so one command emits every onion you need:
+
+```bash
+hiddenforge setup \
+  --service blog:80:blog:80 --service blog:443:blog:443 \
+  --service tips:80:tips:8080 \
+  --out ./deploy
+```
+
+This writes one `{NAME}_TOR_SERVICE_HOSTS` per service (mappings for the same
+name are joined: `"80:blog:80,443:blog:443"`) and a `depends_on` for each real
+backend service. Podman users add `--runtime podman`, which drops the
+Docker-only `apparmor=` option and points `deploy.sh` at `podman-compose`.
+
+`setup` refuses to overwrite an existing output directory unless `--force` is
+given, so a hand-tuned fragment is not clobbered by a re-run.
+
 ### What `--backend` produces
 
 `--backend web:80 --name myapp` emits:
@@ -221,7 +240,9 @@ hiddenforge doctor --container tor --keys ./tor-keys --json
 FAIL-level checks: `cap_drop` includes `ALL`, `cap_add` stays within
 `{CHOWN,DAC_OVERRIDE,FOWNER,SETUID,SETGID}`, `no-new-privileges`, read-only
 rootfs, `seccomp=unconfined`, AppArmor applied, `pids_limit ≤ 512`, swap disabled
-(`MemorySwap == Memory`), no published ports, key dir `0700`, secret key `0600`.
+(`MemorySwap == Memory`), no published ports, the generated torrc still contains
+every hardening directive (`ClientOnly`, `SafeLogging`, `VanguardsLiteEnabled`,
+PoW, Intro-point DoS, ...), key dir `0700`, and secret key `0600`.
 `logging: none` is a warning (you may have disabled it deliberately). Exit `1` on
 any failure, `0` otherwise, `2` if the container cannot be inspected.
 
