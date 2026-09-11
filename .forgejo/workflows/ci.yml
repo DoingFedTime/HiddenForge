@@ -67,8 +67,8 @@ jobs:
             -t sambent.dev/sam/hiddenforge:ci .
 
       - name: in-container torrc smoke test
-        run: docker run --rm sambent.dev/sam/hiddenforge:ci \
-               python3 /usr/local/bin/tests/test_torrc.py
+        run: docker run --rm --entrypoint python3 sambent.dev/sam/hiddenforge:ci \
+               /usr/local/bin/tests/test_torrc.py
 
       - name: CLI machine contract
         run: |
