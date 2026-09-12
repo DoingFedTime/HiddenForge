@@ -4,8 +4,6 @@ The end-to-end generation path is covered by tests/test_e2e_live.py (needs the
 image and the vendored mkp224o). Everything here is the pure logic: address
 derivation, Tor key-file parsing, the honest difficulty table, and file modes.
 """
-import importlib.machinery
-import importlib.util
 import os
 from pathlib import Path
 
@@ -20,11 +18,9 @@ PUBLIC_TAG = b"== ed25519v1-public: type0 =="
 
 
 def _load(path: Path, name: str):
-    loader = importlib.machinery.SourceFileLoader(name, str(path))
-    spec = importlib.util.spec_from_loader(name, loader)
-    mod = importlib.util.module_from_spec(spec)
-    loader.exec_module(mod)
-    return mod
+    """Load a file without the bytecode cache (see tests/loader.py)."""
+    from loader import load_file
+    return load_file(path, name)
 
 
 @pytest.fixture(scope="module")

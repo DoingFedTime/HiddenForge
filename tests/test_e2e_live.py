@@ -39,12 +39,9 @@ pytestmark = pytest.mark.skipif(
 
 
 def _load(path: Path, name: str):
-    """Load a file without the bytecode cache (the CLI is extensionless)."""
-    import types
-    mod = types.ModuleType(name)
-    mod.__file__ = str(path)
-    exec(compile(path.read_text(encoding="utf-8"), str(path), "exec"), mod.__dict__)
-    return mod
+    """Load a file without the bytecode cache (see tests/loader.py)."""
+    from loader import load_file
+    return load_file(path, name)
 
 
 def _have_docker() -> bool:

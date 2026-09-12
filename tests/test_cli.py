@@ -20,17 +20,9 @@ VANITY_PATH = REPO / "vanity.py"
 
 
 def _load(path: Path, name: str):
-    """Load a file without the bytecode cache (see scripts/check_manifest.py).
-
-    scripts/hiddenforge has no .py extension and gets cached under a name keyed on
-    second-resolution mtime + size; a same-second, same-size edit is served from
-    stale bytecode. Compile the source directly so tests never read a stale CLI.
-    """
-    import types
-    mod = types.ModuleType(name)
-    mod.__file__ = str(path)
-    exec(compile(path.read_text(encoding="utf-8"), str(path), "exec"), mod.__dict__)
-    return mod
+    """Load a file without the bytecode cache (see tests/loader.py)."""
+    from loader import load_file
+    return load_file(path, name)
 
 
 @pytest.fixture(scope="module")

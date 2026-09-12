@@ -26,7 +26,7 @@ def _guarded_run(args, **kw):
     if 'chown' in str(args):
         raise AssertionError(f'subprocess chown called: {args}')
     return _orig_run(args, **kw)
-_sp.run = _guarded_run
+_sp.run = _guarded_run  # type: ignore[assignment]  # test double for subprocess.run
 
 # Mock DNS resolution so the test works without a live Docker network.
 # backend → 192.0.2.1 (TEST-NET, RFC 5737 — not a real address)

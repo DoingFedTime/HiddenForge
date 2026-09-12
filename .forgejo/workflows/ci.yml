@@ -19,6 +19,10 @@ on:
   push:
     branches: ["**"]
   pull_request:
+  schedule:
+    # Daily, so an advisory published after the last commit is caught even when
+    # nothing is being pushed. A push-triggered scan cannot see that.
+    - cron: "17 7 * * *"
   workflow_dispatch:
 
 permissions:
@@ -43,13 +47,18 @@ jobs:
         run: |
           python3 -m py_compile entrypoint.py healthcheck.py vanity.py
           python3 -m py_compile scripts/hiddenforge
-      - name: ruff
+      - name: lint + type toolchain
         run: |
           python3 -m venv /tmp/hf-lint
-          /tmp/hf-lint/bin/pip install --quiet ruff==0.15.16
+          /tmp/hf-lint/bin/pip install --quiet ruff==0.15.16 mypy==2.2.0
+      - name: ruff
+        run: |
           # scripts/hiddenforge has no .py extension, so it must be named
           # explicitly: `ruff check .` silently skips it.
           /tmp/hf-lint/bin/ruff check . scripts/hiddenforge
+          /tmp/hf-lint/bin/ruff check scripts/check_manifest.py scripts/coverage_summary.py
+      - name: mypy (sources AND tests, including the extensionless CLI)
+        run: MYPY=/tmp/hf-lint/bin/mypy sh scripts/typecheck.sh
 
   unit:
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
@@ -105,3 +114,63 @@ jobs:
           python3 -m venv /tmp/hf-e2e
           /tmp/hf-e2e/bin/pip install --quiet pytest==9.0.3
           /tmp/hf-e2e/bin/python -m pytest tests/test_e2e_live.py -v
+
+  security:
+    # Runs on push, schedule and manual dispatch, and on a same-repo PR. The
+    # schedule is the point: a push-triggered scan cannot see an advisory
+    # published after the last commit.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: docker
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the image to scan
+        run: |
+          docker build \
+            --build-arg SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)" \
+            -t sambent.dev/sam/hiddenforge:ci .
+
+      - name: trivy image (HIGH/CRITICAL, fixable only)
+        run: |
+          # --ignore-unfixed: an unfixable base-image CVE is not actionable here
+          # and would make the gate permanently red. .trivyignore carries the
+          # accepted findings with reasons and expiries.
+          mkdir -p security-reports
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD:/src" \
+            aquasec/trivy:0.58.1 image \
+            --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed \
+            --ignorefile /src/.trivyignore \
+            --format json --output /src/security-reports/trivy-image.json \
+            sambent.dev/sam/hiddenforge:ci
+
+      - name: trivy fs (secrets and misconfiguration)
+        run: |
+          mkdir -p security-reports
+          docker run --rm -v "$PWD:/src" aquasec/trivy:0.58.1 fs \
+            --scanners secret,misconfig --exit-code 1 --severity HIGH,CRITICAL \
+            --ignorefile /src/.trivyignore \
+            --format json --output /src/security-reports/trivy-fs.json /src
+
+      - name: semgrep (security-audit + dockerfile)
+        run: |
+          # The only excluded rule is the accepted root-at-PID1 design: the
+          # container MUST start as root to chown the key mount and su-exec to
+          # tor. See SECURITY.md. Everything else must be clean.
+          docker run --rm -v "$PWD:/src" semgrep/semgrep:1.100.0 semgrep \
+            --config=p/security-audit --config=p/dockerfile \
+            --exclude-rule=dockerfile.security.missing-user-entrypoint.missing-user-entrypoint \
+            --error --quiet /src
+
+      - name: gitleaks
+        run: |
+          docker run --rm -v "$PWD:/src" zricethezav/gitleaks:v8.28.0 detect \
+            --no-git --redact --config /src/.gitleaks.toml --source /src
+
+      - name: Upload security reports
+        # Produced even when a scan fails, so the report of a failure is kept.
+        if: always()
+        uses: forgejo/upload-artifact@v3
+        with:
+          name: security-reports
+          path: security-reports/

@@ -22,7 +22,10 @@ from directives import ALLOWED_DIRECTIVES
 #     — covered directly in test_validators, not via this env-based strategy.)
 # Everything else (newlines, CR, control chars, unicode, colons, commas) is fair game.
 _no_nul = st.text(
-    alphabet=st.characters(blacklist_characters="\x00", blacklist_categories=("Cs",)),
+    alphabet=st.characters(
+        blacklist_characters="\x00",
+        blacklist_categories=("Cs",),  # type: ignore[arg-type]  # runtime accepts "Cs"
+    ),
     max_size=200,
 )
 

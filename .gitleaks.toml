@@ -1,0 +1,20 @@
+# Accepted gitleaks findings.
+#
+# `SECRET_FILE = "hs_ed25519_secret_key"` is a FILENAME constant in vanity.py and
+# scripts/hiddenforge, not a credential. The generic-api-key rule matches the
+# assignment because the variable name contains "SECRET"; the value is the name
+# of the file Tor writes inside the hidden-service directory, which is public in
+# the Tor specification and carries no secret material. Ruff's S105 flags the
+# same constant for the same reason.
+#
+# Scoped to the exact assignment rather than the whole SECRET_FILE name, so a
+# real credential assigned elsewhere still trips the rule.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "filename constants that match the api-key heuristic (not credentials)"
+regexTarget = "match"
+regexes = [
+  '''SECRET_FILE *= *"hs_ed25519_secret_key"''',
+]

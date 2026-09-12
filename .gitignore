@@ -31,6 +31,9 @@ docker-compose.override.yml
 coverage.json
 coverage.txt
 htmlcov/
+
+# CI security reports (uploaded as an artifact, not committed)
+security-reports/
 .pytest_cache/
 .hypothesis/
 mutants/
