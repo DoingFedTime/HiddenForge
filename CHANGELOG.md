@@ -66,6 +66,12 @@ existing `docker compose up -d` human path is unchanged.
 - **`docs/PRODUCTION-READINESS.md`**: the checklist of claims that had to be
   proven (reproducible build, multi-service, shipped compose, sbom,
   verify-image, arm64, image scan, in-image CLI), with the evidence for each.
+- **A libFuzzer target** (`fuzz/fuzz_parsers.py`) for the untrusted parsers, run
+  by `atheris`: the entrypoint validators, the CLI's
+  image-reference and mapping parsers, `derive_onion`, and the torrc injection
+  property at byte level. It imports the project modules under
+  `atheris.instrument_imports()` so the fuzzer gets real edge coverage rather
+  than fuzzing blind.
 - **Multi-service `setup`**: `--service name:onionport:host:port` is repeatable,
   so several onions are emitted at once (each with its own env var, key
   directory, and address). `--runtime podman` emits a Podman-correct fragment
@@ -145,6 +151,12 @@ existing `docker compose up -d` human path is unchanged.
   host-mode (jobs run as the operator), so a fork PR would otherwise get host
   code execution; every job now runs only for a push or a same-repository PR, and
   is skipped if the context cannot prove it.
+- **A non-UTF-8 byte in an environment value could abort startup.** Such bytes
+  decode to lone surrogates, and printing or writing one raises
+  `UnicodeEncodeError`; it took down `build_torrc_string` at its own error log
+  line, so one odd byte in `*_TOR_SERVICE_HOSTS` stopped the container from
+  starting. Found by the libFuzzer target. Every message, validator error and
+  dropped-mapping reason now escapes the raw value.
 - **OpenSSL pinned to 3.5.8-r0.** Scanning the built image found 20 CVEs in the
   OpenSSL the base digest ships (3.5.7-r0), 2 of them HIGH. The HIGH ones are
   QUIC-server issues and Tor speaks no QUIC, so they were not reachable -- but the

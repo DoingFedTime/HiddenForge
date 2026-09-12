@@ -178,7 +178,7 @@ def validate_service_name(name):
     """
     if not re.fullmatch(r'[a-z0-9][a-z0-9\-]*', name) or len(name) > 63:
         raise ValueError(
-            f"Invalid service name '{name}': only lowercase alphanumeric "
+            f"Invalid service name '{_safe(name)}': only lowercase alphanumeric "
             "and hyphens allowed, max 63 chars"
         )
     return name
@@ -188,10 +188,10 @@ def validate_port(value, label):
     """Ensure value is a valid 1-65535 port number."""
     stripped = value.strip()
     if not re.fullmatch(r'\d{1,5}', stripped):
-        raise ValueError(f"Invalid port '{value}' in {label}")
+        raise ValueError(f"Invalid port '{_safe(value)}' in {_safe(label)}")
     port = int(stripped)
     if not 1 <= port <= 65535:
-        raise ValueError(f"Port {port} out of range in {label}")
+        raise ValueError(f"Port {port} out of range in {_safe(label)}")
     return str(port)
 
 
@@ -199,7 +199,7 @@ def validate_hostname(value, label):
     """Allow hostnames, Docker service names, and IPv4 addresses."""
     v = value.strip()
     if not re.fullmatch(r'[a-zA-Z0-9._\-]{1,253}', v):
-        raise ValueError(f"Invalid hostname '{v}' in {label}")
+        raise ValueError(f"Invalid hostname '{_safe(v)}' in {_safe(label)}")
     return v
 
 
@@ -221,13 +221,13 @@ def resolve_to_ip(host, label):
             return str(ipaddress.IPv4Address(stripped))
         except ipaddress.AddressValueError as exc:
             raise ValueError(
-                f"Invalid IPv4 address '{stripped}' in {label}"
+                f"Invalid IPv4 address '{_safe(stripped)}' in {_safe(label)}"
             ) from exc
     try:
         resolved = socket.gethostbyname(stripped)
     except socket.gaierror as exc:
         raise ValueError(
-            f"Cannot resolve '{stripped}' in {label}: {exc}. "
+            f"Cannot resolve '{_safe(stripped)}' in {_safe(label)}: {_safe(exc)}. "
             "Is the backend container running and on the same network?"
         ) from exc
 
@@ -246,11 +246,11 @@ def resolve_to_ip(host, label):
         validated = str(ipaddress.IPv4Address(resolved.strip()))
     except (ipaddress.AddressValueError, ValueError, AttributeError) as exc:
         raise ValueError(
-            f"Resolver returned a non-IPv4 value {resolved!r} for '{stripped}' "
-            f"in {label} — refusing to write it to the torrc"
+            f"Resolver returned a non-IPv4 value {resolved!r} for '{_safe(stripped)}' "
+            f"in {_safe(label)} — refusing to write it to the torrc"
         ) from exc
 
-    print(f"Resolved '{stripped}' → {validated}")
+    print(f"Resolved '{_safe(stripped)}' → {validated}")
     return validated
 
 
@@ -332,6 +332,12 @@ VanguardsLiteEnabled 1
             continue
 
         service_hosts = os.environ[env_var]
+        # Env var names and values can hold lone surrogates (surrogateescape
+        # decoding of non-UTF-8 bytes). Printing or writing one raises
+        # UnicodeEncodeError, which aborts startup -- found by libFuzzer. Escape
+        # them once and use the safe forms in every message and reason.
+        safe_env = _safe(env_var)
+        safe_hosts = _safe(service_hosts)
         # Underscores are valid in env var names but not in service directory names;
         # convert them to hyphens so MY_APP_TOR_SERVICE_HOSTS → my-app.
         raw_name = env_var.replace('_TOR_SERVICE_HOSTS', '').lower().replace('_', '-')
@@ -339,9 +345,9 @@ VanguardsLiteEnabled 1
         try:
             service_name = validate_service_name(raw_name)
         except ValueError as e:
-            print(f"Skipping invalid service name from {env_var}: {e}")
+            print(f"Skipping invalid service name from {safe_env}: {e}")
             if dropped is not None:
-                dropped.append(f"{env_var}: invalid service name: {e}")
+                dropped.append(f"{safe_env}: invalid service name: {e}")
             continue
 
         # Two env vars can collapse to the same service name: names are
@@ -357,20 +363,20 @@ VanguardsLiteEnabled 1
         # matches how a service with no valid ports is handled.
         if service_name in seen_names:
             print(
-                f"ERROR: {env_var} maps to service '{service_name}', which is "
-                f"already defined by {seen_names[service_name]} — skipping it. "
+                f"ERROR: {safe_env} maps to service '{service_name}', which is "
+                f"already defined by {_safe(seen_names[service_name])} — skipping it. "
                 "Service names are lowercased and underscores become hyphens, so "
                 "names that differ only in case or in _ vs - collide. Rename one."
             )
             if dropped is not None:
                 dropped.append(
-                    f"{env_var}: service name '{service_name}' collides with "
-                    f"{seen_names[service_name]}")
+                    f"{safe_env}: service name '{service_name}' collides with "
+                    f"{_safe(seen_names[service_name])}")
             continue
         seen_names[service_name] = env_var
 
         print(f"Configuring hidden service: {service_name}")
-        print(f"Service hosts: {_safe(service_hosts)}")
+        print(f"Service hosts: {safe_hosts}")
 
         hs_dir = f"/var/lib/tor/hidden_service/{service_name}"
 
@@ -406,7 +412,7 @@ VanguardsLiteEnabled 1
             if ':' not in host_mapping:
                 if host_mapping.strip() and dropped is not None:
                     dropped.append(
-                        f"{env_var}: malformed mapping '{host_mapping.strip()}'")
+                        f"{safe_env}: malformed mapping '{_safe(host_mapping.strip())}'")
                 continue
             parts = host_mapping.strip().split(':')
             try:
@@ -424,25 +430,25 @@ VanguardsLiteEnabled 1
                     print(f"Skipping malformed mapping: '{_safe(host_mapping)}'")
                     if dropped is not None:
                         dropped.append(
-                            f"{env_var}: malformed mapping '{host_mapping.strip()}'")
+                            f"{safe_env}: malformed mapping '{_safe(host_mapping.strip())}'")
             except ValueError as e:
                 print(f"Skipping invalid mapping '{_safe(host_mapping)}': {e}")
                 if dropped is not None:
                     dropped.append(
-                        f"{env_var}: invalid mapping '{host_mapping.strip()}': {e}")
+                        f"{safe_env}: invalid mapping '{_safe(host_mapping.strip())}': {e}")
 
         if not port_lines:
             # Drop the service entirely rather than emit a portless block that
             # would abort Tor's startup and take every other service with it.
             print(
                 f"ERROR: service '{service_name}' has no valid port mappings "
-                f"(from {env_var}='{service_hosts}') — skipping it. Tor cannot "
+                f"(from {safe_env}='{safe_hosts}') — skipping it. Tor cannot "
                 "start a hidden service with no ports, so emitting it would "
                 "take down every other service too. Fix this mapping."
             )
             if dropped is not None:
                 dropped.append(
-                    f"{env_var}: no valid port mappings; service dropped")
+                    f"{safe_env}: no valid port mappings; service dropped")
             continue
 
         torrc_content += service_block + "".join(port_lines)

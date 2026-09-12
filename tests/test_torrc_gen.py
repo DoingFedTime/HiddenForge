@@ -425,6 +425,24 @@ def test_dropped_mappings_default_is_backwards_compatible(monkeypatch):
     assert dirs == ["/var/lib/tor/hidden_service/service"]
 
 
+def test_surrogate_env_value_does_not_crash(monkeypatch):
+    """A lone surrogate must not abort startup.
+
+    Non-UTF-8 bytes in the environment decode to surrogates, and printing or
+    writing one raises UnicodeEncodeError -- which took down the whole generator
+    at the "no valid port mappings" log line. Found by libFuzzer
+    (fuzz/fuzz_parsers.py). The raw value is now escaped in every message and
+    dropped-mapping reason.
+    """
+    monkeypatch.setenv("BAD_TOR_SERVICE_HOSTS", "80:\udc8a:80")
+    dropped = []
+    torrc, dirs = e.build_torrc_string(dropped=dropped)   # must not raise
+    assert dirs == []
+    assert "HiddenServicePort" not in torrc
+    assert all("\udc8a" not in reason for reason in dropped)
+    assert any("\\xdc8a" in reason for reason in dropped)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Two env vars must never collapse into the same service directory
 # ─────────────────────────────────────────────────────────────────────────────

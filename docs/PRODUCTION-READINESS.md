@@ -14,6 +14,9 @@ check, not a code change. Work top-down; record the evidence.
 | R6 | The **arm64** image builds (the Dockerfile claims multi-arch) | `buildx --platform linux/arm64` | **blocked, partial-verified** — no builder available; see below |
 | R7 | The **built image** (not just the source) is clean | trivy/grype against the image, including the base layer | **done** — first scan 20 CVEs (2 HIGH, OpenSSL), fixed, rescan **0 findings** |
 | R8 | Every **in-image CLI subcommand** works with the final image | `docker run <image> <cmd>` for each | **done** — version/info/show/doctor/vanity/encrypt-key/setup all behave; one cosmetic warning on a fresh anonymous volume |
+| R9 | The final **image contents** are what they should be | inspect the built image | **done** — no pip/gcc/curl/sshd/setuptools, no key material, 40 packages |
+| R10 | Tor accepts the generated torrc | `tor --verify-config` in the image | **done** — "Configuration was valid" |
+| R11 | **Coverage-guided fuzzing** of the untrusted parsers | `fuzz/fuzz_parsers.py` under atheris | **done** — found a real crash (surrogate encoding), fixed; 388k runs clean |
 
 Anything a check turns up becomes a code fix plus a regression test, then the
 row is re-verified.
