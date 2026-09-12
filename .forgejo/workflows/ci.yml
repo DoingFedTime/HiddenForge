@@ -65,7 +65,13 @@ jobs:
       - name: lint + type toolchain
         run: |
           python3 -m venv /tmp/hf-lint
-          /tmp/hf-lint/bin/pip install --quiet ruff==0.15.16 mypy==2.2.0
+          # pytest and hypothesis are REQUIRED here, not optional: typecheck.sh
+          # checks tests/ as well as the sources (that is the point of it), and
+          # without these installed mypy reports 12 import-not-found errors and
+          # the job fails. Locally this was invisible because the dev venv has
+          # them. Versions match the unit job.
+          /tmp/hf-lint/bin/pip install --quiet \
+            ruff==0.15.16 mypy==2.2.0 pytest==9.0.3 hypothesis==6.155.1
       - name: ruff
         run: |
           # scripts/hiddenforge has no .py extension, so it must be named
