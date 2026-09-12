@@ -12,6 +12,23 @@ loader on the CI side.
 """
 import importlib.machinery
 import importlib.util
+from pathlib import Path
+
+
+def repo_root(from_file) -> Path:
+    """Find the repository root by walking up to the directory with scripts/hiddenforge.
+
+    Tests must not assume they run from the repo root: mutmut copies the tree
+    into `mutants/` and runs the suite there, where `Path(__file__).parent.parent`
+    is `mutants/` and `mutants/scripts/hiddenforge` does not exist. That made
+    every test error at setup, which is why mutation testing reported 789
+    mutants and 0 checked. Walking up finds the real root in both cases.
+    """
+    here = Path(from_file).resolve()
+    for parent in here.parents:
+        if (parent / "scripts" / "hiddenforge").is_file():
+            return parent
+    return here.parent
 
 
 class NoCacheLoader(importlib.machinery.SourceFileLoader):

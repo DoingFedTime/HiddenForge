@@ -15,6 +15,7 @@ rather than on its effect, which is both root-free and a stricter check.
 """
 import errno
 import os
+from collections import namedtuple
 
 import pytest
 
@@ -194,18 +195,49 @@ def test_chown_r_still_chowns_the_legitimate_tree(tmp_path, monkeypatch):
     assert "a.auth" in seen
 
 
-def test_generate_torrc_checks_symlink_before_chown():
-    """The symlink rejection depends on the *order* of these two calls.
+def test_prepare_hs_dir_chmods_before_chown(tmp_path, monkeypatch):
+    """The symlink rejection depends on the chmod running BEFORE the chown.
 
     ``Path.mkdir(exist_ok=True)`` succeeds through a symlink, so
     ``_chmod_dir_nofollow`` (which refuses a symlink via O_NOFOLLOW) must run
-    before ``_chown_r``. If the two are ever reordered, a symlinked service
-    directory would be chowned - a root-privileged escape. Pinned here because
-    the individual primitives being correct is not enough.
+    before ``_chown_r``. Reordered, a symlinked service directory would be
+    chowned by root -- a privileged escape.
+
+    Tested behaviourally. The previous version of this test read the source text
+    of generate_basic_torrc and passed in CI, but broke mutation testing: mutmut
+    replaces the function body with a trampoline, so the source no longer
+    contained the call and every mutant run aborted at setup.
     """
-    import inspect
-    src = inspect.getsource(e.generate_basic_torrc)
-    assert "_chmod_dir_nofollow(hs_dir" in src, "chmod call not found"
-    assert "_chown_r(hs_dir" in src, "chown call not found"
-    assert src.index("_chmod_dir_nofollow(hs_dir") < src.index("_chown_r(hs_dir"), \
-        "_chown_r now runs before the symlink check; that reopens the escape"
+    target = tmp_path / "outside"
+    target.mkdir()
+    link = tmp_path / "hs"
+    link.symlink_to(target)
+
+    calls = []
+    monkeypatch.setattr(e, "_chown_r", lambda *a, **k: calls.append(a))
+    tor_pw = namedtuple("TorPw", "pw_uid pw_gid")(os.getuid(), os.getgid())
+
+    with pytest.raises(OSError):
+        e._prepare_hs_dir(str(link), tor_pw)
+    assert calls == [], "the chown ran despite the symlink: the ordering regressed"
+
+
+def test_prepare_hs_dir_chmods_then_chowns(tmp_path, monkeypatch):
+    """The normal path chmods to 0700 first, then chowns to the tor user.
+
+    Records the call order rather than the resulting mode: the chmod is
+    ``only_if_root_owned`` (root creates the dir, then secures it), so a temp dir
+    owned by the test user would legitimately skip it.
+    """
+    d = tmp_path / "hs"
+    order = []
+    monkeypatch.setattr(e, "_chmod_dir_nofollow",
+                        lambda path, mode, **k: order.append(("chmod", path, mode)))
+    monkeypatch.setattr(e, "_chown_r",
+                        lambda path, uid, gid: order.append(("chown", path, uid, gid)))
+    tor_pw = namedtuple("TorPw", "pw_uid pw_gid")(12345, 67890)
+
+    e._prepare_hs_dir(str(d), tor_pw)
+
+    assert d.is_dir()
+    assert order == [("chmod", str(d), 0o700), ("chown", str(d), 12345, 67890)]

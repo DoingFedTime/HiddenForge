@@ -25,7 +25,9 @@ from pathlib import Path
 
 import pytest
 
-REPO = Path(__file__).resolve().parent.parent
+from loader import repo_root
+
+REPO = repo_root(__file__)
 CLI = REPO / "scripts" / "hiddenforge"
 DEMO = REPO / "examples" / "demo"
 IMAGE = os.environ.get("HIDDENFORGE_TEST_IMAGE",

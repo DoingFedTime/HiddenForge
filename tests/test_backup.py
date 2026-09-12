@@ -10,7 +10,9 @@ from pathlib import Path
 
 import pytest
 
-REPO = Path(__file__).resolve().parent.parent
+from loader import repo_root
+
+REPO = repo_root(__file__)
 CLI_PATH = REPO / "scripts" / "hiddenforge"
 PUBLIC_TAG = b"== ed25519v1-public: type0 =="
 

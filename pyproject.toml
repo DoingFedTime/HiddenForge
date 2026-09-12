@@ -74,4 +74,7 @@ select = ["E", "F", "W", "B", "S", "UP", "RUF", "PLW", "SIM", "PERF"]
 "fuzz/*" = ["S101"]
 
 [tool.mutmut]
+# mutmut 3.5.0 (the pinned dev venv) reads `paths_to_mutate`. A newer mutmut
+# deprecates it in favour of `source_paths`; when the dev dependency is bumped,
+# switch and re-verify, or this silently stops finding the code to mutate.
 paths_to_mutate = ["entrypoint.py"]

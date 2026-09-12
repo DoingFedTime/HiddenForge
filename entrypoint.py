@@ -462,6 +462,26 @@ VanguardsLiteEnabled 1
     return torrc_content, hs_dirs
 
 
+def _prepare_hs_dir(hs_dir, tor_pw):
+    """Create and secure one hidden-service directory: chmod first, then chown.
+
+    The ordering is load-bearing. ``Path.mkdir(exist_ok=True)`` succeeds if
+    hs_dir is a symlink to a directory, so the O_NOFOLLOW chmod is what actually
+    rejects a tampered key volume before the recursive chown runs. This is split
+    out of generate_basic_torrc so the ordering can be tested BEHAVIOURALLY: a
+    test that read the source text passed in CI but broke mutation testing,
+    because mutmut replaces the function body with a trampoline and the source
+    no longer contains the call.
+    """
+    Path(hs_dir).mkdir(parents=True, exist_ok=True)
+    # chmod requires owning the directory (CAP_FOWNER not assumed). If the dir
+    # already exists from a previous run it is owned by the tor user, so skip
+    # chmod -- it is already 0700. Always chown so newly-created dirs transfer to
+    # the tor user regardless of the calling uid.
+    _chmod_dir_nofollow(hs_dir, 0o700, only_if_root_owned=True)
+    _chown_r(hs_dir, tor_pw.pw_uid, tor_pw.pw_gid)
+
+
 def generate_basic_torrc():
     """Build the torrc, create/own the hidden-service dirs, and write /etc/tor/torrc.
 
@@ -494,19 +514,7 @@ def generate_basic_torrc():
 
     tor_pw = pwd.getpwnam('tor')
     for hs_dir in hs_dirs:
-        Path(hs_dir).mkdir(parents=True, exist_ok=True)
-        # chmod requires owning the directory (CAP_FOWNER not assumed).
-        # If the dir already exists from a previous run it will be owned by
-        # the tor user, so skip chmod — it will already be 0700 from when
-        # it was first created.  We always chown so newly-created dirs are
-        # transferred to the tor user regardless of the calling uid.
-        #
-        # mkdir(exist_ok=True) succeeds if hs_dir is a symlink to a directory,
-        # so the O_NOFOLLOW open below is what actually rejects a tampered key
-        # volume: it raises ELOOP rather than letting a root chmod/chown escape
-        # the hidden_service tree.
-        _chmod_dir_nofollow(hs_dir, 0o700, only_if_root_owned=True)
-        _chown_r(hs_dir, tor_pw.pw_uid, tor_pw.pw_gid)
+        _prepare_hs_dir(hs_dir, tor_pw)
 
     # Write the config through an O_NOFOLLOW descriptor and set its metadata on
     # that same descriptor.

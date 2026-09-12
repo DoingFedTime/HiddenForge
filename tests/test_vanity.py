@@ -9,7 +9,9 @@ from pathlib import Path
 
 import pytest
 
-REPO = Path(__file__).resolve().parent.parent
+from loader import repo_root
+
+REPO = repo_root(__file__)
 VANITY_PATH = REPO / "vanity.py"
 
 VECTOR_PUB_HEX = "04c6e8afdf77a1f03511d419b92f1c25de8de2d596973b6ecbeef24c9b0271f2"
