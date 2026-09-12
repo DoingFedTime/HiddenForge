@@ -28,6 +28,8 @@ docker-compose.override.yml
 
 # Coverage / test artifacts
 .coverage
+coverage.json
+coverage.txt
 htmlcov/
 .pytest_cache/
 .hypothesis/

@@ -113,6 +113,18 @@ def test_check_manifest_script_detects_drift(hf, monkeypatch):
     assert cm.main() == 1
 
 
+def test_coverage_summary_emits_number(hf, tmp_path, monkeypatch, capsys):
+    """The coverage figure comes from a generated file, not prose."""
+    import json as _json
+    cs = _load(REPO / "scripts" / "coverage_summary.py", "coverage_summary")
+    src = tmp_path / "coverage.json"
+    src.write_text(_json.dumps({"totals": {"percent_covered": 57.934}}))
+    monkeypatch.chdir(tmp_path)
+    assert cs.main([str(src)]) == 0
+    assert (tmp_path / "coverage.txt").read_text() == "coverage: 57.93%\n"
+    assert "coverage: 57.93%" in capsys.readouterr().out
+
+
 def test_version_json(hf, capsys):
     rc = hf.main(["version", "--json"])
     assert rc == 0

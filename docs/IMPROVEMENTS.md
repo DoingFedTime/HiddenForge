@@ -124,8 +124,9 @@ decision not to do (reason given).
   rejection needed.
 - [x] **H4** The hardening directive set is documented in one place in the CLI
   (`HARDENING_DIRECTIVES`) and asserted by the generator tests/smoke test.
-- [x] **H5** `pyproject.toml` coverage comment corrected to the measured ~49% and
-  the floor rationale restated.
+- [x] **H5** `pyproject.toml`'s coverage comment no longer states a measured
+  percentage; the number is emitted by CI as `coverage.json` / `coverage.txt`
+  (`scripts/coverage_summary.py`). The floor rationale is restated.
 - [x] **H6** `ALLOWED_DIRECTIVES` now lives in one place (`tests/directives.py`)
   and is imported by both `test_torrc_gen.py` and `test_fuzz.py`.
 - [x] **H7** Vanguards is retried when it never started: the supervisor now

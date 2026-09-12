@@ -61,7 +61,10 @@ jobs:
           python3 -m venv /tmp/hf-unit
           /tmp/hf-unit/bin/pip install --quiet \
             pytest==9.0.3 hypothesis==6.155.1 coverage==7.14.1 pytest-cov==7.1.0
-          /tmp/hf-unit/bin/python -m pytest -q --cov=entrypoint --cov-report=term
+          /tmp/hf-unit/bin/python -m pytest -q --cov=entrypoint \
+            --cov-report=term --cov-report=json:coverage.json
+          # The measured number goes into a generated file, not a markdown doc.
+          /tmp/hf-unit/bin/python scripts/coverage_summary.py coverage.json
       - name: manifest.json must match the code
         run: python3 scripts/check_manifest.py
 
