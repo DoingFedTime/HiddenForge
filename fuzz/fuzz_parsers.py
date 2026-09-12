@@ -22,6 +22,7 @@ fuzzer actually gets edge coverage; importing them at module scope (the obvious
 way) leaves the target fuzzing blind, which libFuzzer reports as "no interesting
 inputs were found".
 """
+import contextlib
 import os
 import socket
 import sys
@@ -58,7 +59,7 @@ def _load() -> None:
 
     # Deterministic resolution: no network, and every hostname "resolves" so the
     # torrc path that emits a HiddenServicePort is reached more often.
-    socket.gethostbyname = lambda host: "10.0.0.1"   # noqa: E731
+    socket.gethostbyname = lambda host: "10.0.0.1"
 
     e, hf, vanity, ALLOWED_DIRECTIVES = _e, _hf, _vanity, _ALLOWED
 
@@ -75,27 +76,19 @@ def TestOneInput(data: bytes) -> None:
         (hf.validate_image_ref, (text,)),
         (hf.validate_container, (text,)),
     ):
-        try:
+        with contextlib.suppress(ValueError):
             fn(*args)
-        except ValueError:
-            pass
 
     for spec in (text, text[:200]):
-        try:
+        with contextlib.suppress(ValueError):
             hf._parse_service_spec(spec)
-        except ValueError:
-            pass
-        try:
+        with contextlib.suppress(ValueError):
             hf._parse_backend(spec)
-        except ValueError:
-            pass
 
     # derive_onion: any length other than 32 must raise, never return junk.
-    try:
+    with contextlib.suppress(ValueError):
         onion = vanity.derive_onion(data)
         assert len(onion) == 62 and onion.endswith(".onion"), onion
-    except ValueError:
-        pass
 
     # The injection property, at byte level, plus "must not raise on the way".
     os.environ["FUZZ_TOR_SERVICE_HOSTS"] = text

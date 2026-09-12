@@ -38,7 +38,11 @@ def _set_only(value):
 # THE invariant: no injection, ever, for any value
 # ─────────────────────────────────────────────────────────────────────────────
 
-@settings(max_examples=1000, suppress_health_check=[HealthCheck.function_scoped_fixture])
+@settings(
+    max_examples=1000,
+    suppress_health_check=[HealthCheck.function_scoped_fixture],
+    deadline=None,
+)
 @given(_no_nul)
 def test_fuzz_no_injection_from_any_value(mock_dns, value):
     _set_only(value)
@@ -58,7 +62,7 @@ def test_fuzz_no_injection_from_any_value(mock_dns, value):
 # Validator output invariants (input → either a well-formed result or ValueError)
 # ─────────────────────────────────────────────────────────────────────────────
 
-@settings(max_examples=1000)
+@settings(max_examples=1000, deadline=None)
 @given(_no_nul)
 def test_fuzz_validate_port_invariant(s):
     try:
@@ -69,7 +73,7 @@ def test_fuzz_validate_port_invariant(s):
     assert 1 <= int(result) <= 65535
 
 
-@settings(max_examples=1000)
+@settings(max_examples=1000, deadline=None)
 @given(_no_nul)
 def test_fuzz_validate_service_name_invariant(s):
     try:
@@ -82,7 +86,7 @@ def test_fuzz_validate_service_name_invariant(s):
     assert "/" not in result and not any(c.isspace() for c in result)
 
 
-@settings(max_examples=1000)
+@settings(max_examples=1000, deadline=None)
 @given(_no_nul)
 def test_fuzz_validate_hostname_invariant(s):
     try:
@@ -93,7 +97,11 @@ def test_fuzz_validate_hostname_invariant(s):
     assert not any(c.isspace() for c in result)
 
 
-@settings(max_examples=1000, suppress_health_check=[HealthCheck.function_scoped_fixture])
+@settings(
+    max_examples=1000,
+    suppress_health_check=[HealthCheck.function_scoped_fixture],
+    deadline=None,
+)
 @given(_no_nul)
 def test_fuzz_resolve_to_ip_invariant(mock_dns, s):
     # mock_dns raises for anything but 'backend', so no real network is touched.

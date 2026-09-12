@@ -68,6 +68,8 @@ select = ["E", "F", "W", "B", "S", "UP", "RUF", "PLW", "SIM", "PERF"]
 # Tests legitimately use bare asserts (S101) and set sys.path before importing
 # the module under test (E402, in the in-container smoke test).
 "tests/*" = ["S101", "E402", "S603", "S607", "PLW1510"]
+# Fuzz targets assert invariants; that is their job (S101).
+"fuzz/*" = ["S101"]
 
 [tool.mutmut]
 paths_to_mutate = ["entrypoint.py"]
