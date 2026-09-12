@@ -6,13 +6,13 @@ check, not a code change. Work top-down; record the evidence.
 
 | # | Claim to prove | How | Status |
 |---|---|---|---|
-| R1 | The image builds **bit-for-bit reproducibly** | two `buildx` builds with the same `SOURCE_DATE_EPOCH`, compare the OCI index digest | **done** — identical `sha256:7c343d91…`, and re-verified after the OpenSSL pin (`sha256:6996b0f5…` twice) |
+| R1 | The image builds **bit-for-bit reproducibly** | two `buildx` builds with the same `SOURCE_DATE_EPOCH`, compare the OCI index digest | **done** — re-verified on the final commit `4196da2`: two OCI builds, identical `sha256:3b106caae43c79a7269fbb5adec31fa376c4d393245317c5c8ba0f3abaaa81c5` (earlier digests `7c343d91…`, `6996b0f5…`, `70e05de3…` as the image changed) |
 | R2 | **Multiple onions** from one container actually work | two-service fragment + real stack, wait for both address files, assert they differ | **done** — `blog` and `tips` both published, distinct, both reported by `show`/`status` |
 | R3 | The **committed `docker-compose.yml`** boots end to end | `docker compose up -d` with the shipped file, wait for the address | **done** — but it first **failed**, exposing the `ulimits.nproc` bug below; after the fix it publishes in 6s |
 | R4 | `sbom` really produces a valid SPDX document | run it against the built image (syft), validate JSON + package count | **done** — SPDX-2.3, 43 packages, normalised namespace |
 | R5 | `verify-image` **resolves the registry digest** and compares it | run without `--skip-registry` against `sambent.dev` | **done** — registry digest equals the signed 2.0.4 digest; YubiKey signature valid |
 | R6 | The **arm64** image builds (the Dockerfile claims multi-arch) | `buildx --platform linux/arm64` | **blocked, partial-verified** — no builder available; see below |
-| R7 | The **built image** (not just the source) is clean | trivy/grype against the image, including the base layer | **done** — first scan 20 CVEs (2 HIGH, OpenSSL), fixed, rescan **0 findings** |
+| R7 | The **built image** (not just the source) is clean | trivy/grype against the image, including the base layer | **done** — first scan 20 CVEs (2 HIGH, OpenSSL), fixed, rescans **0 findings** (re-verified on the final image) |
 | R8 | Every **in-image CLI subcommand** works with the final image | `docker run <image> <cmd>` for each | **done** — version/info/show/doctor/vanity/encrypt-key/setup all behave; one cosmetic warning on a fresh anonymous volume |
 | R9 | The final **image contents** are what they should be | inspect the built image | **done** — no pip/gcc/curl/sshd/setuptools, no key material, 40 packages |
 | R10 | Tor accepts the generated torrc | `tor --verify-config` in the image | **done** — "Configuration was valid" |
