@@ -92,3 +92,22 @@ releases remain independently verifiable. A signing key changing without
 explanation is indistinguishable from a compromise — hence this note.
 
 No Sigstore, no Fulcio, no Rekor, no cosign.
+
+## Evidence bundle (what makes the readiness claims checkable)
+
+`PRODUCTION-READINESS.md` states results; a reader cannot check a sentence. Each
+release therefore ships an **evidence bundle** produced by
+`scripts/collect_evidence.py`, containing the raw, unedited output of every gate
+(unit tests, type check, mutation spot-check, manifest drift, lint), the coverage
+JSON, the SBOM if present, and `build.json` binding all of it to the commit, its
+tree hash and the image index digest. `MANIFEST.sha256` covers the rest:
+
+```
+python3 scripts/collect_evidence.py --out evidence --image sambent.dev/sam/hiddenforge:2.1.0
+( cd evidence && sha256sum -c MANIFEST.sha256 )
+```
+
+No value in the bundle is typed by hand; a gate that cannot run records its own
+failure rather than being omitted. The bundle is signed alongside the image
+digest at release time and is never committed (it would be stale the next
+commit), so a consumer can verify the claims instead of trusting them.
