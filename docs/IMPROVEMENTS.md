@@ -1,11 +1,17 @@
-# HiddenForge — improvement backlog
+# HiddenForge branch record: 2.1.0
+
+**Closed 2026-09-12 at commit `7913514`.** This is a record of what this branch
+changed and why, not a promise of future work. Sections A to I are the completed
+ledger (each item is done `[x]` or a deliberate non-change `[-]` with its reason
+recorded). The few genuinely open items are in **OPEN** at the end, each with the
+reason it is open. If a claim here and the code disagree, the code wins.
 
 Compiled from a full read of the codebase, the git history, the in-tree wiki that
 was removed in `5d44a21`, and the sibling project i2pforge, whose machine-first
 contract this branch adopts for Tor.
 
-Status legend: `[x]` done on this branch · `[ ]` not yet · `[-]` deliberate
-decision not to do (reason given).
+Status legend: `[x]` done on this branch · `[ ]` open (see OPEN) · `[-]`
+deliberate decision not to do (reason given).
 
 ---
 
@@ -101,8 +107,9 @@ decision not to do (reason given).
 - [x] **F2** New Python is stdlib-only (no new pip deps, no new attack surface).
 - [x] **F3** New files covered by `.dockerignore` whitelist (no accidental
   context bloat, no secrets in layers).
-- [ ] **F4** Regenerate release signatures/SBOM for the new image digest
-  (outside this branch's scope; needs the signing hardware).
+- [ ] **F4** Regenerate release signatures/SBOM for the new image digest. OPEN
+  (needs the signing hardware; this branch is built and verified but not signed).
+  See OPEN below.
 
 ## G. Docs
 
@@ -142,3 +149,26 @@ decision not to do (reason given).
   CVE-driven decision.
 - [-] **I3** The existing `docker-compose.yml` human path stays byte-compatible
   in spirit (`docker compose up -d` still works); the new contract is additive.
+
+---
+
+## OPEN (what this branch did not close, and why)
+
+These are the only items in this document that are not DONE or a deliberate
+non-change. Each is open for a stated reason, and none is silently implied to be
+finished:
+
+- **F4: sign the 2.1.0 digest.** The branch is built, scanned, E2E-tested
+  and reproducible (`docs/PRODUCTION-READINESS.md`), and the evidence bundle is
+  ready (`scripts/collect_evidence.py`). It is **not signed and not pushed**: that
+  needs the YubiKey and the ML-DSA key, which are hardware-local and are never
+  brought into CI. `signatures/README.md` states plainly that `2.1.0` is unsigned,
+  so a digest mismatch reads as "not yet signed", not "tampered with".
+- **R6: arm64 is unverified.** No arm64 builder is available to this environment
+  (no qemu `binfmt_misc`, no engine that runs arm64). The base index and every pinned
+  apk were checked to exist for aarch64, but the arm64 image has never been built.
+  Run `docker buildx build --platform linux/arm64,linux/amd64 .` on a builder that
+  can, then record the arm64 manifest digest.
+- **Continuous pin-freshness (`scripts/check_pins.py`).** Pins are CVE-driven by
+  hand today; the scheduled job reports when a pinned apk disappears from the
+  Alpine index or a newer one exists, but bumping remains a reviewed decision.
