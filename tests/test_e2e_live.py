@@ -28,6 +28,34 @@ import pytest
 from loader import repo_root
 
 REPO = repo_root(__file__)
+
+
+def _rmtree_as_root(path):
+    """Remove a scratch tree the container chowned to tor/root.
+
+    pytest's own tmp_path cleanup cannot delete the tor-owned 0700 key
+    directories the container writes into the bind mount, so every E2E run ended
+    in a wall of `(rm_rf) ... Directory not empty` warnings -- which trains
+    everyone to ignore stderr, where the next real failure will appear. The
+    confirmed cause is exactly that uid mismatch; removing the tree from a
+    throwaway root container is the fix.
+    """
+    parent = path.parent
+    subprocess.run(
+        ["docker", "run", "--rm", "-v", f"{parent}:/p", "alpine:3.23.5",
+         "rm", "-rf", f"/p/{path.name}"],
+        capture_output=True)
+
+
+@pytest.fixture
+def workdir():
+    """A scratch directory pytest will NOT try to clean up itself."""
+    import tempfile
+    d = Path(tempfile.mkdtemp(prefix="hiddenforge-e2e-"))
+    try:
+        yield d
+    finally:
+        _rmtree_as_root(d)
 CLI = REPO / "scripts" / "hiddenforge"
 DEMO = REPO / "examples" / "demo"
 IMAGE = os.environ.get("HIDDENFORGE_TEST_IMAGE",
@@ -62,17 +90,17 @@ def _compose(tmp: Path, *extra):
 
 
 @requires_image
-def test_emitted_fragment_validates(tmp_path):
+def test_emitted_fragment_validates(workdir):
     subprocess.run([str(CLI), "setup", "--backend", "web:80", "--name", "demo",
-                    "--out", str(tmp_path)], check=True, capture_output=True)
-    shutil.copy(DEMO / "app.yml", tmp_path / "app.yml")
-    proc = subprocess.run(_compose(tmp_path, "config"), capture_output=True, text=True)
+                    "--out", str(workdir)], check=True, capture_output=True)
+    shutil.copy(DEMO / "app.yml", workdir / "app.yml")
+    proc = subprocess.run(_compose(workdir, "config"), capture_output=True, text=True)
     assert proc.returncode == 0, proc.stderr
 
 
 @requires_image
-def test_vanity_short_prefix_matches(tmp_path):
-    keys = tmp_path / "keys"
+def test_vanity_short_prefix_matches(workdir):
+    keys = workdir / "keys"
     keys.mkdir()
     os.chmod(keys, 0o700)
     proc = subprocess.run(
@@ -94,18 +122,18 @@ def test_vanity_short_prefix_matches(tmp_path):
 
 
 @requires_image
-def test_demo_publishes_and_show_agrees(tmp_path):
+def test_demo_publishes_and_show_agrees(workdir):
     subprocess.run([str(CLI), "setup", "--backend", "web:80", "--name", "demo",
-                    "--keys", "./tor-keys", "--out", str(tmp_path)],
+                    "--keys", "./tor-keys", "--out", str(workdir)],
                    check=True, capture_output=True)
-    shutil.copy(DEMO / "app.yml", tmp_path / "app.yml")
-    shutil.copytree(DEMO / "site", tmp_path / "site")
+    shutil.copy(DEMO / "app.yml", workdir / "app.yml")
+    shutil.copytree(DEMO / "site", workdir / "site")
     try:
-        proc = subprocess.run(_compose(tmp_path, "up", "-d"),
+        proc = subprocess.run(_compose(workdir, "up", "-d"),
                               capture_output=True, text=True, timeout=300)
         assert proc.returncode == 0, proc.stderr
 
-        published = tmp_path / "tor-keys" / "demo.onion"
+        published = workdir / "tor-keys" / "demo.onion"
         deadline = time.time() + 300
         while time.time() < deadline and not published.exists():
             time.sleep(3)
@@ -115,7 +143,7 @@ def test_demo_publishes_and_show_agrees(tmp_path):
 
         # The host CLI must report the same address, without docker exec.
         show = subprocess.run(
-            [str(CLI), "show", "--keys", str(tmp_path / "tor-keys"),
+            [str(CLI), "show", "--keys", str(workdir / "tor-keys"),
              "--name", "demo", "--json"],
             capture_output=True, text=True)
         doc = json.loads(show.stdout)
@@ -129,7 +157,7 @@ def test_demo_publishes_and_show_agrees(tmp_path):
         while time.time() < deadline:
             st = subprocess.run(
                 [str(CLI), "status", "--container", "tor",
-                 "--keys", str(tmp_path / "tor-keys"), "--json"],
+                 "--keys", str(workdir / "tor-keys"), "--json"],
                 capture_output=True, text=True)
             sdoc = json.loads(st.stdout)
             if sdoc.get("ready"):
@@ -143,12 +171,12 @@ def test_demo_publishes_and_show_agrees(tmp_path):
         # the generated torrc still carries every hardening directive.
         doc = subprocess.run(
             [str(CLI), "doctor", "--container", "tor",
-             "--keys", str(tmp_path / "tor-keys"), "--json"],
+             "--keys", str(workdir / "tor-keys"), "--json"],
             capture_output=True, text=True)
         ddoc = json.loads(doc.stdout)
         assert ddoc["ok"], f"doctor failures: {ddoc.get('failures')}"
         assert any(c["check"].startswith("generated torrc") and c["ok"]
                    for c in ddoc["checks"]), "doctor did not check the torrc"
     finally:
-        subprocess.run(_compose(tmp_path, "down", "-v"),
+        subprocess.run(_compose(workdir, "down", "-v"),
                        capture_output=True, timeout=120)
