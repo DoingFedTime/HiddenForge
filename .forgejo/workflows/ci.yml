@@ -117,8 +117,14 @@ jobs:
             -t sambent.dev/sam/hiddenforge:ci .
 
       - name: in-container torrc smoke test
-        run: docker run --rm --entrypoint python3 sambent.dev/sam/hiddenforge:ci \
-               /usr/local/bin/tests/test_torrc.py
+        # Block scalar, not a plain scalar with a trailing backslash: YAML folds
+        # a multi-line plain scalar to a single line, so the backslash became a
+        # literal argument and the script path arrived mangled -- the step failed
+        # with "can't open file '// /usr/local/bin/tests/test_torrc.py'" even
+        # though the file is in the image. The job had never been executed.
+        run: |
+          docker run --rm --entrypoint python3 sambent.dev/sam/hiddenforge:ci \
+            /usr/local/bin/tests/test_torrc.py
 
       - name: CLI machine contract
         run: |
