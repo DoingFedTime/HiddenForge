@@ -1293,6 +1293,9 @@ def cmd_vanity(args) -> int:
     uid, gid = os.getuid(), os.getgid()
     inner += ["--uid", str(uid), "--gid", str(gid)]
     cmd = [eng, "run", "--rm", "-v", f"{keys}:/keys", args.image, *inner]
+    # Unbounded by design: a vanity search may run for hours for a long prefix;
+    # a timeout here would be the bug. (Contrast the _run() wrapper, which is
+    # bounded because docker inspect/exec must not hang.)
     proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
     out = proc.stdout.strip()
     if args.json:
@@ -1409,6 +1412,8 @@ def _encrypt_bytes(tool: str, plaintext: bytes, passphrase: str | None,
         if not sys.stdin.isatty():
             raise ValueError("age needs an interactive TTY to prompt for a passphrase; "
                              "pass --tool gpg for non-interactive use")
+        # Unbounded by design: age prompts for the passphrase on the controlling
+        # TTY, so it blocks until the operator types; a timeout would abort them.
         proc = subprocess.run(["age", "-p"], input=plaintext, stdout=subprocess.PIPE,
                               check=False)
         if proc.returncode != 0:
@@ -1428,7 +1433,8 @@ def _encrypt_bytes(tool: str, plaintext: bytes, passphrase: str | None,
                 proc = subprocess.run(
                     ["gpg", "--symmetric", "--batch", "--yes", "--cipher-algo", "AES256",
                      *aead, "--pinentry-mode", "loopback", "--passphrase-fd", str(pass_fd)],
-                    input=plaintext, capture_output=True, pass_fds=(pass_fd,), check=False)
+                    input=plaintext, capture_output=True, pass_fds=(pass_fd,), check=False,
+                    timeout=600)
             finally:
                 with contextlib.suppress(OSError):
                     os.close(pass_fd)
@@ -1469,7 +1475,8 @@ def _gpg_cipher_mode(tool: str, ciphertext: bytes, passphrase: str | None) -> st
         proc = subprocess.run(
             ["gpg", "--list-packets", "--batch", "--pinentry-mode", "loopback",
              "--passphrase-fd", str(pass_fd)],
-            input=ciphertext, capture_output=True, pass_fds=(pass_fd,), check=False)
+            input=ciphertext, capture_output=True, pass_fds=(pass_fd,), check=False,
+            timeout=60)
     finally:
         with contextlib.suppress(OSError):
             os.close(pass_fd)
@@ -1520,6 +1527,8 @@ def _decrypt_bytes(tool: str, ciphertext: bytes, passphrase: str | None) -> byte
         if not sys.stdin.isatty():
             raise ValueError("age needs an interactive TTY to prompt for a passphrase; "
                              "use gpg for non-interactive restores")
+        # Unbounded by design: age's passphrase prompt blocks on the controlling
+        # TTY until the operator types.
         proc = subprocess.run(["age", "-d"], input=ciphertext, stdout=subprocess.PIPE,
                               check=False)
         if proc.returncode != 0:
@@ -1537,7 +1546,8 @@ def _decrypt_bytes(tool: str, ciphertext: bytes, passphrase: str | None) -> byte
             proc = subprocess.run(
                 ["gpg", "--decrypt", "--batch", "--yes", "--pinentry-mode", "loopback",
                  "--passphrase-fd", str(pass_fd)],
-                input=ciphertext, capture_output=True, pass_fds=(pass_fd,), check=False)
+                input=ciphertext, capture_output=True, pass_fds=(pass_fd,), check=False,
+                timeout=600)
         finally:
             with contextlib.suppress(OSError):
                 os.close(pass_fd)

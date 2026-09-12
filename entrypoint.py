@@ -626,6 +626,7 @@ def _control_socket_ready():
             ['su-exec', 'tor', 'test', '-S', CONTROL_SOCKET],
             capture_output=True,
             check=False,
+            timeout=10,
         ).returncode == 0
     except Exception:
         return False
@@ -667,7 +668,7 @@ def _assert_can_drop_privileges():
     probe turns that into a named error.
     """
     result = subprocess.run(
-        ['su-exec', 'tor', 'true'], capture_output=True, check=False
+        ['su-exec', 'tor', 'true'], capture_output=True, check=False, timeout=10
     )
     if result.returncode != 0:
         detail = (result.stderr or b'').decode(errors='replace').strip()
@@ -697,6 +698,8 @@ def start_vanguards():
         '--disable_vanguards',   # avoid SETCONF conflict with Sandbox 1
     ]
     print(f"Starting Vanguards: {' '.join(cmd)}")
+    # Long-lived by design (runs alongside Tor for the container's lifetime), so
+    # it deliberately has no timeout; the supervisor watches it via poll().
     return subprocess.Popen(['su-exec', 'tor', *cmd])
 
 
@@ -779,6 +782,7 @@ def main():
 
     # ── Start Tor ───────────────────────────────────────────────────────────
     print("Starting Tor...")
+    # Long-lived by design: Tor is the primary process, not a bounded command.
     _tor_process = subprocess.Popen(
         ['su-exec', 'tor', 'tor', '-f', '/etc/tor/torrc']
     )
