@@ -224,3 +224,20 @@ jobs:
           # the SLSA attestation, which lives inside the index. amd64-only here;
           # the release index is multi-platform and necessarily differs, but the
           # property is the same.
+
+  pin-freshness:
+    # Pinned apk versions are CVE-driven and bumped by hand, which is right:
+    # a crypto/anonymity bump is a reviewed decision. What is NOT acceptable is a
+    # pin silently disappearing -- `tor=0.4.9.11-r0` was pruned by Alpine and left
+    # this repo unbuildable with no warning. This reports that daily.
+    #
+    # It fails only when a pinned version is GONE (exit 2). A newer version being
+    # available is printed, not fatal: bumping is a human decision, and a job that
+    # opens that door automatically would be a supply-chain risk of its own.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: docker
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Every pinned apk version still exists upstream
+        run: python3 scripts/check_pins.py
