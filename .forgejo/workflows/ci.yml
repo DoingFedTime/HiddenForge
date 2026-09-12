@@ -185,3 +185,38 @@ jobs:
         with:
           name: security-reports
           path: security-reports/
+
+  reproducibility:
+    # Reproducibility silently regresses; the first person to notice is then a
+    # verifier deciding whether it is a build bug or an attack. This clones
+    # nothing (the checkout is the tree) and builds the SAME tree twice under the
+    # documented flags, comparing the OCI index digests.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: docker
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Two builds, one digest
+        run: |
+          set -euo pipefail
+          SDE="$(git log -1 --format=%ct)"
+          a="$(mktemp -d)"; b="$(mktemp -d)"
+          for pair in "A $a" "B $b"; do
+            set -- $pair
+            docker buildx build --platform linux/amd64 --provenance=false \
+              --build-arg SOURCE_DATE_EPOCH="$SDE" \
+              --output "type=oci,dest=$2/out.tar,rewrite-timestamp=true" .
+          done
+          da="$(tar -xOf "$a/out.tar" index.json | python3 -c 'import json,sys;print(json.load(sys.stdin)["manifests"][0]["digest"])')"
+          db="$(tar -xOf "$b/out.tar" index.json | python3 -c 'import json,sys;print(json.load(sys.stdin)["manifests"][0]["digest"])')"
+          echo "build A: $da"
+          echo "build B: $db"
+          if [ "$da" != "$db" ]; then
+            echo "NOT REPRODUCIBLE -- same source, same SOURCE_DATE_EPOCH, different index digest"
+            exit 1
+          fi
+          echo "REPRODUCIBLE: $da"
+          # --provenance=false is load-bearing: buildx stamps wall-clock times into
+          # the SLSA attestation, which lives inside the index. amd64-only here;
+          # the release index is multi-platform and necessarily differs, but the
+          # property is the same.
