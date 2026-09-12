@@ -1388,12 +1388,21 @@ def _tar_sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def _encrypt_bytes(tool: str, plaintext: bytes, passphrase: str | None) -> bytes:
+def _encrypt_bytes(tool: str, plaintext: bytes, passphrase: str | None,
+                   require_aead: bool = False) -> tuple[bytes, str]:
+    """Encrypt and return ``(ciphertext, mode)``.
+
+    ``mode`` is ``"aead"`` or ``"cfb"``. CFB+MDC is not AEAD: its integrity
+    guarantee is weaker and its failure mode on a chosen-ciphertext attack is
+    different, so receiving it silently is a downgrade the operator must see.
+    ``require_aead`` turns the fallback into a hard error for production keys.
+    """
     if tool == "openssl":
         raise ValueError("openssl is refused: it provides no authentication. Use age or gpg.")
     if tool == "age":
         # age -p prompts on the controlling TTY and cannot be fed a passphrase
-        # non-interactively; the ciphertext comes back on stdout.
+        # non-interactively; the ciphertext comes back on stdout. age always uses
+        # ChaCha20-Poly1305, so it is AEAD by construction.
         if passphrase is not None:
             raise ValueError("age does not use --passphrase-file; pass --tool gpg for "
                              "non-interactive use")
@@ -1404,7 +1413,7 @@ def _encrypt_bytes(tool: str, plaintext: bytes, passphrase: str | None) -> bytes
                               check=False)
         if proc.returncode != 0:
             raise RuntimeError("age failed")
-        return proc.stdout
+        return proc.stdout, "aead"
     if tool == "gpg":
         if passphrase is None:
             raise ValueError("gpg needs --passphrase-file for non-interactive use")
@@ -1424,7 +1433,17 @@ def _encrypt_bytes(tool: str, plaintext: bytes, passphrase: str | None) -> bytes
                 with contextlib.suppress(OSError):
                     os.close(pass_fd)
             if proc.returncode == 0:
-                return proc.stdout
+                if aead:
+                    return proc.stdout, "aead"
+                if require_aead:
+                    raise ValueError(
+                        "--require-aead: this gpg refused --force-aead, so the backup "
+                        "would be CFB+MDC, not AEAD. Refusing to write it. Upgrade gpg "
+                        "or drop --require-aead deliberately.")
+                _eprint("WARNING: this gpg does not support --force-aead; the backup is "
+                        "CFB+MDC, NOT AEAD. Its integrity guarantee is weaker. "
+                        "Pass --require-aead to refuse this, or upgrade gpg.")
+                return proc.stdout, "cfb"
             last_err = proc.stderr.decode(errors="replace").strip()
             low = last_err.lower()
             if aead and ("invalid option" in low or "unknown option" in low):
@@ -1432,6 +1451,34 @@ def _encrypt_bytes(tool: str, plaintext: bytes, passphrase: str | None) -> bytes
             break
         raise RuntimeError(f"gpg failed: {last_err}")
     raise ValueError(f"unknown tool {tool!r}")
+
+
+def _gpg_cipher_mode(tool: str, ciphertext: bytes, passphrase: str | None) -> str | None:
+    """Best-effort: report whether a gpg backup is AEAD or CFB, for restore.
+
+    The cipher is recorded in the file's packet header, so this needs the
+    passphrase only to decrypt the session key. Returns None if it cannot tell --
+    the caller then says nothing rather than guessing.
+    """
+    if tool != "gpg" or passphrase is None:
+        return None
+    pass_fd, write_fd = os.pipe()
+    try:
+        os.write(write_fd, passphrase.encode())
+        os.close(write_fd)
+        proc = subprocess.run(
+            ["gpg", "--list-packets", "--batch", "--pinentry-mode", "loopback",
+             "--passphrase-fd", str(pass_fd)],
+            input=ciphertext, capture_output=True, pass_fds=(pass_fd,), check=False)
+    finally:
+        with contextlib.suppress(OSError):
+            os.close(pass_fd)
+    text = (proc.stdout + proc.stderr).decode(errors="replace").lower()
+    if "aead" in text:
+        return "aead"
+    if "cipher" in text:
+        return "cfb"
+    return None
 
 
 def cmd_backup(args) -> int:
@@ -1451,15 +1498,16 @@ def cmd_backup(args) -> int:
         if not plaintext:
             raise ValueError("key directory is empty; nothing to back up")
         src_sha = _tar_sha256(plaintext)
-        ciphertext = _encrypt_bytes(tool, plaintext, passphrase)
+        ciphertext, cipher_mode = _encrypt_bytes(
+            tool, plaintext, passphrase, require_aead=getattr(args, "require_aead", False))
         out = Path(args.out)
         fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
         with os.fdopen(fd, "wb") as fh:
             fh.write(ciphertext)
         if args.json:
-            return emit_json(EXIT_OK, out=str(out), tool=tool, bytes=len(ciphertext),
-                             sha256=src_sha)
-        print(f"Wrote {out} ({len(ciphertext):,} bytes, {tool}, mode 0600)")
+            return emit_json(EXIT_OK, out=str(out), tool=tool, cipher_mode=cipher_mode,
+                             bytes=len(ciphertext), sha256=src_sha)
+        print(f"Wrote {out} ({len(ciphertext):,} bytes, {tool}/{cipher_mode}, mode 0600)")
         print(f"Plaintext manifest sha256: {src_sha}")
         return EXIT_OK
     except (ValueError, OSError, RuntimeError) as exc:
@@ -1512,7 +1560,9 @@ def cmd_restore(args) -> int:
         passphrase = _passphrase(args)
         if passphrase is None and not sys.stdin.isatty():
             raise ValueError("no passphrase source: pass --passphrase-file (or a TTY)")
-        plaintext = _decrypt_bytes(tool, src.read_bytes(), passphrase)
+        ciphertext_bytes = src.read_bytes()
+        cipher_mode = _gpg_cipher_mode(tool, ciphertext_bytes, passphrase)
+        plaintext = _decrypt_bytes(tool, ciphertext_bytes, passphrase)
         keys = Path(args.keys)
         keys.mkdir(parents=True, exist_ok=True)
         conflicts: list[str] = []
@@ -1569,8 +1619,10 @@ def cmd_restore(args) -> int:
                 os.chmod(path, 0o700 if path.is_dir() else 0o600)
         if args.json:
             return emit_json(EXIT_OK, input=str(src), keys=str(keys), tool=tool,
+                             cipher_mode=cipher_mode,
                              archived=str(archived) if archived else None)
-        print(f"Restored {src} into {keys}")
+        print(f"Restored {src} into {keys}"
+              + (f" (decrypted an {cipher_mode.upper()} backup)" if cipher_mode else ""))
         return EXIT_OK
     except (ValueError, OSError, RuntimeError, tarfile.TarError) as exc:
         return emit_json(EXIT_USAGE if isinstance(exc, ValueError) else EXIT_FAIL,
@@ -1647,7 +1699,9 @@ def _encrypt_or_decrypt_dir(args, encrypt: bool) -> int:
                 raise ValueError(f"{d} does not exist")
             if blob.exists() and not args.force:
                 raise ValueError(f"{blob} exists; pass --force to overwrite")
-            ciphertext = _encrypt_bytes(tool, _tar_keys(d), passphrase)
+            ciphertext, cipher_mode = _encrypt_bytes(
+                tool, _tar_keys(d), passphrase,
+                require_aead=getattr(args, "require_aead", False))
             fd = os.open(blob, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
             with os.fdopen(fd, "wb") as fh:
                 fh.write(ciphertext)
@@ -1655,9 +1709,10 @@ def _encrypt_or_decrypt_dir(args, encrypt: bool) -> int:
                 shutil.rmtree(d)
             if args.json:
                 return emit_json(EXIT_OK, name=name, archive=str(blob), tool=tool,
+                                 cipher_mode=cipher_mode,
                                  bytes=len(ciphertext),
                                  deleted_plaintext=bool(args.delete_plaintext))
-            print(f"Wrote {blob} ({len(ciphertext):,} bytes, {tool}, mode 0600)")
+            print(f"Wrote {blob} ({len(ciphertext):,} bytes, {tool}/{cipher_mode}, mode 0600)")
             if args.delete_plaintext:
                 print(f"Removed plaintext {d}")
             return EXIT_OK
@@ -1912,6 +1967,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--out", required=True)
     sp.add_argument("--tool", choices=["age", "gpg", "openssl"], default=None)
     sp.add_argument("--passphrase-file", default=None)
+    sp.add_argument("--require-aead", action="store_true",
+                    help="refuse to write a CFB+MDC backup (require authenticated encryption)")
     _add_json(sp)
     sp.set_defaults(func=cmd_backup)
 
@@ -1941,6 +1998,8 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--passphrase-file", default=None)
         sp.add_argument("--delete-plaintext", action="store_true")
         sp.add_argument("--force", action="store_true")
+        sp.add_argument("--require-aead", action="store_true",
+                        help="refuse a CFB+MDC envelope (require authenticated encryption)")
         _add_json(sp)
         sp.set_defaults(func=fn)
 

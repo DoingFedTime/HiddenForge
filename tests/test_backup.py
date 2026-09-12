@@ -151,7 +151,8 @@ def test_restore_forces_key_modes_ignoring_archive(hf, tmp_path, capsys):
     pp = tmp_path / "pp"
     pp.write_text("a passphrase\n")
     blob = tmp_path / "keys.tar.gpg"
-    blob.write_bytes(hf._encrypt_bytes("gpg", buf.getvalue(), "a passphrase"))
+    ciphertext, _mode = hf._encrypt_bytes("gpg", buf.getvalue(), "a passphrase")
+    blob.write_bytes(ciphertext)
 
     keys = tmp_path / "restored"
     rc = hf.main(["restore", "--keys", str(keys), "--input", str(blob),

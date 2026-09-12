@@ -77,6 +77,12 @@ jobs:
       - name: manifest.json must match the code
         run: python3 scripts/check_manifest.py
 
+      - name: mutation spot-check (curated, security-critical)
+        # mutmut's full run is unreliable under this pytest config (see the
+        # script's docstring); this proves the suite kills a wrong answer in
+        # key handling, validation and the hardening directives.
+        run: /tmp/hf-unit/bin/python scripts/mutation_spotcheck.py
+
   build-and-test:
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: docker

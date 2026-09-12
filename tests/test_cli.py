@@ -743,6 +743,43 @@ def test_harden_streams_tolerates_streams_without_reconfigure(hf, monkeypatch):
     hf._harden_streams()   # must not raise
 
 
+def test_aead_preferred_reports_aead(hf, monkeypatch):
+    import subprocess as sp
+    monkeypatch.setattr(hf.subprocess, "run",
+                        lambda cmd, **kw: sp.CompletedProcess(cmd, 0, b"CIPHERTEXT", b""))
+    data, mode = hf._encrypt_bytes("gpg", b"secret", "pw")
+    assert data == b"CIPHERTEXT" and mode == "aead"
+
+
+def test_aead_fallback_warns_and_reports_cfb(hf, capsys, monkeypatch):
+    """A CFB+MDC downgrade must not happen silently."""
+    import subprocess as sp
+
+    def fake_run(cmd, **kw):
+        if "--force-aead" in cmd:
+            return sp.CompletedProcess(cmd, 2, b"", b'gpg: invalid option "--force-aead"')
+        return sp.CompletedProcess(cmd, 0, b"CIPHERTEXT", b"")
+
+    monkeypatch.setattr(hf.subprocess, "run", fake_run)
+    data, mode = hf._encrypt_bytes("gpg", b"secret", "pw")
+    assert data == b"CIPHERTEXT" and mode == "cfb"
+    assert "NOT AEAD" in capsys.readouterr().err
+
+
+def test_require_aead_refuses_the_fallback(hf, monkeypatch):
+    """--require-aead turns the downgrade into a hard error."""
+    import subprocess as sp
+
+    def fake_run(cmd, **kw):
+        if "--force-aead" in cmd:
+            return sp.CompletedProcess(cmd, 2, b"", b'gpg: invalid option "--force-aead"')
+        return sp.CompletedProcess(cmd, 0, b"CIPHERTEXT", b"")
+
+    monkeypatch.setattr(hf.subprocess, "run", fake_run)
+    with pytest.raises(ValueError, match="require-aead"):
+        hf._encrypt_bytes("gpg", b"secret", "pw", require_aead=True)
+
+
 def test_age_paths_fail_cleanly_not_silently(hf, monkeypatch):
     """age cannot be used with a passphrase file, and needs a real TTY."""
     with pytest.raises(ValueError, match="age does not use --passphrase-file"):
