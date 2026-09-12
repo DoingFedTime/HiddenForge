@@ -82,6 +82,28 @@ MUTATIONS = [
         'IMAGE_REF_RE = re.compile(r"^[a-zA-Z0-9-][a-zA-Z0-9._/:@-]{0,254}$")',
         "tests/test_cli.py -k image_ref or validate_image",
     ),
+    (
+        "_safe stops escaping control characters (log injection)",
+        "entrypoint.py",
+        "        ch if ch.isprintable() else f'\\\\x{ord(ch):02x}'",
+        "        ch",
+        "tests/test_entrypoint_fs.py",
+    ),
+    (
+        "openssl refusal removed (unauthenticated cipher accepted)",
+        "scripts/hiddenforge",
+        '        raise ValueError("openssl is refused: it provides no authentication. '
+        'Use age or gpg.")',
+        '        return plaintext, "none"',
+        "tests/test_backup.py",
+    ),
+    (
+        "restore accepts '..' path-traversal members again",
+        "scripts/hiddenforge",
+        '                if name.is_absolute() or ".." in name.parts:',
+        "                if name.is_absolute():",
+        "tests/test_backup.py",
+    ),
 ]
 
 

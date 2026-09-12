@@ -223,3 +223,43 @@ def test_decrypt_key_wrong_passphrase_fails_closed(hf, keys, tmp_path, capsys):
                   "--passphrase-file", str(bad), "--json"])
     assert rc == hf.EXIT_FAIL
     assert not (keys / "app").exists()
+
+
+def test_encrypt_bytes_refuses_openssl_at_the_function(hf):
+    """The openssl refusal must hold at the function, not only at the CLI.
+
+    Found by mutation testing: cmd_backup rejects --tool openssl before
+    _encrypt_bytes runs, so the identical guard INSIDE _encrypt_bytes was
+    untested -- removing it failed no test. Direct callers still depend on it.
+    """
+    with pytest.raises(ValueError, match="openssl is refused"):
+        hf._encrypt_bytes("openssl", b"secret", None)
+
+
+def test_restore_rejects_path_traversal(hf, tmp_path, capsys):
+    """A crafted archive must not write outside the keys directory.
+
+    Also found by mutation testing: removing the `..` check from cmd_restore's
+    member loop failed no test. The guard existed but nothing held it.
+    """
+    import io
+    import tarfile
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        f = tarfile.TarInfo("../escaped")
+        f.size = 6
+        tar.addfile(f, io.BytesIO(b"secret"))
+
+    pp = tmp_path / "pp"
+    pp.write_text("a passphrase\n")
+    blob = tmp_path / "keys.tar.gpg"
+    ciphertext, _mode = hf._encrypt_bytes("gpg", buf.getvalue(), "a passphrase")
+    blob.write_bytes(ciphertext)
+
+    keys = tmp_path / "nested" / "restored"
+    rc = hf.main(["restore", "--keys", str(keys), "--input", str(blob),
+                  "--tool", "gpg", "--passphrase-file", str(pp), "--json"])
+    assert rc != 0, "a path-traversal member must fail closed"
+    assert not (tmp_path / "nested" / "escaped").exists()
+    assert not (tmp_path / "escaped").exists()
