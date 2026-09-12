@@ -13,6 +13,11 @@
 # push or for a pull request whose head is THIS repository -- a fork PR must
 # never get host code execution. The guard is fail-closed: if the context does
 # not expose `pull_request.head.repo`, the job is skipped rather than run.
+#
+# PINNING: every `uses:` is pinned to a commit SHA (the tag is in a trailing
+# comment for humans), and every scanner container is pinned by digest, exactly
+# as the Dockerfile pins the base image and the vendored mkp224o tarball. A tag
+# is a mutable dependency with write access to this build.
 name: ci
 
 on:
@@ -37,9 +42,9 @@ jobs:
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: docker
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: hadolint Dockerfile
-        uses: hadolint/hadolint-action@v3.1.0
+        uses: hadolint/hadolint-action@54c9adbab1582c2ef04b2016b760714a4bfde3cf # v3.1.0
         with:
           dockerfile: Dockerfile
           failure-threshold: warning
@@ -64,7 +69,7 @@ jobs:
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: docker
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: host unit + property tests (coverage floor enforced)
         run: |
           python3 -m venv /tmp/hf-unit
@@ -87,7 +92,7 @@ jobs:
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: docker
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: build the image locally
         run: |
@@ -128,7 +133,7 @@ jobs:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: docker
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Build the image to scan
         run: |
@@ -144,7 +149,7 @@ jobs:
           mkdir -p security-reports
           docker run --rm \
             -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD:/src" \
-            aquasec/trivy:0.58.1 image \
+            aquasec/trivy@sha256:ab70a02200597efa04748f210f793936eb647cbcdb0ea69cc30b226d6f5a22c7 image \
             --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed \
             --ignorefile /src/.trivyignore \
             --format json --output /src/security-reports/trivy-image.json \
@@ -153,7 +158,7 @@ jobs:
       - name: trivy fs (secrets and misconfiguration)
         run: |
           mkdir -p security-reports
-          docker run --rm -v "$PWD:/src" aquasec/trivy:0.58.1 fs \
+          docker run --rm -v "$PWD:/src" aquasec/trivy@sha256:ab70a02200597efa04748f210f793936eb647cbcdb0ea69cc30b226d6f5a22c7 fs \
             --scanners secret,misconfig --exit-code 1 --severity HIGH,CRITICAL \
             --ignorefile /src/.trivyignore \
             --format json --output /src/security-reports/trivy-fs.json /src
@@ -163,20 +168,20 @@ jobs:
           # The only excluded rule is the accepted root-at-PID1 design: the
           # container MUST start as root to chown the key mount and su-exec to
           # tor. See SECURITY.md. Everything else must be clean.
-          docker run --rm -v "$PWD:/src" semgrep/semgrep:1.100.0 semgrep \
+          docker run --rm -v "$PWD:/src" semgrep/semgrep@sha256:7acf76eaa621465588fdfcc84f46fd7ea1e8337ebb1aa1ed6f4685f6eedaec25 semgrep \
             --config=p/security-audit --config=p/dockerfile \
             --exclude-rule=dockerfile.security.missing-user-entrypoint.missing-user-entrypoint \
             --error --quiet /src
 
       - name: gitleaks
         run: |
-          docker run --rm -v "$PWD:/src" zricethezav/gitleaks:v8.28.0 detect \
+          docker run --rm -v "$PWD:/src" zricethezav/gitleaks@sha256:cdbb7c955abce02001a9f6c9f602fb195b7fadc1e812065883f695d1eeaba854 detect \
             --no-git --redact --config /src/.gitleaks.toml --source /src
 
       - name: Upload security reports
         # Produced even when a scan fails, so the report of a failure is kept.
         if: always()
-        uses: forgejo/upload-artifact@v3
+        uses: forgejo/upload-artifact@a8a3f3ad30e3422c9c7b888a15615d19a852ae32 # v3
         with:
           name: security-reports
           path: security-reports/
