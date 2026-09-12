@@ -1547,15 +1547,26 @@ def cmd_restore(args) -> int:
             for m in members:
                 if not m.isfile():
                     continue
-                dest = keys / m.name
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW,
-                             m.mode or 0o600)
                 src_fh = tar.extractfile(m)
                 if src_fh is None:
                     continue
+                dest = keys / m.name
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                # 0600 regardless of what the archive declares: a crafted archive
+                # must not be able to leave an onion secret key world-readable.
+                # fchmod the descriptor as well so the caller's umask cannot move
+                # the mode either way.
+                fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW,
+                             0o600)
                 with os.fdopen(fd, "wb") as fh:
+                    os.fchmod(fh.fileno(), 0o600)
                     fh.write(src_fh.read())
+            # Force 0700 on every directory under the volume and 0600 on every
+            # file, ignoring any directory members the archive declared.
+            for path in sorted(keys.rglob("*")):
+                if path.is_symlink():
+                    continue
+                os.chmod(path, 0o700 if path.is_dir() else 0o600)
         if args.json:
             return emit_json(EXIT_OK, input=str(src), keys=str(keys), tool=tool,
                              archived=str(archived) if archived else None)
@@ -1662,15 +1673,21 @@ def _encrypt_or_decrypt_dir(args, encrypt: bool) -> int:
                 rel = Path(m.name)
                 if not m.isfile() or rel.is_absolute() or ".." in rel.parts:
                     continue
+                src_fh = tar.extractfile(m)
+                if src_fh is None:
+                    continue
                 dest = d / rel
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW,
                              0o600)
-                src_fh = tar.extractfile(m)
-                if src_fh is None:
-                    continue
                 with os.fdopen(fd, "wb") as fh:
+                    os.fchmod(fh.fileno(), 0o600)
                     fh.write(src_fh.read())
+        for path in sorted(d.rglob("*")):
+            if path.is_symlink():
+                continue
+            os.chmod(path, 0o700 if path.is_dir() else 0o600)
+        os.chmod(d, 0o700)
         if args.json:
             return emit_json(EXIT_OK, name=name, key_dir=str(d), tool=tool)
         print(f"Restored {d}")

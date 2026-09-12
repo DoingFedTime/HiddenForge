@@ -128,6 +128,41 @@ def test_restore_force_archives_nested_conflicts(hf, keys, tmp_path, capsys):
     assert (keys / "app" / "hs_ed25519_secret_key").read_bytes() == b"\x22" * 96
 
 
+def test_restore_forces_key_modes_ignoring_archive(hf, tmp_path, capsys):
+    """A crafted archive must not leave a key world-readable.
+
+    The restorer used to honour the tar member's own mode (`m.mode or 0o600`),
+    so an archive declaring 0644 on hs_ed25519_secret_key was restored 0644.
+    Modes are now forced: 0700 on directories, 0600 on files.
+    """
+    import io
+    import tarfile
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        d = tarfile.TarInfo("app")
+        d.type = tarfile.DIRTYPE
+        d.mode = 0o755
+        tar.addfile(d)
+        f = tarfile.TarInfo("app/hs_ed25519_secret_key")
+        f.size = 6
+        f.mode = 0o644
+        tar.addfile(f, io.BytesIO(b"secret"))
+
+    pp = tmp_path / "pp"
+    pp.write_text("a passphrase\n")
+    blob = tmp_path / "keys.tar.gpg"
+    blob.write_bytes(hf._encrypt_bytes("gpg", buf.getvalue(), "a passphrase"))
+
+    keys = tmp_path / "restored"
+    rc = hf.main(["restore", "--keys", str(keys), "--input", str(blob),
+                  "--tool", "gpg", "--passphrase-file", str(pp), "--json"])
+    assert rc == 0, capsys.readouterr().out
+    assert os.stat(keys / "app").st_mode & 0o777 == 0o700, "directory mode not forced"
+    assert os.stat(keys / "app" / "hs_ed25519_secret_key").st_mode & 0o777 == 0o600, \
+        "file mode not forced"
+
+
 def test_backup_empty_dir_refused(hf, tmp_path, capsys):
     empty = tmp_path / "empty"
     empty.mkdir()
