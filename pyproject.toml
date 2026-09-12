@@ -17,18 +17,18 @@ source = ["entrypoint"]
 [tool.coverage.report]
 show_missing = true
 # Coverage floor: CI fails if the pure-surface coverage regresses below this.
-# `source` is entrypoint.py only; the rest of it is the privileged supervision
-# loop / signal handler / Vanguards restart machinery (integration surface,
-# exercised by the in-container smoke test and the live E2E suite, not the host
-# unit run). The CLI (scripts/hiddenforge), vanity.py and healthcheck.py have
-# their own suites in tests/test_cli.py, tests/test_vanity.py and
-# tests/test_backup.py but are not in `source`.
+# `source` is entrypoint.py only. The uncovered remainder is the privileged
+# startup that cannot run on the host (chown/chmod of /etc/tor and the data dir,
+# su-exec wiring), exercised by the container smoke test and the live E2E suite.
+# The CLI (scripts/hiddenforge), vanity.py and healthcheck.py have their own
+# suites in tests/test_cli.py, tests/test_vanity.py and tests/test_backup.py but
+# are not in `source`.
 #
 # The measured number is emitted by CI as coverage.json / coverage.txt (see the
-# unit job and scripts/coverage_summary.py), never written here: a percentage
-# typed into a comment is stale the moment a test lands. The floor is the only
-# figure this file states.
-fail_under = 48
+# unit job and scripts/coverage_summary.py), never written here. The floor was
+# 48 against 57.9% -- ten points of room for a silent regression; covering the
+# supervision loop took it to ~76%, and the floor moved up with it.
+fail_under = 72
 # The supervision loop / signal handler / Vanguards management are integration
 # surface, not unit surface — excluded from the unit coverage gate honestly
 # rather than faked with mocks.
