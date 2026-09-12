@@ -107,6 +107,84 @@ identity. The README has the operational version of this list.
   workflow guards against fork pull requests (fail-closed). A compromised
   collaborator with push rights could still run code on the host.
 
+## Key backup and at-rest encryption
+
+**The key IS the address.** Losing `hs_ed25519_secret_key` loses the `.onion`
+permanently: there is no recovery, no reset, and no reissue. Everything below is
+about protecting a copy of it, and none of it changes that sentence.
+
+The backup path is `hiddenforge backup` and the offline envelope tools;
+`backup`/`encrypt-key` write an authenticated encrypted tar of the key volume.
+
+### What an attacker who obtains the encrypted backup can and cannot do
+
+Can: run an offline passphrase search at whatever rate their hardware allows
+(scrypt with N=2^17 is memory-hard, so that rate is bounded by memory bandwidth,
+not raw CPU). Cannot: read the keys without the passphrase, or tamper with the
+archive undetected (AEAD authenticates it; a single flipped byte fails decryption
+and nothing is written). A passphrase with real entropy is the whole security of
+the backup. `docs/INTEGRATION.md` says to encrypt backups; this says why.
+
+### What a local attacker observes during `encrypt-key`
+
+- **Process table / `argv`:** nothing. The passphrase is written to an anonymous
+  pipe and passed as `--passphrase-fd`, never on the command line, so
+  `/proc/<pid>/cmdline` never contains it.
+- **`/proc/<pid>/fd`:** the pipe is not readable by another uid; a same-uid
+  attacker can already read process memory and is out of scope.
+- **Filesystem:** nothing. `_tar_keys` assembles the tar in `io.BytesIO`; the
+  plaintext never lands on disk. The output is opened with `O_NOFOLLOW` at mode
+  `0600`.
+- **The environment:** nothing, beyond the operator-supplied
+  `--passphrase-file` path they control.
+
+### Why openssl is refused, as a written position
+
+openssl's `enc` provides encryption without authentication. A backup whose
+integrity is not verified can be modified by anyone who can write the archive;
+on restore that is a silent substitution of attacker-chosen key material. The
+tool refuses openssl for creation rather than offering it as a footgun. This is
+a deliberate, permanent position, not a missing feature.
+
+### Why `--passphrase-fd` and not an argument or an environment variable
+
+Both alternatives leak the passphrase to any process that can read the target's
+`argv` or environment, which on a shared host is any same-user process. A pipe fd
+is visible only to the child.
+
+### The CFB fallback, and what it costs
+
+On a gpg too old for `--force-aead`, `backup` falls back to CFB+MDC. MDC is an
+integrity check, not an AEAD construction; the guarantee is weaker and the
+failure mode under a chosen-ciphertext attack differs. The fallback is not
+silent: it prints a warning naming the mode, the `--json` output carries
+`cipher_mode`, and `--require-aead` refuses to proceed at all. Restore reports
+which mode it decrypted. Use `--require-aead` for a production key.
+
+### Explicitly out of scope
+
+- A compromised host, a malicious gpg/age binary, or an attacker who already has
+  the passphrase.
+- An attacker who can read process memory as the same user.
+- `hiddenforge` does **not** decrypt at boot. Tor needs the plaintext secret key
+  in `HiddenServiceDir`, which is the mount, so runtime encryption would be
+  theatre. The envelope tools are offline and manual.
+
+The script never reads, prints, copies, or hashes the secret key's *contents*:
+it stats the file and moves it; `show` reads only the public address.
+
+### Standards, honestly
+
+- **NIST SP 800-57** (key management) applies *partially*: keys live only in the
+  mounted volume and generation is separate from storage, but there is no formal
+  lifecycle policy, no HSM, and rotation is a manual, destructive, opt-in
+  command. Stated as partial, not met.
+- **NIST SP 800-190** (container security) applies *partially*: read-only rootfs,
+  dropped capabilities and non-root runtime processes are followed; the container
+  still starts as root to drop privileges, and that trade-off is above.
+- **No SP 800-53, ISO 27001 or SOC 2 mapping is claimed.** A fabricated mapping
+  is worse than no mapping.
+
 ## How to check these claims
 
 ```bash
