@@ -17,6 +17,7 @@ check, not a code change. Work top-down; record the evidence.
 | R9 | The final **image contents** are what they should be | inspect the built image | **done** — no pip/gcc/curl/sshd/setuptools, no key material, 40 packages |
 | R10 | Tor accepts the generated torrc | `tor --verify-config` in the image | **done** — "Configuration was valid" |
 | R11 | **Coverage-guided fuzzing** of the untrusted parsers | `fuzz/fuzz_parsers.py` under atheris | **done** — found a real crash (surrogate encoding), fixed; 388k runs clean |
+| R12 | The service is **stable over time** (no leak, no restart loop) | soak the shipped compose, sample memory/PIDs/restarts | **done** — 3 min: memory plateaus ~190 MiB of 512, PIDs steady at 37, 0 restarts |
 
 Anything a check turns up becomes a code fix plus a regression test, then the
 row is re-verified.
@@ -36,6 +37,12 @@ row is re-verified.
 - **Hardened during this pass:** image-reference validation in the CLI (flag and
   YAML injection), a fail-closed fork-PR guard on the host-mode CI runner, and
   the threat model in `docs/THREAT-MODEL.md`.
+- **Fuzzing found a real bug:** a lone surrogate in an environment value (from a
+  non-UTF-8 byte) reached a log line and aborted startup. Fixed; the target now
+  runs 388k inputs clean in 152s. See the CHANGELOG entry.
+- **Soak (R12):** 3 minutes on the shipped compose, sampled every 20s. Memory
+  settles at ~190 MiB of the 512 MiB limit with no upward trend, PIDs steady at
+  37, restart count 0.
 
 - **R3 exposed a shipped bug:** `docker-compose.yml` and `podman-compose.yml` set
   `ulimits.nproc: 256`. RLIMIT_NPROC is per host uid, and the tor user is uid 100,
