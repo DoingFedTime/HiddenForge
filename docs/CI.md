@@ -27,6 +27,14 @@ workflow. They are deliberate local steps:
 
 Signing needs the physical key, so it can never run in CI.
 
+### A tag is the release gate
+
+Pushing a `v*` tag runs the whole workflow, including the live acceptance suite
+in `build-and-test`. **Do not publish an image until that run is green on
+the tagged commit** -- a tag whose CI never ran, or failed, must not become an
+image. The `reproducibility` and `security` jobs run on a tag too, so the released
+bits are reproducible and scanned at the moment they are tagged.
+
 ## Running the same checks by hand
 
 Every CI job is a thin wrapper over commands that work locally, so a red run can

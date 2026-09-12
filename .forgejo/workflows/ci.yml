@@ -23,6 +23,10 @@ name: ci
 on:
   push:
     branches: ["**"]
+    # Tags too: tagging is the release trigger, and the live E2E must run against
+    # the tagged commit. Do not publish the image until this run is green --
+    # a tag whose CI never ran (or failed) must not become an image.
+    tags: ["v*"]
   pull_request:
   schedule:
     # Daily, so an advisory published after the last commit is caught even when
