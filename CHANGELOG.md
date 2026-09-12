@@ -59,6 +59,13 @@ existing `docker compose up -d` human path is unchanged.
   step.
 - **`examples/demo`**: a throwaway nginx app published as a `.onion` by adding
   only the emitted fragment.
+- **`docs/THREAT-MODEL.md`**: the in-repo threat model, with every control
+  mapped to where it lives in the code, the accepted trade-offs (root at PID 1,
+  `seccomp=unconfined`, L2-only guard pinning, no at-rest encryption), and the
+  commands that check each claim.
+- **`docs/PRODUCTION-READINESS.md`**: the checklist of claims that had to be
+  proven (reproducible build, multi-service, shipped compose, sbom,
+  verify-image, arm64, image scan, in-image CLI), with the evidence for each.
 - **Multi-service `setup`**: `--service name:onionport:host:port` is repeatable,
   so several onions are emitted at once (each with its own env var, key
   directory, and address). `--runtime podman` emits a Podman-correct fragment
@@ -129,6 +136,15 @@ existing `docker compose up -d` human path is unchanged.
   never set it -- `pids_limit` remains the per-container cap, and the entrypoint
   now probes `su-exec tor true` at startup and fails with a named error instead
   of looping.
+- **The CLI validates image references.** `--image` / `--syft-image` were handed
+  to `docker run` as argv and interpolated into the generated compose YAML, so a
+  value beginning with `-` would be parsed by docker as a flag (`--privileged`)
+  and one containing a newline would inject YAML keys. `validate_image_ref`
+  rejects both, with tests for the flag and YAML cases.
+- **The CI workflow is fail-closed for fork pull requests.** The runner is
+  host-mode (jobs run as the operator), so a fork PR would otherwise get host
+  code execution; every job now runs only for a push or a same-repository PR, and
+  is skipped if the context cannot prove it.
 - **OpenSSL pinned to 3.5.8-r0.** Scanning the built image found 20 CVEs in the
   OpenSSL the base digest ships (3.5.7-r0), 2 of them HIGH. The HIGH ones are
   QUIC-server issues and Tor speaks no QUIC, so they were not reachable -- but the

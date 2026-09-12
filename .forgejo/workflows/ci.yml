@@ -7,6 +7,12 @@
 # Jobs target the self-hosted runner labelled `docker`. Publishing the built
 # image and signing its digest are separate, deliberate local steps (signing
 # needs a hardware key), so they are not in this file.
+#
+# TRUST BOUNDARY: the runner is HOST-MODE, so a job executes as the operator on
+# the workstation. Every job therefore carries a guard that runs only for a
+# push or for a pull request whose head is THIS repository -- a fork PR must
+# never get host code execution. The guard is fail-closed: if the context does
+# not expose `pull_request.head.repo`, the job is skipped rather than run.
 name: ci
 
 on:
@@ -24,6 +30,7 @@ concurrency:
 
 jobs:
   lint:
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: docker
     steps:
       - uses: actions/checkout@v4
@@ -45,6 +52,7 @@ jobs:
           /tmp/hf-lint/bin/ruff check . scripts/hiddenforge
 
   unit:
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: docker
     steps:
       - uses: actions/checkout@v4
@@ -58,6 +66,7 @@ jobs:
         run: python3 -c "import json; json.load(open('manifest.json'))"
 
   build-and-test:
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: docker
     steps:
       - uses: actions/checkout@v4

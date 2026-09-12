@@ -20,6 +20,20 @@ row is re-verified.
 
 ## Findings so far
 
+- **Image contents audit (R9, added):** the final image has no `pip`, `pip3`,
+  `setuptools`, `gcc`, `cc`, `make`, `curl` or `sshd`; no `hs_ed25519*` or
+  `.onion` material in any layer; 40 apk packages; `tor 0.4.9.12-r0`,
+  `openssl 3.5.8-r0`, `python3 3.12.14-r0`. The Python stdlib `urllib`/`ssl`
+  remain, which is documented and expected.
+- **Tor accepts the generated config (R10, added):** `tor --verify-config` on the
+  torrc the entrypoint writes reports **"Configuration was valid"** (Tor
+  0.4.9.12, OpenSSL 3.5.8). Run it with `--security-opt seccomp=unconfined` and
+  the real `0700`/`0751` directory modes; without those, Tor's own sandbox setup
+  fails and the check is a false alarm.
+- **Hardened during this pass:** image-reference validation in the CLI (flag and
+  YAML injection), a fail-closed fork-PR guard on the host-mode CI runner, and
+  the threat model in `docs/THREAT-MODEL.md`.
+
 - **R3 exposed a shipped bug:** `docker-compose.yml` and `podman-compose.yml` set
   `ulimits.nproc: 256`. RLIMIT_NPROC is per host uid, and the tor user is uid 100,
   shared with other containers (i2pforge's i2pd). With uid 100 already at 366

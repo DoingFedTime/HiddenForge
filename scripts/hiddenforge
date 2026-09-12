@@ -89,6 +89,10 @@ NAME_RE = re.compile(r"^[a-z0-9][a-z0-9\-]{0,62}$")
 ONION_RE = re.compile(r"^[a-z2-7]{56}\.onion$")
 PREFIX_RE = re.compile(r"^[a-z2-7]{1,12}$")
 CONTAINER_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.\-]*$")
+# A container image reference that is safe to place in an argv or in YAML:
+# starts alphanumeric (never '-', which docker would parse as a flag) and
+# contains no whitespace or newline (which would inject YAML keys).
+IMAGE_REF_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._/:@-]{0,254}$")
 HSDIR_RE = re.compile(r"^\s*HiddenServiceDir\s+(\S+)\s*$")
 TORRC_PATH = "/etc/tor/torrc"
 
@@ -161,6 +165,23 @@ def validate_container(name: str) -> str:
     if not CONTAINER_RE.fullmatch(name):
         raise ValueError(f"invalid container name {name!r}")
     return name
+
+
+def validate_image_ref(value: str) -> str:
+    """Validate a container image reference before it reaches argv or YAML.
+
+    The CLI hands ``--image``/``--syft-image`` to ``docker run`` as an argv
+    element: a value beginning with ``-`` (e.g. ``--privileged``) would be
+    parsed by docker as a FLAG rather than the image, and a value containing a
+    newline would inject keys into the generated ``compose.service.yml``. Both
+    are rejected here.
+    """
+    if not IMAGE_REF_RE.fullmatch(value or ""):
+        raise ValueError(
+            f"invalid image reference {value!r}: expected registry/name[:tag]"
+            "[@sha256:...] with no spaces, newlines, or leading '-'"
+        )
+    return value
 
 
 def derive_onion(pubkey: bytes) -> str:
@@ -1134,7 +1155,8 @@ def cmd_setup(args) -> int:
             raise ValueError(f"{out} already contains {', '.join(existing)}; "
                              "pass --force to overwrite")
 
-        image, keys, container, runtime = args.image, args.keys, args.container, args.runtime
+        image = validate_image_ref(args.image)
+        keys, container, runtime = args.keys, args.container, args.runtime
         _write_text_nofollow(
             out / "compose.service.yml",
             render_compose_fragment(services, image, keys, container, runtime))
@@ -1225,6 +1247,7 @@ def _rewrite_key_paths(doc: dict, keys: Path, container_prefix: str = "/keys/") 
 def cmd_vanity(args) -> int:
     try:
         validate_name(args.name)
+        validate_image_ref(args.image)
         if not PREFIX_RE.fullmatch(args.prefix):
             raise ValueError(
                 f"invalid prefix {args.prefix!r}: use base32 characters a-z and 2-7 "
@@ -1688,7 +1711,7 @@ def _verify_mldsa_signature(sigdir: Path) -> tuple[bool | None, str]:
 
 def cmd_verify_image(args) -> int:
     try:
-        image = args.image or build_manifest()["image"]
+        image = validate_image_ref(args.image or build_manifest()["image"])
         sigdir = Path(args.sigdir)
         digest_file = sigdir / SIGNED_DIGEST_FILE
         if not digest_file.is_file():
@@ -1749,7 +1772,8 @@ def cmd_sbom(args) -> int:
             raise ValueError("neither docker nor podman found on PATH")
         if eng != "docker":
             raise ValueError("sbom currently requires the docker engine for its socket")
-        image = args.image or build_manifest()["image"]
+        image = validate_image_ref(args.image or build_manifest()["image"])
+        args.syft_image = validate_image_ref(args.syft_image)
         proc = _run([eng, "run", "--rm",
                      "-v", "/var/run/docker.sock:/var/run/docker.sock",
                      args.syft_image, image, "-o", "spdx-json", "-q"])

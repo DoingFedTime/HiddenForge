@@ -141,6 +141,40 @@ def test_validate_name_rejects_traversal_and_junk(hf, bad):
         hf.validate_name(bad)
 
 
+@pytest.mark.parametrize("good", [
+    "sambent.dev/sam/hiddenforge:latest",
+    "nginx:alpine",
+    "alpine:3.23.5@sha256:" + "a" * 64,
+    "docker.io/library/nginx:1.27",
+])
+def test_validate_image_ref_accepts(hf, good):
+    assert hf.validate_image_ref(good) == good
+
+
+@pytest.mark.parametrize("bad", [
+    "--privileged",          # would be parsed by `docker run` as a FLAG
+    "-v",                    # same
+    "--volume=/:/host",      # same
+    "img\n    privileged: true",  # YAML injection into compose.service.yml
+    "img\n",
+    "img:tag extra",
+    "",
+    " img",
+    "img\tx",
+    "img;",
+])
+def test_validate_image_ref_rejects_flag_and_yaml_injection(hf, bad):
+    with pytest.raises(ValueError):
+        hf.validate_image_ref(bad)
+
+
+def test_setup_rejects_image_yaml_injection(hf, tmp_path, capsys):
+    rc = hf.main(["setup", "--backend", "web:80",
+                  "--image", "img\n    privileged: true",
+                  "-o", str(tmp_path), "--json"])
+    assert rc == hf.EXIT_USAGE
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # address_for / show
 # ─────────────────────────────────────────────────────────────────────────────
