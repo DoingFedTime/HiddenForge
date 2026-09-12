@@ -51,3 +51,39 @@ docker build --build-arg SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)" \
 docker run --rm sambent.dev/sam/hiddenforge:latest python3 /usr/local/bin/tests/test_torrc.py
 HIDDENFORGE_E2E=1 .venv/bin/python -m pytest tests/test_e2e_live.py -v
 ```
+
+## Running the workflow locally (and why you should)
+
+A workflow that has never been executed is not a workflow. Every job here was
+first run for real with `forgejo-runner exec`, in host mode, and that is how the
+following got found and fixed, none of which any amount of reading had surfaced:
+
+- `lint` failed: its tool venv had `ruff` + `mypy` but not `pytest`/`hypothesis`,
+  which `scripts/typecheck.sh` needs because it checks `tests/` too.
+- `lint` failed to fetch `hadolint/hadolint-action`: it does not exist on
+  `code.forgejo.org`, and short action names resolve against the instance's
+  `DEFAULT_ACTIONS_URL`; the step now uses the fully-qualified GitHub URL.
+- `security` failed on semgrep: `scripts/check_pins.py` fed `--branch`/`--arch`
+  into `urllib`; both are now bounded and the call carries a `# nosemgrep`.
+- `build-and-test`'s torrc smoke test was a folded YAML plain scalar, so its
+  backslash-continuation mangled the script path and the step could never pass.
+
+```
+# If a runner daemon is running on this machine, stop it first: it holds the
+# cache DB (actcache/bolt.db).
+forgejo-runner exec -i -self-hosted -W .forgejo/workflows/ci.yml -j lint  -E push
+forgejo-runner exec -i -self-hosted -W .forgejo/workflows/ci.yml -j unit  -E push
+forgejo-runner exec -i -self-hosted -W .forgejo/workflows/ci.yml -j security -E push
+forgejo-runner exec -i -self-hosted -W .forgejo/workflows/ci.yml -j reproducibility -E push
+forgejo-runner exec -i -self-hosted -W .forgejo/workflows/ci.yml -j build-and-test -E push
+forgejo-runner exec -i -self-hosted -W .forgejo/workflows/ci.yml -j pin-freshness -E schedule
+```
+
+**Known local limitation.** The `security` job's final "Upload security reports"
+step uses `forgejo/upload-artifact`, which needs `ACTIONS_RUNTIME_TOKEN`; `exec`
+does not provide it, so that one step fails locally. It is the last step and the
+only one, and it is expected to pass on the instance. Do not mistake it for a
+workflow defect.
+
+`-E push` selects the push event; `pin-freshness` is gated to
+`schedule`/`workflow_dispatch`, so run it with `-E schedule`.
