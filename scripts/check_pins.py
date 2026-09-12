@@ -40,6 +40,13 @@ REPOS = ("main", "community")
 # stage's packages are unpinned build tools in a discarded stage.
 _PIN = re.compile(r"\b([a-z0-9][a-z0-9._+-]*)=([0-9][0-9A-Za-z._-]*)")
 
+# semgrep flags argv-derived values flowing into urllib (it supports file://).
+# The URL is always the literal https mirror below, but the branch and arch are
+# bounded anyway: a value that cannot be a branch or an architecture has no
+# business reaching a URL, and rejecting it is cheaper than explaining it.
+_BRANCH_RE = re.compile(r"^v[0-9]+(\.[0-9]+)*$")
+_ARCH_RE = re.compile(r"^[a-z0-9_]+$")
+
 
 def _version_key(v: str) -> tuple[tuple[int, int, str], ...]:
     """Approximate Alpine version ordering (numeric components first)."""
@@ -77,6 +84,7 @@ def fetch_index(branch: str, arch: str) -> dict[str, list[str]]:
     for repo in REPOS:
         url = f"{MIRROR}/{branch}/{repo}/{arch}/APKINDEX.tar.gz"
         try:
+            # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
             with urllib.request.urlopen(url, timeout=60) as resp:  # noqa: S310
                 blob = resp.read()
         except (urllib.error.URLError, TimeoutError) as exc:
@@ -107,6 +115,10 @@ def main() -> int:
     pins = parse_pins(DOCKERFILE.read_text())
     if not pins:
         raise SystemExit("exit 3: no pins parsed from Dockerfile (parser drift?)")
+    if not _BRANCH_RE.fullmatch(args.branch):
+        raise SystemExit(f"exit 3: refusing implausible --branch {args.branch!r}")
+    if not _ARCH_RE.fullmatch(args.arch):
+        raise SystemExit(f"exit 3: refusing implausible --arch {args.arch!r}")
     index = fetch_index(args.branch, args.arch)
 
     missing, stale = [], []
