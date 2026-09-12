@@ -41,10 +41,19 @@ def _rmtree_as_root(path):
     throwaway root container is the fix.
     """
     parent = path.parent
+    # Pin the platform to the daemon's own architecture. A stale local tag for a
+    # multi-arch image (pulled earlier for arm64) otherwise makes this helper run
+    # under emulation and fail with "exec format error", silently leaving the
+    # scratch tree behind -- which is how the teardown noise started.
+    arch = subprocess.run(
+        ["docker", "version", "--format", "{{.Server.Arch}}"],
+        capture_output=True, text=True, check=False).stdout.strip()
+    platform = f"linux/{arch}" if arch else "linux/amd64"
     subprocess.run(
-        ["docker", "run", "--rm", "-v", f"{parent}:/p", "alpine:3.23.5",
+        ["docker", "run", "--rm", "--platform", platform,
+         "-v", f"{parent}:/p", "alpine:3.23.5",
          "rm", "-rf", f"/p/{path.name}"],
-        capture_output=True)
+        capture_output=True, check=False)
 
 
 @pytest.fixture
