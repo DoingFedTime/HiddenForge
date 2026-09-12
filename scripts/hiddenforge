@@ -729,6 +729,19 @@ def cmd_status(args) -> int:
 # doctor
 # ---------------------------------------------------------------------------
 
+def _as_int(value):
+    """int(), or None for engine-supplied junk.
+
+    docker/podman inspect values are typed by the engine, not by us: a missing
+    key, an empty string, or a non-numeric string must degrade to a clean check
+    result rather than a traceback that takes down the whole command.
+    """
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _check(ok: bool, name: str, detail: str, severity: str = "fail") -> dict:
     return {"check": name, "ok": bool(ok), "detail": detail, "severity": severity}
 
@@ -838,8 +851,13 @@ def cmd_doctor(args) -> int:
 
     apparmor = info.get("AppArmorProfile") or next(
         (s.split("=", 1)[1] for s in secopt if s.startswith("apparmor=")), "")
-    dockerinfo = _run([_engine() or "docker", "info", "--format", "{{json .SecurityOptions}}"])
-    host_has_apparmor = dockerinfo.returncode == 0 and "apparmor" in dockerinfo.stdout.lower()
+    # _docker_inspect above already required an engine, so this is belt-and-braces:
+    # do not invoke a binary we have just established is not there.
+    eng = _engine()
+    dockerinfo = (_run([eng, "info", "--format", "{{json .SecurityOptions}}"])
+                  if eng else None)
+    host_has_apparmor = bool(dockerinfo and dockerinfo.returncode == 0
+                             and "apparmor" in dockerinfo.stdout.lower())
     if host_has_apparmor:
         checks.append(_check(bool(apparmor) and apparmor != "unconfined",
                              "AppArmor profile is applied",
@@ -848,15 +866,16 @@ def cmd_doctor(args) -> int:
         checks.append(_check(True, "AppArmor profile is applied",
                              "host has no AppArmor; skipped", severity="warn"))
 
-    pids = hc.get("PidsLimit") or 0
-    checks.append(_check(bool(pids) and 0 < int(pids) <= 512,
-                         "process count is capped at 512 or fewer", f"PidsLimit={pids}"))
+    pids = _as_int(hc.get("PidsLimit"))
+    checks.append(_check(pids is not None and 0 < pids <= 512,
+                         "process count is capped at 512 or fewer",
+                         f"PidsLimit={hc.get('PidsLimit')!r}"))
 
-    mem = hc.get("Memory") or 0
-    memswap = hc.get("MemorySwap") or 0
+    mem = _as_int(hc.get("Memory")) or 0
+    memswap = _as_int(hc.get("MemorySwap")) or 0
     checks.append(_check(mem > 0 and memswap == mem,
                          "swap is disabled (key material cannot be paged to disk)",
-                         f"Memory={mem} MemorySwap={memswap}"))
+                         f"Memory={hc.get('Memory')!r} MemorySwap={hc.get('MemorySwap')!r}"))
 
     ports = (info.get("NetworkSettings") or {}).get("Ports") or {}
     published = {p: b for p, b in ports.items() if b}

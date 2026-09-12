@@ -501,6 +501,33 @@ def _fake_inspect():
     }
 
 
+@pytest.mark.parametrize("value,expected", [
+    ("256", 256), (256, 256), ("0", 0), ("", None), ("not-a-number", None), (None, None),
+])
+def test_as_int_tolerates_engine_junk(hf, value, expected):
+    assert hf._as_int(value) == expected
+
+
+@pytest.mark.parametrize("pids_limit", [None, "", "not-a-number", 0, 256, "512"])
+def test_doctor_tolerates_bad_engine_values(hf, tmp_path, capsys, monkeypatch, pids_limit):
+    """A junk PidsLimit must produce a verdict, not a traceback."""
+    os.chmod(tmp_path, 0o700)
+    info = _fake_inspect()
+    if pids_limit is None:
+        info["HostConfig"].pop("PidsLimit", None)
+    else:
+        info["HostConfig"]["PidsLimit"] = pids_limit
+    monkeypatch.setattr(hf, "_docker_inspect", lambda c: (info, None))
+    monkeypatch.setattr(hf, "_resolve_container", lambda c: "cid")
+    monkeypatch.setattr(hf, "_docker_exec_text", lambda c, a: None)
+
+    rc = hf.main(["doctor", "--container", "tor", "--keys", str(tmp_path), "--json"])
+    assert rc in (0, 1)
+    doc = json.loads(capsys.readouterr().out)
+    check = next(c for c in doc["checks"] if c["check"].startswith("process count"))
+    assert check["ok"] is (pids_limit in (256, "512"))
+
+
 def test_doctor_flags_missing_torrc_directive(hf, tmp_path, capsys, monkeypatch):
     os.chmod(tmp_path, 0o700)
     monkeypatch.setattr(hf, "_docker_inspect", lambda c: (_fake_inspect(), None))
