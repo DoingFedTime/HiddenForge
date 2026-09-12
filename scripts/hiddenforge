@@ -1519,6 +1519,10 @@ def cmd_backup(args) -> int:
             raise ValueError("openssl is refused for backup creation (no authentication)")
         passphrase = _passphrase(args)
         if passphrase is None and not sys.stdin.isatty():
+            if tool == "age":
+                raise ValueError(
+                    "age prompts for its passphrase on a TTY and cannot run "
+                    "unattended; use --tool gpg with --passphrase-file instead")
             raise ValueError("no passphrase source: pass --passphrase-file (or a TTY)")
         plaintext = _tar_keys(keys)
         if not plaintext:
@@ -1588,6 +1592,10 @@ def cmd_restore(args) -> int:
             raise ValueError("cannot infer --tool from the input name; pass --tool")
         passphrase = _passphrase(args)
         if passphrase is None and not sys.stdin.isatty():
+            if tool == "age":
+                raise ValueError(
+                    "age prompts for its passphrase on a TTY and cannot run "
+                    "unattended; use --tool gpg with --passphrase-file instead")
             raise ValueError("no passphrase source: pass --passphrase-file (or a TTY)")
         ciphertext_bytes = src.read_bytes()
         cipher_mode = _gpg_cipher_mode(tool, ciphertext_bytes, passphrase)
@@ -1719,6 +1727,10 @@ def _encrypt_or_decrypt_dir(args, encrypt: bool) -> int:
             raise ValueError("openssl is refused (no authentication)")
         passphrase = _passphrase(args)
         if passphrase is None and not sys.stdin.isatty():
+            if tool == "age":
+                raise ValueError(
+                    "age prompts for its passphrase on a TTY and cannot run "
+                    "unattended; use --tool gpg with --passphrase-file instead")
             raise ValueError("no passphrase source: pass --passphrase-file (or a TTY)")
         ext = "gpg" if tool == "gpg" else "age"
         blob = keys / f"{name}.keys.tar.{ext}"
@@ -1994,7 +2006,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("backup", help="encrypted offline backup of the key volume")
     sp.add_argument("--keys", default=str(_default_keys()))
     sp.add_argument("--out", required=True)
-    sp.add_argument("--tool", choices=["age", "gpg", "openssl"], default=None)
+    sp.add_argument("--tool", choices=["age", "gpg", "openssl"], default=None,
+                    help="age (interactive TTY prompt only) | gpg (scriptable, via "
+                         "--passphrase-file) | openssl (refused: unauthenticated)")
     sp.add_argument("--passphrase-file", default=None)
     sp.add_argument("--require-aead", action="store_true",
                     help="refuse to write a CFB+MDC backup (require authenticated encryption)")
@@ -2023,7 +2037,9 @@ def build_parser() -> argparse.ArgumentParser:
         sp = sub.add_parser(cmd, help=helptext)
         sp.add_argument("--keys", default=str(_default_keys()))
         sp.add_argument("--name", required=True)
-        sp.add_argument("--tool", choices=["age", "gpg"], default=None)
+        sp.add_argument("--tool", choices=["age", "gpg"], default=None,
+                        help="age (interactive TTY prompt only) | gpg (scriptable, "
+                             "via --passphrase-file)")
         sp.add_argument("--passphrase-file", default=None)
         sp.add_argument("--delete-plaintext", action="store_true")
         sp.add_argument("--force", action="store_true")
