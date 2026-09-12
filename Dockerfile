@@ -161,4 +161,13 @@ VOLUME ["/var/lib/tor/hidden_service/"]
 HEALTHCHECK --interval=60s --timeout=10s --start-period=120s --retries=3 \
     CMD ["su-exec", "tor", "python3", "/usr/local/bin/healthcheck.py"]
 
+# NO `USER` INSTRUCTION, DELIBERATELY. This container MUST start as root: the
+# entrypoint chowns the operator's key bind mount to the tor user and then drops
+# privileges with su-exec. A non-root USER would make both impossible. Everything
+# that faces the network (Tor, Vanguards) runs as `tor`; the entrypoint asserts
+# the drop actually happened by reading the child's uid from /proc before it
+# trusts the process with the onion key. Scanners flag DS-0002 /
+# missing-user-entrypoint here; .trivyignore and the semgrep exclusion carry the
+# same reason, and SECURITY.md explains it. The cap set is dropped to ALL then
+# re-added minimally in the compose files, and `hiddenforge doctor` verifies it.
 ENTRYPOINT ["python3", "/usr/local/bin/entrypoint.py"]

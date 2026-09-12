@@ -8,6 +8,7 @@ the pieces that are otherwise only exercised inside a container.
 import os
 import stat
 import subprocess
+import sys
 from collections import namedtuple
 
 import pytest
@@ -126,6 +127,33 @@ def test_assert_can_drop_privileges_reports_nproc_eagain(monkeypatch):
         subprocess.CompletedProcess(a[0], 1, b"", b"Resource temporarily unavailable")))
     with pytest.raises(RuntimeError, match="nproc"):
         e._assert_can_drop_privileges()
+
+
+def test_uid_from_status_parses_the_real_uid():
+    text = "Name:\ttor\nUid:\t100\t100\t100\t100\nGid:\t101\n"
+    assert e._uid_from_status(text) == 100
+    assert e._uid_from_status("no uid line here") is None
+
+
+def test_assert_process_dropped_true_for_a_non_root_child():
+    """A real child of this (non-root) test is not uid 0."""
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(5)"])
+    try:
+        assert e._assert_process_dropped(proc, "test", timeout=5) is True
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+def test_assert_process_dropped_false_when_uid_is_root(monkeypatch):
+    """A child still at uid 0 must refuse, not proceed."""
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(5)"])
+    monkeypatch.setattr(e, "_uid_from_status", lambda text: 0)
+    try:
+        assert e._assert_process_dropped(proc, "test", timeout=2) is False
+    finally:
+        proc.kill()
+        proc.wait()
 
 
 def test_safe_escapes_control_characters():

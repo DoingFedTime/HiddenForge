@@ -681,6 +681,39 @@ def _assert_can_drop_privileges():
         )
 
 
+def _uid_from_status(status_text):
+    """The real uid from a /proc/<pid>/status body, or None."""
+    match = re.search(r'^Uid:\s+(\d+)', status_text, re.M)
+    return int(match.group(1)) if match else None
+
+
+def _assert_process_dropped(proc, name, timeout=5):
+    """Confirm a child process is NOT running as root.
+
+    The whole design rests on su-exec dropping to the tor user; a drop that
+    silently fails would leave Tor (and Vanguards) running as root, which is
+    strictly worse than never attempting one. Read the child's real uid from
+    /proc and refuse to continue if it is still 0.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            status = Path(f'/proc/{proc.pid}/status').read_text(encoding='ascii')
+        except OSError:
+            time.sleep(0.1)
+            continue
+        uid = _uid_from_status(status)
+        if uid is not None:
+            if uid == 0:
+                print(f"FATAL: {name} (pid {proc.pid}) is running as root; the "
+                      "privilege drop to the tor user failed. Refusing to continue.")
+                return False
+            return True
+        time.sleep(0.1)
+    print(f"FATAL: could not confirm {name} dropped privileges within {timeout}s.")
+    return False
+
+
 def start_vanguards():
     """Launch the Vanguards addon as the tor user via the control socket.
 
@@ -786,6 +819,11 @@ def main():
     _tor_process = subprocess.Popen(
         ['su-exec', 'tor', 'tor', '-f', '/etc/tor/torrc']
     )
+    # Verify the drop actually happened before trusting the process with the
+    # onion key. A silent failure here would run Tor as root.
+    if not _assert_process_dropped(_tor_process, 'Tor'):
+        _kill_proc(_tor_process, 'Tor', timeout=5)
+        sys.exit(1)
 
     # ── Start Vanguards once the control socket exists ──────────────────────
     # If it cannot start yet (socket slow, transient failure) the supervision
