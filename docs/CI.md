@@ -11,9 +11,12 @@ tests happen.
 
 | Job | What it does |
 |---|---|
-| `lint` | hadolint (threshold `warning`), `ruff`, `py_compile` incl. the extensionless CLI |
-| `unit` | host unit + property tests with the coverage floor enforced; `manifest.json` parses |
+| `lint` | hadolint (threshold `warning`), `ruff`, `py_compile` incl. the extensionless CLI, and `mypy` over sources *and* tests |
+| `unit` | host unit + property tests with the coverage floor enforced; `manifest.json` is checked against the code (not just parsed) |
 | `build-and-test` | `docker build`, the in-container torrc test, the CLI contract checks, a vanity smoke test, and the live acceptance suite (`HIDDENFORGE_E2E=1`) |
+| `security` | trivy (image + fs), semgrep (security-audit + dockerfile), gitleaks; runs on a daily schedule so an advisory published after the last commit is still caught. Accepted findings live in `.trivyignore`/`.gitleaks.toml` |
+| `reproducibility` | builds the same tree twice under the documented flags and fails if the OCI index digests differ |
+| `pin-freshness` | `scripts/check_pins.py` against the Alpine index: fails if a pinned apk version has disappeared, reports (does not auto-bump) a newer one. Schedule/dispatch only |
 
 All jobs use `runs-on: docker` / `ubuntu-latest`, both mapped to **host mode** on
 the runner, so job steps execute directly on that machine and have `docker`, `git` and
