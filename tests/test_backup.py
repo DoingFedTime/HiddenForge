@@ -3,8 +3,6 @@
 Skipped when gpg is unavailable. These exercise the real gpg invocation (AEAD),
 including the fail-closed paths: a wrong passphrase and an unauthenticated tool.
 """
-import importlib.machinery
-import importlib.util
 import json
 import os
 import shutil
@@ -21,10 +19,11 @@ pytestmark = pytest.mark.skipif(shutil.which("gpg") is None,
 
 
 def _load(path: Path, name: str):
-    loader = importlib.machinery.SourceFileLoader(name, str(path))
-    spec = importlib.util.spec_from_loader(name, loader)
-    mod = importlib.util.module_from_spec(spec)
-    loader.exec_module(mod)
+    """Load a file without the bytecode cache (the CLI is extensionless)."""
+    import types
+    mod = types.ModuleType(name)
+    mod.__file__ = str(path)
+    exec(compile(path.read_text(encoding="utf-8"), str(path), "exec"), mod.__dict__)
     return mod
 
 

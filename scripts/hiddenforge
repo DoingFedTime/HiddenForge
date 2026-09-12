@@ -361,6 +361,19 @@ def _engine() -> str | None:
 # manifest / info / version
 # ---------------------------------------------------------------------------
 
+def _registered_commands() -> list[str]:
+    """The subcommand names the parser actually registers.
+
+    Read from argparse rather than a hand-kept list, so this is the source of
+    truth: manifest.json's `commands` is checked against it in CI, which is what
+    makes the manifest/code drift check real.
+    """
+    for action in build_parser()._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            return sorted(action.choices)
+    return []
+
+
 def build_manifest() -> dict:
     return {
         "name": "hiddenforge",
@@ -372,6 +385,7 @@ def build_manifest() -> dict:
         "image_repository": DEFAULT_IMAGE_REPOSITORY,
         "tor_version": TOR_VERSION,
         "modes": ["backend", "direct"],
+        "commands": _registered_commands(),
         "env": {
             "contract": "<NAME>_TOR_SERVICE_HOSTS=onion_port:backend_host:backend_port[,...]",
             "required": {

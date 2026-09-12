@@ -15,8 +15,6 @@ They:
 
 Image under test: $HIDDENFORGE_TEST_IMAGE (default sambent.dev/sam/hiddenforge:latest).
 """
-import importlib.machinery
-import importlib.util
 import json
 import os
 import re
@@ -41,10 +39,11 @@ pytestmark = pytest.mark.skipif(
 
 
 def _load(path: Path, name: str):
-    loader = importlib.machinery.SourceFileLoader(name, str(path))
-    spec = importlib.util.spec_from_loader(name, loader)
-    mod = importlib.util.module_from_spec(spec)
-    loader.exec_module(mod)
+    """Load a file without the bytecode cache (the CLI is extensionless)."""
+    import types
+    mod = types.ModuleType(name)
+    mod.__file__ = str(path)
+    exec(compile(path.read_text(encoding="utf-8"), str(path), "exec"), mod.__dict__)
     return mod
 
 

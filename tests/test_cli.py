@@ -6,8 +6,6 @@ test is the machine contract itself - stable JSON field names, exit codes, name
 validation (names become directories), and Tor v3 address derivation against a
 real mkp224o-generated vector.
 """
-import importlib.machinery
-import importlib.util
 import json
 import os
 import stat
@@ -22,10 +20,16 @@ VANITY_PATH = REPO / "vanity.py"
 
 
 def _load(path: Path, name: str):
-    loader = importlib.machinery.SourceFileLoader(name, str(path))
-    spec = importlib.util.spec_from_loader(name, loader)
-    mod = importlib.util.module_from_spec(spec)
-    loader.exec_module(mod)
+    """Load a file without the bytecode cache (see scripts/check_manifest.py).
+
+    scripts/hiddenforge has no .py extension and gets cached under a name keyed on
+    second-resolution mtime + size; a same-second, same-size edit is served from
+    stale bytecode. Compile the source directly so tests never read a stale CLI.
+    """
+    import types
+    mod = types.ModuleType(name)
+    mod.__file__ = str(path)
+    exec(compile(path.read_text(encoding="utf-8"), str(path), "exec"), mod.__dict__)
     return mod
 
 
@@ -62,7 +66,8 @@ def test_manifest_file_matches_cli(hf):
 def test_manifest_required_contract_fields(hf):
     m = hf.build_manifest()
     for key in ("name", "version", "contract_version", "image", "env", "ports",
-                "volumes", "health", "address", "key", "exit_codes", "networks"):
+                "volumes", "health", "address", "key", "exit_codes", "networks",
+                "commands"):
         assert key in m, f"manifest missing {key!r}"
     assert m["name"] == "hiddenforge"
     assert m["address"]["command"].startswith("hiddenforge show")
@@ -70,6 +75,42 @@ def test_manifest_required_contract_fields(hf):
     assert m["volumes"][0]["contains"] == ["keys", "address"]
     assert m["address"]["file"].endswith("/hostname")
     assert m["key"]["secret"]["mode"] == "0600"
+
+
+def test_manifest_commands_match_the_registered_parser(hf):
+    """The manifest's command list must be the parser's, not a hand-kept copy."""
+    manifest = hf.build_manifest()
+    assert manifest["commands"], "manifest declares no commands"
+    assert manifest["commands"] == hf._registered_commands()
+    for cmd in ("setup", "show", "vanity", "verify-image", "sbom"):
+        assert cmd in manifest["commands"]
+
+
+def test_check_manifest_script_detects_drift(hf, monkeypatch):
+    """scripts/check_manifest.py must fail when the file and code disagree.
+
+    Acceptance for the CI step that used to only parse the JSON: in sync it
+    exits 0, and a stale manifest is reported rather than accepted.
+    """
+    import importlib.machinery
+    import importlib.util
+    loader = importlib.machinery.SourceFileLoader(
+        "check_manifest", str(REPO / "scripts" / "check_manifest.py"))
+    spec = importlib.util.spec_from_loader("check_manifest", loader)
+    cm = importlib.util.module_from_spec(spec)
+    loader.exec_module(cm)
+
+    assert cm.main() == 0   # the repo is in sync right now
+
+    stale = dict(hf.build_manifest())
+    stale["version"] = "0.0.0-not-the-code"
+
+    class _StaleCli:
+        def build_manifest(self):
+            return stale
+
+    monkeypatch.setattr(cm, "load_cli", _StaleCli)
+    assert cm.main() == 1
 
 
 def test_version_json(hf, capsys):

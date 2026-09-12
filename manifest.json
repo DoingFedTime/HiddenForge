@@ -9,6 +9,22 @@
     "published_file": "/var/lib/tor/hidden_service/<name>.onion",
     "single_object_with_flag": "--name <service>"
   },
+  "commands": [
+    "backup",
+    "decrypt-key",
+    "doctor",
+    "encrypt-key",
+    "info",
+    "restore",
+    "rotate",
+    "sbom",
+    "setup",
+    "show",
+    "status",
+    "vanity",
+    "verify-image",
+    "version"
+  ],
   "contract_version": 1,
   "description": "Hardened Tor v3 onion-service sidecar: expose any backend as a .onion hidden service.",
   "env": {

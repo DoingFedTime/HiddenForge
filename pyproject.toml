@@ -64,10 +64,10 @@ select = ["E", "F", "W", "B", "S", "UP", "RUF", "PLW", "SIM", "PERF"]
 # scripts/hiddenforge invokes docker/gpg/age by name with fixed argv (S603/S607),
 # chmods the generated deploy.sh 0755 (S103), names a key file constant (S105),
 # and carries /tmp paths as manifest data (S108).
-"scripts/*" = ["S103", "S105", "S108", "S603", "S606", "S607"]
+"scripts/*" = ["S103", "S105", "S108", "S603", "S606", "S607", "S102"]
 # Tests legitimately use bare asserts (S101) and set sys.path before importing
 # the module under test (E402, in the in-container smoke test).
-"tests/*" = ["S101", "E402", "S603", "S607", "PLW1510"]
+"tests/*" = ["S101", "E402", "S603", "S607", "PLW1510", "S102"]
 # Fuzz targets assert invariants; that is their job (S101).
 "fuzz/*" = ["S101"]
 
