@@ -699,6 +699,14 @@ def start_vanguards():
 def main():
     global _tor_process, _vanguards_process
 
+    # A lone surrogate (from a non-UTF-8 environment value or path) makes the
+    # default UTF-8 stdout raise UnicodeEncodeError and would abort startup. The
+    # fuzz target found that via a log line; _safe() escapes the values we know
+    # about, and this backslash-escapes anything we did not think of.
+    for _stream in (sys.stdout, sys.stderr):
+        if hasattr(_stream, "reconfigure"):
+            _stream.reconfigure(errors="backslashreplace")
+
     # In-image operator CLI: `docker run <image> show|vanity|doctor|...` runs the
     # hiddenforge CLI instead of starting Tor. Unknown args fall through to a
     # normal boot (Docker may pass a stray arg; we must not brick the container).

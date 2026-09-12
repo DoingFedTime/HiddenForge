@@ -677,6 +677,25 @@ def test_write_text_nofollow_sets_mode(hf, tmp_path):
     assert stat.S_IMODE(os.stat(p).st_mode) == 0o755
 
 
+def test_harden_streams_reconfigures_both(hf, monkeypatch):
+    calls = []
+
+    class S:
+        def reconfigure(self, **kw):
+            calls.append(kw)
+
+    monkeypatch.setattr(hf.sys, "stdout", S())
+    monkeypatch.setattr(hf.sys, "stderr", S())
+    hf._harden_streams()
+    assert calls == [{"errors": "backslashreplace"}, {"errors": "backslashreplace"}]
+
+
+def test_harden_streams_tolerates_streams_without_reconfigure(hf, monkeypatch):
+    monkeypatch.setattr(hf.sys, "stdout", object())
+    monkeypatch.setattr(hf.sys, "stderr", object())
+    hf._harden_streams()   # must not raise
+
+
 def test_age_paths_fail_cleanly_not_silently(hf, monkeypatch):
     """age cannot be used with a passphrase file, and needs a real TTY."""
     with pytest.raises(ValueError, match="age does not use --passphrase-file"):

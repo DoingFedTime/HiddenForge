@@ -1932,7 +1932,21 @@ def build_parser() -> argparse.ArgumentParser:
     return ap
 
 
+def _harden_streams() -> None:
+    """Make stdout/stderr survive a lone surrogate.
+
+    A non-UTF-8 --keys path decodes to a surrogate, and printing one raises
+    UnicodeEncodeError, turning a clean error message into a traceback. Escape
+    on the way out instead. Guarded because captured streams (tests) and some
+    wrappers have no reconfigure().
+    """
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="backslashreplace")
+
+
 def main(argv: list[str] | None = None) -> int:
+    _harden_streams()
     args = build_parser().parse_args(argv)
     try:
         return args.func(args)
