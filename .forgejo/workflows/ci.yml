@@ -48,7 +48,13 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: hadolint Dockerfile
-        uses: hadolint/hadolint-action@54c9adbab1582c2ef04b2016b760714a4bfde3cf # v3.1.0
+        # Fully-qualified GitHub URL, deliberately. `hadolint/hadolint-action`
+        # does NOT exist on code.forgejo.org (verified with git ls-remote), and
+        # the runner resolves short action names against the instance's
+        # DEFAULT_ACTIONS_URL. Which of those two it is cannot be seen from the
+        # repository, so this step must not depend on the answer. i2pforge, on
+        # the same runner, calls the host `hadolint` binary for the same reason.
+        uses: https://github.com/hadolint/hadolint-action@54c9adbab1582c2ef04b2016b760714a4bfde3cf # v3.1.0
         with:
           dockerfile: Dockerfile
           failure-threshold: warning
