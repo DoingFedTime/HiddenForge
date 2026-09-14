@@ -86,9 +86,15 @@ identity. The README has the operational version of this list.
   network-facing processes (Tor, Vanguards) run as `tor`. Containment comes from
   the capability set, `no-new-privileges`, and `read_only`, all verified by
   `doctor`.
-- **`seccomp=unconfined`.** Tor installs its own seccomp filter (`Sandbox 1`);
-  disabling Docker's profile avoids a libseccomp conflict. The filter that
-  matters is Tor's.
+- **Two stacked seccomp filters.** Tor installs its own in-process filter
+  (`Sandbox 1`), which covers **Tor alone** -- not the root supervisor, not
+  Vanguards. The runtime's default profile is therefore left in place and stacks
+  underneath it: the Tor process runs under two filters, everything else under
+  one. Earlier releases shipped `seccomp=unconfined` on the belief that Tor's
+  sandbox conflicted with it. That was wrong -- it was never reproduced, and a
+  discovery run with the profile in logging mode recorded zero syscalls outside
+  the allow list -- and its real effect was to leave the root supervisor
+  completely unfiltered.
 - **L2-only guard pinning.** The full Vanguards addon's L2/L3 sets need a
   `SETCONF` that `Sandbox 1` rejects. vanguards-lite covers L2; there is no L3.
   A long-lived service that needs L3 should run Vanguards without the sandbox on
@@ -118,12 +124,34 @@ The backup path is `hiddenforge backup` and the offline envelope tools;
 
 ### What an attacker who obtains the encrypted backup can and cannot do
 
-Can: run an offline passphrase search at whatever rate their hardware allows
-(scrypt with N=2^17 is memory-hard, so that rate is bounded by memory bandwidth,
-not raw CPU). Cannot: read the keys without the passphrase, or tamper with the
-archive undetected (AEAD authenticates it; a single flipped byte fails decryption
-and nothing is written). A passphrase with real entropy is the whole security of
-the backup. `docs/INTEGRATION.md` says to encrypt backups; this says why.
+Can: run an offline passphrase search at whatever rate their hardware allows.
+Cannot: read the keys without the passphrase, or tamper with the archive
+undetected (AEAD authenticates it; a single flipped byte fails decryption and
+nothing is written).
+
+**The passphrase is the entire security of the backup, and the KDF does not help
+as much as an operator might assume.** The default tool is gpg, and its
+key-derivation parameters, read back out of a real ciphertext rather than assumed:
+
+```
+:symkey enc packet: version 5, cipher 9, aead 2, s2k 3, hash 10, ...
+        salt E7765042CB511874, count 65011712 (255)
+:aead encrypted packet: cipher=9 aead=2 cb=16
+```
+
+`cipher 9` is AES-256 and `aead 2` is OCB, so the cipher is not the weak link.
+But `s2k 3` with `hash 10` is *iterated and salted SHA-512* at gpg's maximum
+count — iteration only, with **no memory hardness at all**. Nothing there
+penalises an attacker for moving the search onto GPUs or ASICs, and gpg offers
+no memory-hard S2K to switch to. So the cost of a guess is low and the number of
+guesses is the only thing standing between an attacker and the key.
+
+Choose the passphrase accordingly: it needs real, measured entropy (a long
+diceware phrase, not a memorable sentence). `--tool age` derives its key with
+scrypt instead (`-> scrypt <salt> 18`, i.e. N=2^18), which *is* memory-hard — but
+`age -p` prompts on a TTY and cannot
+run unattended, so it is not the path a scripted backup takes. `docs/INTEGRATION.md`
+says to encrypt backups; this says why, and what the encryption does not do for you.
 
 ### What a local attacker observes during `encrypt-key`
 
