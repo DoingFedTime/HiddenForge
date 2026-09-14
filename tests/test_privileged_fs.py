@@ -195,6 +195,34 @@ def test_chown_r_still_chowns_the_legitimate_tree(tmp_path, monkeypatch):
     assert "a.auth" in seen
 
 
+def test_chown_r_passes_follow_symlinks_false(tmp_path, monkeypatch):
+    """The lchown property itself, asserted with no symlink present.
+
+    ``test_chown_r_never_follows_symlinks`` proves it through a planted symlink.
+    This asserts the same property unconditionally, so an edit that drops the
+    kwarg fails here even if the symlink fixture is ever changed. ``os.chown``
+    follows symlinks by default; dropping the flag would make ``_chown_r`` a
+    root-privileged arbitrary-chown primitive.
+    """
+    d = tmp_path / "hs"
+    d.mkdir()
+    (d / "hostname").write_text("x.onion")
+
+    seen = []
+    real_chown = os.chown
+
+    def recording_chown(path, uid, gid, *args, **kwargs):
+        seen.append(kwargs.get("follow_symlinks"))
+        return real_chown(path, uid, gid, *args, **kwargs)
+
+    monkeypatch.setattr(os, "chown", recording_chown)
+    e._chown_r(str(d), os.getuid(), os.getgid())
+
+    assert seen, "no chown calls recorded"
+    assert all(v is False for v in seen), \
+        f"a chown did not pass follow_symlinks=False: {seen}"
+
+
 def test_prepare_hs_dir_chmods_before_chown(tmp_path, monkeypatch):
     """The symlink rejection depends on the chmod running BEFORE the chown.
 

@@ -22,6 +22,12 @@ sys.path.insert(0, '/usr/local/bin')
 
 import subprocess as _sp
 _orig_run = _sp.run
+# This guard covers subprocess.run ONLY. entrypoint chowns through
+# os.chown(..., follow_symlinks=False) (lchown), which is the property that
+# actually matters and is asserted directly in tests/test_privileged_fs.py;
+# Popen, check_call, check_output and os.system are not intercepted here. The
+# printed line at the end says exactly that, so it does not claim more than it
+# proves.
 def _guarded_run(args, **kw):
     if 'chown' in str(args):
         raise AssertionError(f'subprocess chown called: {args}')
@@ -99,4 +105,4 @@ if failed:
 
 # Verify chown was never shelled out
 print(f'All {len(checks)} torrc checks passed.')
-print('subprocess chown: not called (good)')
+print('subprocess.run chown: not called (this guard covers subprocess.run only)')

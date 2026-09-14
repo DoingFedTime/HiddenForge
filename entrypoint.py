@@ -3,7 +3,10 @@
 HiddenForge entrypoint — generates a hardened torrc, starts Tor, and
 monitors the Vanguards guard-protection addon alongside it.
 """
+import ctypes
+import errno
 import ipaddress
+import json
 import os
 import pwd
 import re
@@ -276,8 +279,11 @@ def build_torrc_string(dropped=None):
     """
 
     # Tor's own seccomp sandbox can be disabled via env var for environments
-    # that cannot pass --security-opt seccomp=unconfined (e.g. some managed
-    # container platforms).  Default is enabled.
+    # whose kernel or container runtime refuses to install the filter at all.
+    # It is NOT a workaround for a runtime seccomp profile: Tor's sandbox
+    # stacks on top of one (measured -- two filters on the Tor process under
+    # both docker-default and podman's default profile), so a profile being
+    # present is not a reason to turn this off.  Default is enabled.
     sandbox = "1" if os.environ.get("TOR_SANDBOX", "1") != "0" else "0"
 
     torrc_content = f"""# HiddenForge — hardened Tor configuration
@@ -300,18 +306,39 @@ SafeLogging 1         # scrub IPs / .onion addresses from log output
 HeartbeatPeriod 0     # suppress periodic heartbeat log spam
 
 # ── Security hardening ─────────────────────────────────────────────────────
-Sandbox {sandbox}             # seccomp-bpf syscall filter (needs --security-opt seccomp=unconfined)
+Sandbox {sandbox}             # Tor's in-process seccomp-bpf filter; covers Tor only, and
+                      # stacks on top of the runtime's own profile (do NOT run unconfined)
 DisableDebuggerAttachment 1   # block ptrace / debugger attachment
+NoExec 1                      # Tor will never launch another executable, ever
 AvoidDiskWrites 1             # minimise forensic footprint on disk
 FetchUselessDescriptors 0     # do not fetch relay descriptors we won't use (default, explicit)
 
 # ── Guard-discovery protection ─────────────────────────────────────────────
 # vanguards-lite (Tor proposal 333) pins a small set of layer-2 guards so an
-# adversary cannot enumerate our position by forcing circuit rebuilds.  This is
-# our PRIMARY defence against guard discovery: the full Vanguards addon's
-# layer-2/3 pinning cannot be used here because it applies its guard sets via
-# SETCONF, which the seccomp sandbox rejects when enabled ("Failed to configure
-# rendezvous options"). We keep the sandbox and rely on vanguards-lite instead.
+# adversary cannot enumerate our position by forcing circuit rebuilds.  It is our
+# primary in-Tor defence against guard discovery, and the full Vanguards addon's
+# layer-2/3 pinning is NOT running alongside it (see --disable_vanguards below).
+#
+# Why the addon's pinning is off: it applies its guard sets via SETCONF, and with
+# the sandbox enabled EVERY SETCONF fails -- not just guard options.  SETCONF trips
+# a full config re-validation, which re-reads the hidden-service directory, which
+# the sandbox forbids ("Directory ... cannot be read: Operation not permitted").
+# The error surfaces as "Failed to configure rendezvous options" only because that
+# is the first check to fail; guard options were never the cause.  Confirmed by
+# observing MaxCircuitDirtiness, NewCircuitPeriod and SafeLogging fail identically.
+#
+# Be honest about what this costs.  Proposal 333 states that vanguards-lite adds
+# NO third guard layer, pins only 4 layer-2 guards, makes guard discovery EASIER
+# than the full addon, and that long-lived high-risk services relying on it alone
+# "might provide those services with a false sense of security" -- such services
+# "should still use the vanguards addon".  This deployment is exactly that case.
+# Static layer-2/3 node pins written straight into this torrc (no SETCONF) have
+# been shown to work with the sandbox enabled, but static pins do not rotate, and
+# rotation is the addon's actual design, so that is not a drop-in replacement.
+#
+# Keep prose in this block free of literal "<Directive> <value>" strings: the
+# generated torrc is verified by raw substring matching, so a comment that spells
+# one out is indistinguishable from a real config line to those checks.
 #
 # Pinned to 1, NOT left at the "auto" default.  Per the Tor manual, "auto" means
 # "do what the vanguards-lite-enabled consensus parameter tells them to do" —
@@ -575,8 +602,94 @@ def _write_dropped_mappings(reasons, tor_pw):
         print(f"Warning: could not write {DROPPED_MAPPINGS}: {exc}")
 
 
-def _publish_addresses(hs_dirs, keys_root=KEYS_ROOT):
+HEALTHCHECK_BIN = '/usr/local/bin/healthcheck.py'
+
+
+def _service_reachable():
+    """True if Tor holds ESTABLISHED onion-service introduction circuits.
+
+    Delegates to healthcheck.py instead of re-implementing the control-port query,
+    so the image has exactly one definition of "reachable" and the address file can
+    never disagree with the container's health status.
+
+    Run through su-exec as the tor user, matching _control_socket_ready(): the
+    control socket lives in a 0700 tor-owned DataDirectory owned by the tor user,
+    so it is read by the user that owns it rather than by leaning on root's
+    DAC_OVERRIDE.
+
+    Fails closed. Any error -- socket missing, timeout, unparseable output --
+    returns False, which withholds the address rather than publishing one that may
+    not resolve.
+
+    The child's EXIT CODE is deliberately ignored in favour of the one field this
+    function is asking about. healthcheck.py exits non-zero for conditions that
+    have nothing to do with whether clients can reach the service -- most notably a
+    dead Vanguards addon, which exits 1 while `hidden_service_reachable` is
+    perfectly true. Gating publication on the exit code would mean a container that
+    lost Vanguards never published its address, which is a different and worse
+    failure than the one this gate exists to prevent. Every exit code that does
+    mean "not reachable" or "could not evaluate" already reports
+    `hidden_service_reachable: false` in the same document, so reading the field is
+    both narrower and stricter than reading the code.
+    """
+    try:
+        proc = subprocess.run(
+            ['su-exec', 'tor', 'python3', HEALTHCHECK_BIN, '--json'],
+            capture_output=True, timeout=15, check=False,
+        )
+        doc = json.loads(proc.stdout.decode('utf-8', 'replace'))
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return False
+    if not isinstance(doc, dict):
+        return False          # valid JSON, wrong shape -- still not an answer
+    return doc.get('hidden_service_reachable') is True
+
+
+_publish_warned: set[tuple[str, str, int]] = set()
+
+
+def _warn_publish_once(name, action, exc):
+    """Report a publication failure once per service, per error kind.
+
+    _publish_addresses runs once a second, so an unconditional warning would
+    produce 86,400 identical lines a day and bury the Tor log. Silence is worse:
+    on rootless Podman the supervisor holds no CAP_DAC_OVERRIDE, so it cannot
+    traverse the tor-owned 0700 DataDirectory that KEYS_ROOT lives inside, and
+    every one of these calls failed with EACCES and said nothing at all. A
+    healthy-looking container simply never grew its .onion file, with no clue
+    anywhere as to why.
+
+    ENOENT is excluded deliberately. Tor writes `hostname` at key-generation
+    time, so a missing file is the ordinary state of affairs for the first few
+    seconds of every container's life and is not a fault.
+    """
+    if exc.errno == errno.ENOENT:
+        return
+    key = (name, action.split()[0], exc.errno)
+    if key in _publish_warned:
+        return
+    _publish_warned.add(key)
+    print(f"Warning: cannot publish the .onion address for {name}: "
+          f"{action} failed: {os.strerror(exc.errno)}. "
+          f"The service itself is unaffected -- read the address with "
+          f"'su-exec tor cat {KEYS_ROOT}/{name}/hostname' instead. "
+          f"(Reported once; further identical failures are not repeated.)")
+
+
+def _publish_addresses(hs_dirs, keys_root=KEYS_ROOT, gate=None):
     """Publish each service's .onion address as a readable file in the key volume.
+
+    ``gate`` is an optional predicate that must return True before any address is
+    written. It is evaluated lazily -- only when there is actually something new to
+    publish -- so the steady-state cost of calling this once a second stays a
+    56-byte read per service.
+
+    The gate exists because writing the hostname file proves nothing about
+    reachability: Tor creates it at key-generation time, before any descriptor
+    reaches a directory. A container whose onion-service circuits could not build
+    was observed publishing a valid-looking address, at bootstrap 100%, that no
+    client could ever reach. Note that gating on bootstrap would NOT have caught
+    that -- bootstrap was already at 100%. See _service_reachable().
 
     Tor writes ``hostname`` inside the 0700 service directory, which the host user
     cannot read once the entrypoint has chowned that directory to the ``tor``
@@ -591,11 +704,17 @@ def _publish_addresses(hs_dirs, keys_root=KEYS_ROOT):
     replaced, not followed.
     """
     root = Path(keys_root)
+
+    # Collect first, write second. The gate is only consulted when there is
+    # actually something new to publish, so the steady-state cost of being called
+    # once a second stays a 56-byte read per service.
+    pending = []
     for hs_dir in hs_dirs:
         name = Path(hs_dir).name
         try:
             raw = (Path(hs_dir) / 'hostname').read_bytes()
-        except OSError:
+        except OSError as exc:
+            _warn_publish_once(name, 'read hostname', exc)
             continue
         onion = raw.decode('ascii', 'ignore').strip()
         if not ONION_RE.fullmatch(onion):
@@ -606,12 +725,27 @@ def _publish_addresses(hs_dirs, keys_root=KEYS_ROOT):
                 continue
         except OSError:
             pass
+        pending.append((name, onion, target))
+
+    if not pending:
+        return
+    if gate is not None and not gate():
+        return
+
+    for name, onion, target in pending:
         tmp = root / f'.{name}.onion.tmp.{os.getpid()}'
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o644)
-        with os.fdopen(fd, 'wb') as fh:
-            fh.write(onion.encode('ascii') + b'\n')
-        os.chmod(tmp, 0o644)
-        os.replace(tmp, target)
+        try:
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o644)
+            with os.fdopen(fd, 'wb') as fh:
+                fh.write(onion.encode('ascii') + b'\n')
+            os.chmod(tmp, 0o644)
+            os.replace(tmp, target)
+        except OSError as exc:
+            # This loop is driven once a second from the supervision loop, which
+            # does NOT wrap the call. An unhandled error here would take the
+            # whole supervisor down over a convenience file.
+            _warn_publish_once(name, f'write {target}', exc)
+            continue
         print(f"Published address for {name}: {onion}")
 
 
@@ -654,6 +788,77 @@ def wait_for_socket(timeout=120):
     # Give Tor a moment to finish setting socket permissions.
     time.sleep(0.5)
     print("Control socket ready.")
+
+
+_LINUX_CAPABILITY_VERSION_3 = 0x20080522
+
+CAP_CHOWN        = 0
+CAP_DAC_OVERRIDE = 1
+CAP_FOWNER       = 3
+CAP_SETGID       = 6
+CAP_SETUID       = 7
+
+# What the supervisor still needs once setup is finished, and nothing else.
+#
+#   DAC_OVERRIDE  /var/lib/tor is tor:tor 0700 and KEYS_ROOT lives inside it, so
+#                 root cannot traverse into it to publish .onion files without
+#                 this. _publish_addresses does exactly that once a second for
+#                 the life of the container. Measured: dropping this turns every
+#                 publish into EACCES, which would silently and permanently
+#                 disable address publication - the same failure class the
+#                 readiness gate was added to fix.
+#   SETGID/SETUID su-exec, for the Vanguards restart budget and for the
+#                 reachability gate's call into healthcheck.py.
+#
+# CHOWN and FOWNER are dropped: the last chown happens before Tor starts, and the
+# code never chmods a file it does not already own (see _chmod_dir_nofollow).
+POST_SETUP_CAPS = (1 << CAP_DAC_OVERRIDE) | (1 << CAP_SETGID) | (1 << CAP_SETUID)
+
+
+class _CapHeader(ctypes.Structure):
+    _fields_ = [('version', ctypes.c_uint32), ('pid', ctypes.c_int)]
+
+
+class _CapData(ctypes.Structure):
+    _fields_ = [('effective',   ctypes.c_uint32),
+                ('permitted',   ctypes.c_uint32),
+                ('inheritable', ctypes.c_uint32)]
+
+
+def _drop_setup_capabilities(mask=POST_SETUP_CAPS):
+    """Narrow the supervisor's capabilities to `mask`, permanently.
+
+    Called once, after all ownership fixing is done and before Tor is started.
+    Dropping from the PERMITTED set as well as the effective set is what makes it
+    irreversible: a capability absent from permitted cannot be raised again.
+
+    This shrinks the supervisor's window only. Tor itself already runs with no
+    capabilities at all - su-exec's uid change clears the permitted and effective
+    sets and the ambient set is empty - so this is defence in depth around the
+    root process that outlives it, not a fix for an exposed Tor.
+
+    The bounding set is deliberately left alone: PR_CAPBSET_DROP needs
+    CAP_SETPCAP, which this container does not hold, and granting SETPCAP in order
+    to drop two capabilities would be a net loss.
+
+    Best effort. A kernel or runtime that refuses capset is a reason to log and
+    carry on, not to refuse to serve: failing here would take down a container
+    whose actual security posture is unchanged from the previous release.
+    """
+    libc = ctypes.CDLL('libc.so.6', use_errno=True)
+    header = _CapHeader(_LINUX_CAPABILITY_VERSION_3, 0)
+    data = (_CapData * 2)()
+    data[0].effective = data[0].permitted = mask & 0xFFFFFFFF
+    data[0].inheritable = 0
+    data[1].effective = data[1].permitted = data[1].inheritable = 0
+    if libc.capset(ctypes.byref(header), ctypes.byref(data)) != 0:
+        err = ctypes.get_errno()
+        print(f"Warning: could not drop setup capabilities: {os.strerror(err)}. "
+              f"Continuing with the capabilities the runtime granted.")
+        return False
+    print(f"Dropped setup capabilities; supervisor retains 0x{mask:02x} "
+          f"(DAC_OVERRIDE, SETGID, SETUID).")
+    return True
 
 
 def _assert_can_drop_privileges():
@@ -813,6 +1018,13 @@ def main():
         _chmod_dir_nofollow(data_dir, 0o700, only_if_root_owned=True)
         os.chown(data_dir, tor_pw.pw_uid, tor_pw.pw_gid, follow_symlinks=False)
 
+    # ── Give up the capabilities setup needed ───────────────────────────────
+    # Everything that required CAP_CHOWN or CAP_FOWNER has now happened. Nothing
+    # below this line, and nothing in the supervision loop, needs either of them
+    # again, so drop them before starting any long-lived process. This must come
+    # after the chown above and before Tor is spawned.
+    _drop_setup_capabilities()
+
     # ── Start Tor ───────────────────────────────────────────────────────────
     print("Starting Tor...")
     # Long-lived by design: Tor is the primary process, not a bounded command.
@@ -847,9 +1059,11 @@ def main():
     while True:
         time.sleep(1)
 
-        # Republish the .onion address file(s) as soon as Tor writes hostname.
-        # Cheap: a 56-byte read per service, skipped once already correct.
-        _publish_addresses(hs_dirs)
+        # Republish the .onion address file(s) once the service is actually
+        # reachable -- NOT merely once Tor has written hostname, which it does at
+        # key-generation time. Cheap: a 56-byte read per service, skipped once
+        # already correct, and the gate only runs when a write is pending.
+        _publish_addresses(hs_dirs, gate=_service_reachable)
 
         # Tor is the primary process — exit if it dies.
         tor_rc = _tor_process.poll()
