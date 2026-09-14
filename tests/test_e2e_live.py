@@ -93,9 +93,41 @@ requires_image = pytest.mark.skipif(not _have_docker(),
                                     reason=f"image {IMAGE} not built")
 
 
-def _compose(tmp: Path, *extra):
-    return ["docker", "compose", "-f", str(tmp / "app.yml"),
-            "-f", str(tmp / "compose.service.yml"), *extra]
+def _compose(tmp: Path, *extra, override: bool = False):
+    cmd = ["docker", "compose", "-f", str(tmp / "app.yml"),
+           "-f", str(tmp / "compose.service.yml")]
+    if override:
+        cmd += ["-f", str(_write_override(tmp))]
+    return cmd + list(extra)
+
+
+def _write_override(tmp: Path) -> Path:
+    """A merge layer that makes the running stack testable.
+
+    Two things the emitted fragment gets right for production and wrong for a
+    test:
+
+    * It pins `image: sambent.dev/sam/hiddenforge:latest` by name, so the stack
+      ran whatever happened to carry that tag locally -- NOT the image under
+      test. This module's docstring has always claimed the image under test is
+      $HIDDENFORGE_TEST_IMAGE; for the headline test that was simply untrue, and
+      a run against a three-week-old `:latest` was reported as a result for a
+      branch that image predates.
+    * It sets `logging: driver: none`, which is right for an onion service and
+      leaves `docker logs` empty exactly when a failing test needs it. Every
+      failure here was "address file was never published" with no cause attached.
+
+    The override is a separate merge layer, so `docker compose config` in
+    test_emitted_fragment_validates still validates the fragment as shipped.
+    """
+    path = tmp / "e2e-override.yml"
+    path.write_text(
+        "services:\n"
+        "  tor:\n"
+        f"    image: {IMAGE}\n"
+        "    logging:\n"
+        "      driver: json-file\n")
+    return path
 
 
 @requires_image
@@ -138,7 +170,7 @@ def test_demo_publishes_and_show_agrees(workdir):
     shutil.copy(DEMO / "app.yml", workdir / "app.yml")
     shutil.copytree(DEMO / "site", workdir / "site")
     try:
-        proc = subprocess.run(_compose(workdir, "up", "-d"),
+        proc = subprocess.run(_compose(workdir, "up", "-d", override=True),
                               capture_output=True, text=True, timeout=300)
         assert proc.returncode == 0, proc.stderr
 
@@ -146,7 +178,13 @@ def test_demo_publishes_and_show_agrees(workdir):
         deadline = time.time() + 300
         while time.time() < deadline and not published.exists():
             time.sleep(3)
-        assert published.exists(), "address file was never published"
+        # Attach the container's own output to the failure. Without it this
+        # assertion says only that something did not happen, which is how a
+        # stale-image run got mistaken for a branch regression.
+        assert published.exists(), "address file was never published\n" + \
+            subprocess.run(_compose(workdir, "logs", "--tail", "40", "tor",
+                                    override=True),
+                           capture_output=True, text=True).stdout
         onion = published.read_text().strip()
         assert ONION_RE.fullmatch(onion), onion
 
@@ -187,5 +225,5 @@ def test_demo_publishes_and_show_agrees(workdir):
         assert any(c["check"].startswith("generated torrc") and c["ok"]
                    for c in ddoc["checks"]), "doctor did not check the torrc"
     finally:
-        subprocess.run(_compose(workdir, "down", "-v"),
+        subprocess.run(_compose(workdir, "down", "-v", override=True),
                        capture_output=True, timeout=120)
