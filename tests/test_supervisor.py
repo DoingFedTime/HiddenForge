@@ -12,6 +12,7 @@ behaviour, which is read from the code rather than assumed:
   - Vanguards crashing      -> restarted, bounded, then disabled
 """
 import os
+import subprocess
 from collections import namedtuple
 
 import pytest
@@ -58,7 +59,22 @@ def _headless_main(monkeypatch, tor_polls, vanguards_polls=(1,)):
         lambda: (["/var/lib/tor/hidden_service/app"], []))
     monkeypatch.setattr(e, "_assert_can_drop_privileges", lambda: None)
     monkeypatch.setattr(e, "_assert_process_dropped", lambda proc, name, timeout=5: True)
-    monkeypatch.setattr(e, "_publish_addresses", lambda dirs: None)
+    def _fake_publish(dirs, keys_root=e.KEYS_ROOT, gate=None):
+        # Not merely a stub. An earlier version of the readiness gate was added to
+        # _publish_addresses' signature and documented, but never actually passed
+        # at the call site, so the gate was inert and a container with no working
+        # onion-service circuits published its address anyway. Nothing caught it.
+        # Asserting here means that regression fails the supervisor tests.
+        assert gate is e._service_reachable, (
+            "the supervision loop must pass the readiness gate to "
+            "_publish_addresses; without it an unreachable service publishes "
+            "its .onion")
+
+    monkeypatch.setattr(e, "_publish_addresses", _fake_publish)
+    # Never let the capability drop run for real here: executed as root, capset(2)
+    # would irreversibly narrow the test runner's own capabilities.
+    monkeypatch.setattr(e, "_drop_setup_capabilities",
+                        lambda mask=e.POST_SETUP_CAPS: True)
     monkeypatch.setattr(e, "_write_dropped_mappings", lambda reasons, pw: None)
     monkeypatch.setattr(e, "wait_for_socket", lambda timeout=120: None)
     monkeypatch.setattr(e, "_control_socket_ready", lambda: True)
@@ -121,3 +137,44 @@ def test_sigterm_kills_vanguards_then_tor_and_exits_zero(monkeypatch):
     assert excinfo.value.code == 0
     assert vg.terminated, "Vanguards must be stopped first"
     assert tor.terminated, "Tor must be stopped"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# _assert_can_drop_privileges
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_privilege_drop_probe_raises_on_a_nonzero_su_exec(monkeypatch):
+    """A failed `su-exec tor true` must raise, not be ignored.
+
+    This probe exists to turn a silent restart loop (RLIMIT_NPROC exhausted on
+    the shared host uid 100) into one named error, and main() only exits on the
+    RuntimeError. Nothing held the `returncode != 0` branch, so dropping the
+    check left the suite green while the container went back to restarting with
+    no explanation.
+    """
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        stderr = b"su-exec: setgroups: Resource temporarily unavailable"
+        return subprocess.CompletedProcess(cmd, 1, b"", stderr)
+
+    monkeypatch.setattr(e.subprocess, "run", fake_run)
+    with pytest.raises(RuntimeError) as excinfo:
+        e._assert_can_drop_privileges()
+
+    message = str(excinfo.value)
+    assert "cannot switch to the tor user" in message
+    # The operator-facing detail is what makes the error actionable: su-exec's
+    # own stderr, and the nproc/pids_limit remedy.
+    assert "Resource temporarily unavailable" in message
+    assert "ulimits.nproc" in message
+    assert calls[0][0] == ["su-exec", "tor", "true"]
+    assert calls[0][1]["check"] is False, "check=True would raise the wrong exception type"
+
+
+def test_privilege_drop_probe_is_silent_when_su_exec_succeeds(monkeypatch):
+    monkeypatch.setattr(
+        e.subprocess, "run",
+        lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, b"", b""))
+    assert e._assert_can_drop_privileges() is None

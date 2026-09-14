@@ -160,3 +160,27 @@ def test_safe_escapes_control_characters():
     assert e._safe("plain") == "plain"
     assert e._safe("a\nb") == "a\\x0ab"
     assert e._safe("\x1b[31m") == "\\x1b[31m"
+
+
+def test_publish_addresses_refuses_a_hostname_with_anything_around_it(tmp_path):
+    """The onion match must be anchored, not a substring search.
+
+    ONION_RE itself carries no `^`/`$`; the anchoring lives entirely in the
+    `fullmatch` call at the one call site. Mutation testing turned that into a
+    live question: swap `fullmatch` for `match` or `search` and the whole suite
+    stayed green, while a `hostname` of "evil.example.com <onion>" would have
+    been accepted and written out as this service's address. This holds the
+    anchoring rather than the regex.
+    """
+    root = tmp_path / "keys"
+    root.mkdir()
+    cases = {
+        "prefixed":  "evil" + ONION + "\n",          # defeats `match`
+        "suffixed":  ONION + ".evil.example.com\n",  # defeats `fullmatch`-less `match`
+        "embedded":  "see " + ONION + " here\n",     # defeats `search`
+        "truncated": ONION[:-1] + "\n",
+    }
+    dirs = [str(_service(root, name, text)) for name, text in cases.items()]
+    e._publish_addresses(dirs, keys_root=str(root))
+    for name in cases:
+        assert not (root / f"{name}.onion").exists(), name

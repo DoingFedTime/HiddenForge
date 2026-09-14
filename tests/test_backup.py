@@ -263,3 +263,76 @@ def test_restore_rejects_path_traversal(hf, tmp_path, capsys):
     assert rc != 0, "a path-traversal member must fail closed"
     assert not (tmp_path / "nested" / "escaped").exists()
     assert not (tmp_path / "escaped").exists()
+
+
+def _sealed(hf, tmp_path, build):
+    """An encrypted archive whose members `build(tar)` adds, plus its passphrase."""
+    import io
+    import tarfile
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        build(tar, io)
+    pp = tmp_path / "pp"
+    pp.write_text("a passphrase\n")
+    blob = tmp_path / "hostile.tar.gpg"
+    ciphertext, _mode = hf._encrypt_bytes("gpg", buf.getvalue(), "a passphrase")
+    blob.write_bytes(ciphertext)
+    return blob, pp
+
+
+def test_restore_rejects_an_absolute_member_path(hf, tmp_path, capsys):
+    """`../` is not the only way out of the keys directory.
+
+    `Path.is_absolute()` guards a member named "/etc/hiddenforge-owned", which
+    carries no `..` at all. Dropping that half of the check was a *proven*
+    mutation survivor: the suite stayed green while a malicious archive wrote
+    outside the target directory. The `..` case has a test; this one did not.
+    """
+    escape = tmp_path / "absolute-escape"
+
+    def build(tar, io):
+        member = tar.tarinfo(str(escape))  # e.g. "/tmp/.../absolute-escape"
+        member.size = 6
+        tar.addfile(member, io.BytesIO(b"secret"))
+
+    blob, pp = _sealed(hf, tmp_path, build)
+    keys = tmp_path / "restored"
+    rc = hf.main(["restore", "--keys", str(keys), "--input", str(blob),
+                  "--tool", "gpg", "--passphrase-file", str(pp), "--json"])
+    assert rc != 0, "an absolute member path must fail closed"
+    assert not escape.exists(), "the archive wrote outside --keys"
+
+
+@pytest.mark.parametrize("kind", ["symlink", "hardlink", "device"])
+def test_restore_rejects_link_and_device_members(hf, tmp_path, capsys, kind):
+    """Non-regular members are refused before anything is extracted.
+
+    Also a proven mutation survivor: dropping `issym()`/`islnk()` from the
+    member walk let symlink and hardlink members through with the suite green.
+    A symlink named `hostname` pointing at /etc/shadow turns a later write into
+    a write through the link; a device node needs no explanation. None of the
+    three has a legitimate reason to appear in a key backup -- `_tar_keys`
+    writes regular files only.
+    """
+    import tarfile
+
+    def build(tar, io):
+        member = tar.tarinfo("app/hostname")
+        if kind == "symlink":
+            member.type = tarfile.SYMTYPE
+            member.linkname = "/etc/shadow"
+        elif kind == "hardlink":
+            member.type = tarfile.LNKTYPE
+            member.linkname = "app/hs_ed25519_secret_key"
+        else:
+            member.type = tarfile.CHRTYPE
+            member.devmajor, member.devminor = 1, 3  # /dev/null
+        tar.addfile(member)
+
+    blob, pp = _sealed(hf, tmp_path, build)
+    keys = tmp_path / "restored"
+    rc = hf.main(["restore", "--keys", str(keys), "--input", str(blob),
+                  "--tool", "gpg", "--passphrase-file", str(pp), "--json"])
+    assert rc != 0, f"a {kind} member must fail closed"
+    assert not (keys / "app" / "hostname").exists()
