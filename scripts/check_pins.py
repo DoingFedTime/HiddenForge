@@ -84,8 +84,11 @@ def fetch_index(branch: str, arch: str) -> dict[str, list[str]]:
     for repo in REPOS:
         url = f"{MIRROR}/{branch}/{repo}/{arch}/APKINDEX.tar.gz"
         try:
-            # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
-            with urllib.request.urlopen(url, timeout=60) as resp:  # noqa: S310
+            # url is the literal https mirror plus branch/arch, and both are
+            # bounded by _BRANCH_RE/_ARCH_RE above. Semgrep's dynamic-urllib rule
+            # flags the value reaching urlopen; the bare `# nosemgrep` suppresses
+            # it, and the rule is named here so the reason travels with the code.
+            with urllib.request.urlopen(url, timeout=60) as resp:  # nosemgrep  # noqa: S310
                 blob = resp.read()
         except (urllib.error.URLError, TimeoutError) as exc:
             raise SystemExit(f"exit 3: cannot fetch {url}: {exc}") from exc

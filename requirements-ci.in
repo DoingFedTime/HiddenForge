@@ -1,0 +1,17 @@
+# Direct dependencies for the CI toolchain. Transitively pinned, with hashes, in
+# requirements-ci.txt (generated, do not edit by hand):
+#
+#     .venv/bin/pip-compile --generate-hashes requirements-ci.in
+#
+# It is installed with `--require-hashes`, matching the standard the Dockerfile
+# already applies to the image's own dependencies. The gate must not be fetched
+# with weaker integrity than the thing it gates.
+#
+# Versions are pinned exactly and match the ones the Dockerfile/venv use, so the
+# lint job type-checks against the same stubs the unit job runs against.
+ruff==0.15.16
+mypy==2.2.0
+pytest==9.0.3
+hypothesis==6.155.1
+coverage==7.14.1
+pytest-cov==7.1.0

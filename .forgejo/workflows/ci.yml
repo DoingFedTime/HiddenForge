@@ -14,10 +14,18 @@
 # never get host code execution. The guard is fail-closed: if the context does
 # not expose `pull_request.head.repo`, the job is skipped rather than run.
 #
-# PINNING: every `uses:` is pinned to a commit SHA (the tag is in a trailing
-# comment for humans), and every scanner container is pinned by digest, exactly
-# as the Dockerfile pins the base image and the vendored mkp224o tarball. A tag
-# is a mutable dependency with write access to this build.
+# PINNING: every `uses:` is FULLY QUALIFIED (host and repository) and pinned to
+# a commit SHA (the tag is in a trailing comment for humans), and every scanner
+# container is pinned by digest, exactly as the Dockerfile pins the base image
+# and the vendored mkp224o tarball. A tag is a mutable dependency with write
+# access to this build.
+#
+# The host is part of the pin. A short name like `actions/checkout` resolves
+# against the instance's DEFAULT_ACTIONS_URL, a value this repository cannot
+# read, so the pin would only be as reproducible as an out-of-band setting. All
+# eight are therefore written as full URLs: `actions/checkout` and
+# `hadolint/hadolint-action` from github.com, `forgejo/upload-artifact` from
+# code.forgejo.org (it does not exist on github.com).
 name: ci
 
 on:
@@ -46,7 +54,7 @@ jobs:
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: docker
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: https://github.com/actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: hadolint Dockerfile
         # Fully-qualified GitHub URL, deliberately. `hadolint/hadolint-action`
         # does NOT exist on code.forgejo.org (verified with git ls-remote), and
@@ -65,13 +73,17 @@ jobs:
       - name: lint + type toolchain
         run: |
           python3 -m venv /tmp/hf-lint
-          # pytest and hypothesis are REQUIRED here, not optional: typecheck.sh
+          # pytest and hypothesis are REQUIRED, not optional: typecheck.sh
           # checks tests/ as well as the sources (that is the point of it), and
-          # without these installed mypy reports 12 import-not-found errors and
-          # the job fails. Locally this was invisible because the dev venv has
-          # them. Versions match the unit job.
-          /tmp/hf-lint/bin/pip install --quiet \
-            ruff==0.15.16 mypy==2.2.0 pytest==9.0.3 hypothesis==6.155.1
+          # without them mypy reports 12 import-not-found errors and the job
+          # fails. Locally this was invisible because the dev venv has them.
+          #
+          # --require-hashes with requirements-ci.txt: the tooling that JUDGES
+          # the image is fetched with the same integrity as the image's own
+          # dependencies (the Dockerfile already installs that way). All three
+          # CI venvs install from the one file, so they cannot drift apart.
+          /tmp/hf-lint/bin/pip install --quiet --require-hashes \
+            -r requirements-ci.txt
       - name: ruff
         run: |
           # scripts/hiddenforge has no .py extension, so it must be named
@@ -85,12 +97,12 @@ jobs:
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: docker
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: https://github.com/actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: host unit + property tests (coverage floor enforced)
         run: |
           python3 -m venv /tmp/hf-unit
-          /tmp/hf-unit/bin/pip install --quiet \
-            pytest==9.0.3 hypothesis==6.155.1 coverage==7.14.1 pytest-cov==7.1.0
+          /tmp/hf-unit/bin/pip install --quiet --require-hashes \
+            -r requirements-ci.txt
           /tmp/hf-unit/bin/python -m pytest -q --cov=entrypoint \
             --cov-report=term --cov-report=json:coverage.json
           # The measured number goes into a generated file, not a markdown doc.
@@ -108,7 +120,7 @@ jobs:
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: docker
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: https://github.com/actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: build the image locally
         run: |
@@ -145,7 +157,8 @@ jobs:
           HIDDENFORGE_TEST_IMAGE: sambent.dev/sam/hiddenforge:ci
         run: |
           python3 -m venv /tmp/hf-e2e
-          /tmp/hf-e2e/bin/pip install --quiet pytest==9.0.3
+          /tmp/hf-e2e/bin/pip install --quiet --require-hashes \
+            -r requirements-ci.txt
           /tmp/hf-e2e/bin/python -m pytest tests/test_e2e_live.py -v
 
   security:
@@ -155,7 +168,7 @@ jobs:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: docker
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: https://github.com/actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Build the image to scan
         run: |
@@ -203,7 +216,7 @@ jobs:
       - name: Upload security reports
         # Produced even when a scan fails, so the report of a failure is kept.
         if: always()
-        uses: forgejo/upload-artifact@a8a3f3ad30e3422c9c7b888a15615d19a852ae32 # v3
+        uses: https://code.forgejo.org/forgejo/upload-artifact@a8a3f3ad30e3422c9c7b888a15615d19a852ae32 # v3
         with:
           name: security-reports
           path: security-reports/
@@ -216,7 +229,7 @@ jobs:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: docker
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: https://github.com/actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Two builds, one digest
         run: |
@@ -255,7 +268,7 @@ jobs:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: docker
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: https://github.com/actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Every pinned apk version still exists upstream
         run: python3 scripts/check_pins.py

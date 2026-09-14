@@ -48,7 +48,15 @@ be reproduced without the runner:
 .venv/bin/python -m pytest -q --cov=entrypoint --cov-report=term
 docker build --build-arg SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)" \
   -t sambent.dev/sam/hiddenforge:latest .
-docker run --rm sambent.dev/sam/hiddenforge:latest python3 /usr/local/bin/tests/test_torrc.py
+# --entrypoint python3 is REQUIRED and is not decoration. The image's ENTRYPOINT
+# is `python3 /usr/local/bin/entrypoint.py`, so without it these arguments are
+# appended to the supervisor's argv: the container starts a real Tor service,
+# bootstraps, and runs forever. The smoke test never executes and the command
+# never returns. (This line used to omit it; running it verbatim is how that was
+# found.) The `lint` and `unit` commands above need scripts/typecheck.sh's tools
+# on PATH -- prefix with PATH="$PWD/.venv/bin:$PATH" if mypy is venv-only.
+docker run --rm --entrypoint python3 sambent.dev/sam/hiddenforge:latest \
+  /usr/local/bin/tests/test_torrc.py
 HIDDENFORGE_E2E=1 .venv/bin/python -m pytest tests/test_e2e_live.py -v
 ```
 
