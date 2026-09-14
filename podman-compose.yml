@@ -49,8 +49,10 @@ services:
       # the container. No extra capabilities are needed to write there.
     security_opt:
       - no-new-privileges:true     # prevent privilege escalation via setuid
-      # Tor's seccomp-bpf Sandbox 1 installs its own in-process syscall filter.
-      - seccomp=unconfined
+      # NO seccomp=unconfined -- see docker-compose.yml for the full reasoning.
+      # Verified separately on rootless podman, whose default profile is not
+      # byte-identical to Docker's: the Tor process carries two stacked filters
+      # and reaches Bootstrapped 100%.
       # NOTE: no explicit apparmor= here. Rootless Podman frequently cannot load
       # the docker-default profile unprivileged; Podman applies its own default.
     read_only: true                # container filesystem is read-only

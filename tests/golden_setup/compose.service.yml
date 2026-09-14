@@ -25,7 +25,6 @@ services:
     cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID]
     security_opt:
       - no-new-privileges:true
-      - seccomp=unconfined
       - apparmor=docker-default
     read_only: true
     pids_limit: 256

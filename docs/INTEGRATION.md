@@ -244,7 +244,7 @@ hiddenforge doctor --container tor --keys ./tor-keys --json
 
 FAIL-level checks: `cap_drop` includes `ALL`, `cap_add` stays within
 `{CHOWN,DAC_OVERRIDE,FOWNER,SETUID,SETGID}`, `no-new-privileges`, read-only
-rootfs, `seccomp=unconfined`, AppArmor applied, `pids_limit ≤ 512`, swap disabled
+rootfs, seccomp NOT unconfined, AppArmor applied, `pids_limit ≤ 512`, swap disabled
 (`MemorySwap == Memory`), no published ports, the generated torrc still contains
 every hardening directive (`ClientOnly`, `SafeLogging`, `VanguardsLiteEnabled`,
 PoW, Intro-point DoS, ...), key dir `0700`, and secret key `0600`.

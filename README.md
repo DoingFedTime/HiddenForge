@@ -89,7 +89,7 @@ The included `docker-compose.yml` is ready to use as-is. It handles everything:
 |---|---|
 | Drops all Linux capabilities | `cap_drop: ALL` |
 | Prevents privilege escalation | `security_opt: no-new-privileges:true` |
-| Enables Tor's seccomp sandbox | `security_opt: seccomp=unconfined` |
+| Two stacked seccomp filters | runtime default profile + Tor's `Sandbox 1` |
 | Read-only container filesystem | `read_only: true` |
 | No host-side log file | `logging: driver: none` |
 | Network-isolated backend | `internal: true` network, no `ports:` on backend |

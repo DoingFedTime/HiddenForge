@@ -35,10 +35,13 @@ services:
       - SETGID       # su-exec: drop from root → tor group to run the Tor daemon
     security_opt:
       - no-new-privileges:true     # prevent privilege escalation via setuid
-      # Tor's seccomp-bpf Sandbox 1 installs its own in-process syscall filter.
-      # Disabling Docker's default profile avoids a clone3/statx ENOSYS-fallback
-      # conflict across libseccomp versions; Tor's sandbox remains the filter.
-      - seccomp=unconfined
+      # NO seccomp=unconfined. Tor's Sandbox 1 is an IN-PROCESS filter covering
+      # Tor alone, so running unconfined left the root Python supervisor with no
+      # syscall filter for the container's whole life. Docker's default profile
+      # stacks underneath Tor's (measured: two filters on the Tor process), and
+      # a discovery run with the profile in SCMP_ACT_LOG mode recorded ZERO
+      # syscalls outside its allow list. The earlier clone3/statx justification
+      # here was wrong; it was never reproduced.
       - apparmor=docker-default    # explicit: keep Docker's default AppArmor MAC
     read_only: true                # container filesystem is read-only
     tmpfs:

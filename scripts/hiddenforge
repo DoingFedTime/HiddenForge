@@ -399,8 +399,8 @@ def build_manifest() -> dict:
                              "80:<host>:<port> under <NAME>_TOR_SERVICE_HOSTS",
             },
             "optional": {
-                "TOR_SANDBOX": "1 (default) | 0 - set 0 only on platforms that strip "
-                               "seccomp=unconfined",
+                "TOR_SANDBOX": "1 (default) | 0 - set 0 only where the kernel or "
+                               "runtime refuses to install Tor's filter at all",
             },
             "note": "The entrypoint resolves backend hostnames to IPs once, at "
                     "startup. Recreating the backend container can change its IP; "
@@ -844,9 +844,16 @@ def cmd_doctor(args) -> int:
     checks.append(_check(bool(hc.get("ReadonlyRootfs")),
                          "root filesystem is read-only",
                          f"ReadonlyRootfs={hc.get('ReadonlyRootfs')}"))
+    # This check used to assert the OPPOSITE -- that seccomp=unconfined was set,
+    # on the belief that Tor's Sandbox 1 needed it. That belief was wrong and is
+    # now disproven on both runtimes: the Tor process carries two stacked filters
+    # (the runtime's profile plus Tor's own) under docker-default and under
+    # podman's default profile, bootstraps, and serves. Running unconfined leaves
+    # the root supervisor with NO syscall filter at all, because Sandbox 1 is
+    # in-process and covers Tor alone.
     checks.append(_check(
-        any("seccomp=unconfined" in s for s in secopt),
-        "seccomp=unconfined is set (Tor Sandbox 1 needs it)",
+        not any("seccomp=unconfined" in s for s in secopt),
+        "a runtime seccomp profile is applied (not unconfined)",
         f"SecurityOpt={secopt}"))
 
     apparmor = info.get("AppArmorProfile") or next(
@@ -991,7 +998,6 @@ services:
     cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID]
     security_opt:
       - no-new-privileges:true
-      - seccomp=unconfined
 {apparmor}    read_only: true
     pids_limit: 256
     mem_limit: 512m

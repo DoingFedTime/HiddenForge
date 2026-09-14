@@ -487,8 +487,7 @@ def _fake_inspect():
         "HostConfig": {
             "CapDrop": ["ALL"],
             "CapAdd": ["CHOWN", "DAC_OVERRIDE", "FOWNER", "SETUID", "SETGID"],
-            "SecurityOpt": ["no-new-privileges:true", "seccomp=unconfined",
-                            "apparmor=docker-default"],
+            "SecurityOpt": ["no-new-privileges:true", "apparmor=docker-default"],
             "ReadonlyRootfs": True,
             "PidsLimit": 256,
             "Memory": 536870912,

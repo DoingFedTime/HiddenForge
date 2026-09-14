@@ -51,7 +51,7 @@ existing `docker compose up -d` human path is unchanged.
   operations archive rather than delete. Documented: the key IS the address and
   loss is permanent.
 - **`doctor`** verifies the running container's hardening (caps, `cap_drop ALL`,
-  `no-new-privileges`, read-only rootfs, `seccomp=unconfined`, AppArmor,
+  `no-new-privileges`, read-only rootfs, seccomp not unconfined, AppArmor,
   `pids_limit`, swap disabled, no published ports) plus on-disk key modes, and
   has a `--keys-only` mode for use inside the container.
 - **In-image CLI dispatch**: `docker run <image> show|vanity|doctor|...` runs the
@@ -61,7 +61,7 @@ existing `docker compose up -d` human path is unchanged.
   only the emitted fragment.
 - **`docs/THREAT-MODEL.md`**: the in-repo threat model, with every control
   mapped to where it lives in the code, the accepted trade-offs (root at PID 1,
-  `seccomp=unconfined`, L2-only guard pinning, no at-rest encryption), and the
+  L2-only guard pinning, no at-rest encryption), and the
   commands that check each claim.
 - **`docs/PRODUCTION-READINESS.md`**: the checklist of claims that had to be
   proven (reproducible build, multi-service, shipped compose, sbom,

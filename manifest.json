@@ -31,7 +31,7 @@
     "contract": "<NAME>_TOR_SERVICE_HOSTS=onion_port:backend_host:backend_port[,...]",
     "note": "The entrypoint resolves backend hostnames to IPs once, at startup. Recreating the backend container can change its IP; restart the tor container after recreating a backend.",
     "optional": {
-      "TOR_SANDBOX": "1 (default) | 0 - set 0 only on platforms that strip seccomp=unconfined"
+      "TOR_SANDBOX": "1 (default) | 0 - set 0 only where the kernel or runtime refuses to install Tor's filter at all"
     },
     "required": {
       "<NAME>_TOR_SERVICE_HOSTS": "onion_port:backend_host:backend_port[,...] - one hidden service named <name> (lowercased, underscores become hyphens), several onion-side ports. This is the native full form."
