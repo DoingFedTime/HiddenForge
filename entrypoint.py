@@ -738,7 +738,12 @@ def _publish_addresses(hs_dirs, keys_root=KEYS_ROOT, gate=None):
             fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o644)
             with os.fdopen(fd, 'wb') as fh:
                 fh.write(onion.encode('ascii') + b'\n')
-            os.chmod(tmp, 0o644)
+                # fchmod, not chmod: chmod(tmp) re-resolves the name, so a
+                # symlink planted between the open and the chmod would be
+                # followed and have its target's mode changed -- exactly what
+                # O_NOFOLLOW on the open was there to prevent. The descriptor
+                # cannot be redirected, so it is the only safe subject.
+                os.fchmod(fh.fileno(), 0o644)
             os.replace(tmp, target)
         except OSError as exc:
             # This loop is driven once a second from the supervision loop, which
