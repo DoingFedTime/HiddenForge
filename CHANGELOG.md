@@ -69,6 +69,19 @@ against the code, and scanning the whole history before anything is published.
   arriving with that name linked to `hs_ed25519_secret_key` had the key
   overwritten with the address and made world-readable, as root. The temp file
   now has a random name and is created with `O_EXCL`, so it is always a new inode.
+- **A tampered or mismatched pip package did not fail the image build.** The
+  Vanguards `RUN` chained `pip install --require-hashes ... && ... && grep -q ...
+  && pip uninstall ... || true && ...`, which the shell parses as
+  `(... ) || true && ...`: a hash mismatch, or the check that the compatibility
+  patch applied, was swallowed and the build succeeded with a broken venv. Each
+  tolerated step is now grouped; a build with one corrupted hash was run and now
+  fails, and a test keeps a bare `|| true` out of the Dockerfile.
+- **`setup` could crash with a traceback and a half-written output set** when an
+  output path was a symlink or directory. All four targets are checked before
+  any is written, and any filesystem error is a JSON error with exit 1.
+- **A socket in the key volume stopped the container from starting** (a
+  regression in this pass's hardlink fix: sockets cannot be opened). It is
+  skipped with a warning, as device nodes are.
 - **Three more writes that could land on an inode that was not theirs**, found
   by a third review pass hunting the same class. Startup's recursive chown
   followed a hardlinked file out of the service directory (it now chowns through

@@ -299,3 +299,19 @@ def test_chown_r_refuses_a_hardlinked_file(tmp_path, monkeypatch, capsys):
     assert "outside-file" not in seen and "hs_ed25519_secret_key" not in seen
     assert "hostname" in seen, "the rest of the directory is still handed over"
     assert "2 hard links" in capsys.readouterr().out
+
+
+def test_chown_r_does_not_abort_startup_on_a_socket(tmp_path, capsys):
+    """Opening a socket fails (ENXIO); before this, one planted socket stopped
+    the container from booting at all. It is skipped and named instead."""
+    import socket as _socket
+    d = tmp_path / "hs"
+    d.mkdir()
+    (d / "hostname").write_text("x.onion")
+    sock = _socket.socket(_socket.AF_UNIX)
+    try:
+        sock.bind(str(d / "planted.sock"))
+        e._chown_r(str(d), os.getuid(), os.getgid())
+    finally:
+        sock.close()
+    assert "device node or socket" in capsys.readouterr().out

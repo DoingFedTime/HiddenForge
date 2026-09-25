@@ -1459,11 +1459,18 @@ def cmd_setup(args) -> int:
 
         out = Path(args.out)
         out.mkdir(parents=True, exist_ok=True)
-        existing = [p for p in ("compose.service.yml", "deploy.sh", "README.txt",
-                                "hiddenforge.json") if (out / p).exists()]
+        outputs = ("compose.service.yml", "deploy.sh", "README.txt", "hiddenforge.json")
+        existing = [p for p in outputs if os.path.lexists(out / p)]
         if existing and not args.force:
             raise ValueError(f"{out} already contains {', '.join(existing)}; "
                              "pass --force to overwrite")
+        # Checked for ALL four before writing ANY: a refusal part-way through
+        # used to leave a new compose file beside the old deploy script.
+        odd = [p for p in existing if not stat.S_ISREG(os.lstat(out / p).st_mode)]
+        if odd:
+            raise ValueError(f"refusing to replace {', '.join(odd)} in {out}: not a "
+                             "regular file (a symlink, directory or FIFO is not "
+                             "something setup wrote)")
 
         image = validate_image_ref(args.image)
         keys = validate_keys_dir(args.keys)
@@ -1548,9 +1555,13 @@ def cmd_setup(args) -> int:
         for n in sorted(services):
             _narrate(args, f"  3. hiddenforge show --json --name {n}")
         return EXIT_OK
-    except (ValueError, EOFError) as exc:
+    except (ValueError, EOFError, OSError) as exc:
         if isinstance(exc, EOFError):
             return emit_json(EXIT_ABORTED, error="aborted at prompt (no TTY)")
+        if isinstance(exc, OSError):
+            # The machine contract: one JSON document and a stable exit code,
+            # never a traceback, whatever the filesystem does.
+            return emit_json(EXIT_FAIL, error=str(exc))
         return emit_json(EXIT_USAGE, error=str(exc))
 
 

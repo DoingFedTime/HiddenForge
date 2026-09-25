@@ -131,9 +131,12 @@ def _chown_one(path, uid, gid):
     if stat.S_ISLNK(st.st_mode):
         os.chown(path, uid, gid, follow_symlinks=False)
         return
-    if stat.S_ISCHR(st.st_mode) or stat.S_ISBLK(st.st_mode):
-        print(f"Warning: not taking ownership of device node {_safe(path)} in the "
-              "key volume; it does not belong there.")
+    if stat.S_ISCHR(st.st_mode) or stat.S_ISBLK(st.st_mode) or stat.S_ISSOCK(st.st_mode):
+        # A socket cannot be opened (ENXIO), and refusing to BOOT over one
+        # planted file would turn it into a restart loop; neither it nor a
+        # device node belongs in a key volume, so it is left alone and named.
+        print(f"Warning: not taking ownership of {_safe(path)} in the key volume: "
+              "it is a device node or socket, which does not belong there.")
         return
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     try:

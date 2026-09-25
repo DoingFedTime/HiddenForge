@@ -113,10 +113,14 @@ RUN python3 -m venv /opt/vanguards-venv && \
     # ship a broken venv silently.
     grep -q 'from configparser import RawConfigParser as SafeConfigParser' \
       /opt/vanguards-venv/lib/python3.12/site-packages/vanguards/config.py && \
-    /opt/vanguards-venv/bin/pip uninstall -y pip setuptools wheel 2>/dev/null || true && \
-    find /opt/vanguards-venv -type d -name 'test'  -exec rm -rf {} + 2>/dev/null || true && \
-    find /opt/vanguards-venv -type d -name 'tests' -exec rm -rf {} + 2>/dev/null || true && \
-    find /opt/vanguards-venv -type d -name '__pycache__' -exec rm -rf {} + 2>/dev/null || true && \
+    # Each tolerated failure is GROUPED. Written bare, `A && B || true && C`
+    # parses as `(A && B) || true && C`, so the `|| true` meant for one cleanup
+    # step also swallowed a --require-hashes mismatch in the pip install and the
+    # grep above: the build succeeded and shipped a broken venv.
+    { /opt/vanguards-venv/bin/pip uninstall -y pip setuptools wheel 2>/dev/null || true; } && \
+    { find /opt/vanguards-venv -type d -name 'test'  -exec rm -rf {} + 2>/dev/null || true; } && \
+    { find /opt/vanguards-venv -type d -name 'tests' -exec rm -rf {} + 2>/dev/null || true; } && \
+    { find /opt/vanguards-venv -type d -name '__pycache__' -exec rm -rf {} + 2>/dev/null || true; } && \
     find /opt/vanguards-venv -name '*.pyc' -delete && \
     find /opt/vanguards-venv -name '*.pyo' -delete && \
     rm /tmp/requirements.txt && \

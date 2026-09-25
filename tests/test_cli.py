@@ -1483,3 +1483,21 @@ def test_setup_force_does_not_write_through_a_hardlinked_output(hf, tmp_path, ca
     assert (out / "deploy.sh").read_text().startswith("#!/usr/bin/env bash")
     assert os.stat(out / "deploy.sh").st_nlink == 1
     assert not list(out.glob(".*.tmp")), "no temp file left behind"
+
+
+@pytest.mark.parametrize("plant", ["symlink", "directory"])
+def test_setup_refuses_an_odd_output_before_writing_anything(hf, tmp_path, capsys,
+                                                             plant):
+    """It used to raise a traceback -- no JSON, off-contract -- after already
+    writing a new compose file beside the old deploy script."""
+    out = tmp_path / "out"
+    out.mkdir()
+    if plant == "symlink":
+        (out / "README.txt").symlink_to(tmp_path / "elsewhere")
+    else:
+        (out / "README.txt").mkdir()
+    rc = hf.main(["setup", "--backend", "web:80", "-o", str(out), "--force",
+                  "--non-interactive", "--json"])
+    doc = json.loads(capsys.readouterr().out)
+    assert rc != 0 and "not a regular file" in doc["error"]
+    assert sorted(p.name for p in out.iterdir()) == ["README.txt"], "nothing written"
