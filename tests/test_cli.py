@@ -1447,3 +1447,19 @@ def test_vanity_refuses_a_key_path_the_engine_cannot_mount(hf, tmp_path, capsys,
     assert rc == hf.EXIT_USAGE and "contains ':'" in doc["error"]
     assert not called
     assert not (tmp_path / "a:b").exists()
+
+
+def test_show_does_not_hang_on_a_fifo_planted_as_the_hostname(hf, tmp_path, capsys):
+    """_read_nofollow checked for a regular file only AFTER opening, and opening a
+    FIFO blocks until a writer appears. O_NONBLOCK makes the open return so the
+    check can refuse it."""
+    import threading
+    d = tmp_path / "app"
+    d.mkdir()
+    os.mkfifo(d / "hostname")
+    done = threading.Event()
+    threading.Thread(target=lambda: (hf.main(["show", "--keys", str(tmp_path),
+                                              "--name", "app", "--json"]), done.set()),
+                     daemon=True).start()
+    assert done.wait(5), "show blocked on a FIFO"
+    capsys.readouterr()

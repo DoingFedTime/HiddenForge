@@ -275,16 +275,92 @@ def test_a_failed_write_does_not_block_later_ones(keys, capsys):
     assert "cannot publish the .onion address for aaa-blocked" in capsys.readouterr().out
 
 
-def test_the_temp_file_is_never_written_through_a_symlink(keys, tmp_path):
-    """O_NOFOLLOW on the temp file, not just on the target: the temp name is
-    predictable (it carries our pid), so a process that can write into the key
-    volume could plant a symlink there and have root write through it."""
+def _fixed_token(monkeypatch, token="t0"):  # noqa: S107 - a filename part
+    """Make the temp name knowable, so a test can plant something AT it."""
+    monkeypatch.setattr(e.secrets, "token_hex", lambda n: token)
+    return token
+
+
+def test_the_temp_file_is_never_written_through_a_symlink(keys, tmp_path, monkeypatch):
+    """O_NOFOLLOW on the temp file, not just on the target: a process that can
+    write into the key volume must not be able to redirect root's write."""
+    token = _fixed_token(monkeypatch)
     outside = tmp_path / "outside"
     outside.write_text("untouched")
     hs = _service(keys, "app", ONION + "\n")
-    (keys / f".app.onion.tmp.{os.getpid()}").symlink_to(outside)
+    (keys / f".app.onion.{token}.tmp").symlink_to(outside)
     e._publish_addresses([hs], keys_root=str(keys))
     assert outside.read_text() == "untouched"
+    assert not (keys / "app.onion").exists()
+
+
+def test_a_hardlink_at_the_temp_name_cannot_touch_the_secret_key(keys, monkeypatch):
+    """O_NOFOLLOW does not stop a HARDLINK. The temp name used to be predictable
+    (`.app.onion.tmp.1` -- the supervisor is PID 1) and opened with O_TRUNC, so a
+    key volume arriving with that name linked to hs_ed25519_secret_key had the
+    key overwritten with the address and chmod'ed 0644. Reproduced, then fixed
+    with O_EXCL; this plants the link at the exact name the code will pick."""
+    token = _fixed_token(monkeypatch)
+    hs = _service(keys, "app", ONION + "\n")
+    secret = keys / "app" / "hs_ed25519_secret_key"
+    secret.write_bytes(b"K" * 96)
+    os.chmod(secret, 0o600)
+    os.link(secret, keys / f".app.onion.{token}.tmp")
+    e._publish_addresses([hs], keys_root=str(keys))
+    assert secret.read_bytes() == b"K" * 96
+    assert stat.S_IMODE(os.stat(secret).st_mode) == 0o600
+    assert (keys / f".app.onion.{token}.tmp").exists(), "a planted name is not ours to remove"
+
+
+def _returns_promptly(fn, seconds=5):
+    import threading
+    done = threading.Event()
+    box = {}
+
+    def run():
+        try:
+            fn()
+        except BaseException as exc:
+            box["exc"] = exc
+        done.set()
+
+    threading.Thread(target=run, daemon=True).start()
+    assert done.wait(seconds), "blocked: the supervision loop would stop here"
+    if "exc" in box:
+        raise box["exc"]
+
+
+def test_a_fifo_as_the_published_file_does_not_hang_the_supervisor(keys):
+    """A plain read_bytes() blocked for ever on a FIFO; the loop that notices a
+    dead Tor and restarts Vanguards stopped with it."""
+    hs = _service(keys, "app", ONION + "\n")
+    os.mkfifo(keys / "app.onion")
+    _returns_promptly(lambda: e._publish_addresses([hs], keys_root=str(keys)))
+
+
+def test_a_fifo_as_the_hostname_does_not_hang_the_supervisor(keys):
+    d = keys / "app"
+    d.mkdir()
+    os.mkfifo(d / "hostname")
+    _returns_promptly(lambda: e._publish_addresses([str(d)], keys_root=str(keys)))
+    assert not (keys / "app.onion").exists()
+
+
+def test_a_hostname_linked_to_an_endless_file_does_not_kill_the_supervisor(keys):
+    """A symlink to /dev/zero read until MemoryError -- not an OSError, so it
+    escaped the handler and took PID 1 down. It is refused before any read."""
+    d = keys / "app"
+    d.mkdir()
+    (d / "hostname").symlink_to("/dev/zero")
+    _returns_promptly(lambda: e._publish_addresses([str(d)], keys_root=str(keys)))
+    assert not (keys / "app.onion").exists()
+
+
+def test_an_oversized_hostname_is_refused_not_read(keys):
+    d = keys / "app"
+    d.mkdir()
+    (d / "hostname").write_bytes(ONION.encode() + b"\n" + b"x" * 4096)
+    e._publish_addresses([str(d)], keys_root=str(keys))
     assert not (keys / "app.onion").exists()
 
 

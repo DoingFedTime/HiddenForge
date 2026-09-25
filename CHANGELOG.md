@@ -62,6 +62,19 @@ both injectable into the compose fragment and the 0755 deploy script.
 ### Fixed (pre-publication pass, 2026-09-25)
 Found by running the shipped configurations live, reading every public document
 against the code, and scanning the whole history before anything is published.
+- **A hardlink in the key volume could destroy the onion identity.** The
+  supervisor publishes `<name>.onion` through a temp file whose name was
+  predictable (`.<name>.onion.tmp.1`, the supervisor being PID 1) and which it
+  opened with `O_TRUNC`; `O_NOFOLLOW` does not stop a hardlink. A key volume
+  arriving with that name linked to `hs_ed25519_secret_key` had the key
+  overwritten with the address and made world-readable, as root. The temp file
+  now has a random name and is created with `O_EXCL`, so it is always a new inode.
+- **A FIFO or an endless file in the key volume could stop or kill the
+  supervisor.** Its once-a-second reads of `hostname` and `<name>.onion` blocked
+  for ever on a FIFO (a dead Tor then went unnoticed) and read a link to
+  `/dev/zero` until `MemoryError`, which escaped the handler and killed PID 1.
+  They now read through `O_NOFOLLOW|O_NONBLOCK`, accept only regular files, and
+  are size-capped; the healthcheck and the CLI read the same way.
 - **`doctor` failed the recommended Docker deployment.** From the host each
   service directory is tor-owned 0700, so the key-mode check hit EACCES and
   failed every service -- via the command `docs/INTEGRATION.md` gives for

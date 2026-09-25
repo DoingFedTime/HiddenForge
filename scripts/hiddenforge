@@ -259,7 +259,9 @@ def derive_onion(pubkey: bytes) -> str:
 
 def _read_nofollow(path: Path, max_bytes: int = 8192) -> bytes:
     """Read a regular file, refusing to follow a final-component symlink."""
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    # O_NONBLOCK: opening a FIFO planted at this path would otherwise block for
+    # ever before the regular-file check below could refuse it.
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     try:
         st = os.fstat(fd)
         if not stat.S_ISREG(st.st_mode):

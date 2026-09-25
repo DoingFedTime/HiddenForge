@@ -3,6 +3,7 @@
 HiddenForge entrypoint — generates a hardened torrc, starts Tor, and
 monitors the Vanguards guard-protection addon alongside it.
 """
+import contextlib
 import ctypes
 import errno
 import ipaddress
@@ -10,7 +11,9 @@ import json
 import os
 import pwd
 import re
+import secrets
 import socket
+import stat
 import sys
 import subprocess
 import signal
@@ -663,6 +666,35 @@ def _service_reachable():
     return doc.get('hidden_service_reachable') is True
 
 
+ADDRESS_FILE_MAX = 256   # a v3 address line is 63 bytes; anything far larger is not one
+
+
+def _read_small_regular_file(path, max_bytes=ADDRESS_FILE_MAX):
+    """Read a small regular file without following, blocking on, or swallowing it.
+
+    The supervisor reads two files per service once a second, as root, from the
+    key volume -- which the threat model treats as untrusted. A plain
+    read_bytes() there followed a symlink, BLOCKED FOR EVER on a FIFO (the
+    supervision loop stopped: a dead Tor went unnoticed), and read a link to
+    /dev/zero until MemoryError, which is not an OSError and killed PID 1.
+
+    O_NOFOLLOW refuses the symlink, O_NONBLOCK makes opening a FIFO return at
+    once, fstat on the descriptor refuses anything that is not a regular file,
+    and the read is capped. Every failure is an OSError, which the caller
+    already handles.
+    """
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError(errno.EINVAL, f"{path} is not a regular file")
+        data = os.read(fd, max_bytes + 1)
+    finally:
+        os.close(fd)
+    if len(data) > max_bytes:
+        raise OSError(errno.EFBIG, f"{path} is larger than {max_bytes} bytes")
+    return data
+
+
 _publish_warned: set[tuple[str, str, int]] = set()
 
 
@@ -730,7 +762,7 @@ def _publish_addresses(hs_dirs, keys_root=KEYS_ROOT, gate=None):
     for hs_dir in hs_dirs:
         name = Path(hs_dir).name
         try:
-            raw = (Path(hs_dir) / 'hostname').read_bytes()
+            raw = _read_small_regular_file(Path(hs_dir) / 'hostname')
         except OSError as exc:
             _warn_publish_once(name, 'read hostname', exc)
             continue
@@ -751,7 +783,7 @@ def _publish_addresses(hs_dirs, keys_root=KEYS_ROOT, gate=None):
             continue
         target = root / f'{name}.onion'
         try:
-            if target.read_bytes().decode('ascii').strip() == onion:
+            if _read_small_regular_file(target).decode('ascii').strip() == onion:
                 continue
         except (OSError, UnicodeDecodeError):
             # Unreadable or not ASCII: treat the published copy as absent and
@@ -765,9 +797,18 @@ def _publish_addresses(hs_dirs, keys_root=KEYS_ROOT, gate=None):
         return
 
     for name, onion, target in pending:
-        tmp = root / f'.{name}.onion.tmp.{os.getpid()}'
+        # A fresh, unguessable name created with O_EXCL. The old name was
+        # predictable (`.<name>.onion.tmp.1`: the supervisor is PID 1) and opened
+        # with O_TRUNC, and O_NOFOLLOW does not stop a HARDLINK: a key volume
+        # arriving with that name hard-linked to hs_ed25519_secret_key had the
+        # key truncated, overwritten with the address and fchmod'ed 0644 --
+        # the identity destroyed and its file world-readable. O_EXCL creates a
+        # new inode or fails; it never opens one that already exists.
+        tmp = root / f'.{name}.onion.{secrets.token_hex(8)}.tmp'
+        created = False
         try:
-            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o644)
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+            created = True
             with os.fdopen(fd, 'wb') as fh:
                 fh.write(onion.encode('ascii') + b'\n')
                 # fchmod, not chmod: chmod(tmp) re-resolves the name, so a
@@ -781,6 +822,9 @@ def _publish_addresses(hs_dirs, keys_root=KEYS_ROOT, gate=None):
             # This loop is driven once a second from the supervision loop, which
             # does NOT wrap the call. An unhandled error here would take the
             # whole supervisor down over a convenience file.
+            if created:           # only ever remove a temp this call made
+                with contextlib.suppress(OSError):
+                    tmp.unlink()
             _warn_publish_once(name, f'write {target}', exc)
             continue
         print(f"Published address for {name}: {onion}")

@@ -332,6 +332,29 @@ MUTATIONS = [
         "        if False:\n            reason =",
         "tests/test_cli.py -k inconsistent_key_set_as_the_reason",
     ),
+    (
+        "the supervisor opens its temp file without O_EXCL (hardlink clobbers the key)",
+        "entrypoint.py",
+        "os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)",
+        "os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o644)",
+        "tests/test_publication.py -k hardlink",
+    ),
+    (
+        "the supervisor's address read blocks on a FIFO again",
+        "entrypoint.py",
+        "    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)\n    try:\n"
+        "        if not stat.S_ISREG",
+        "    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)\n    try:\n"
+        "        if not stat.S_ISREG",
+        "tests/test_publication.py -k fifo",
+    ),
+    (
+        "the CLI's key-volume read blocks on a FIFO again",
+        "scripts/hiddenforge",
+        "    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)",
+        "    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)",
+        "tests/test_cli.py -k fifo",
+    ),
 ]
 
 

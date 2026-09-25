@@ -41,6 +41,7 @@ import json
 import os
 import re
 import socket
+import stat
 import sys
 
 CONTROL_SOCKET = "/var/lib/tor/control.sock"
@@ -180,6 +181,34 @@ def _hidden_service_dirs():
     return out
 
 
+def _read_address_file(path, max_bytes=256):
+    """A small regular file's text, or None -- never blocking, never following.
+
+    Same reasoning as entrypoint._read_small_regular_file: a FIFO planted as a
+    hostname file hung this probe until the engine's timeout, and a symlink to
+    /dev/zero read until MemoryError. O_NONBLOCK, O_NOFOLLOW, a regular-file
+    check on the descriptor and a size cap make each of those a plain "no".
+    """
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError:
+        return None
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        data = os.read(fd, max_bytes + 1)
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+    if len(data) > max_bytes:
+        return None
+    try:
+        return data.decode("ascii").strip()
+    except UnicodeDecodeError:
+        return None
+
+
 def _published_state(dirs):
     """(all_published, details). No services configured counts as published."""
     if not dirs:
@@ -189,12 +218,7 @@ def _published_state(dirs):
     for d in dirs:
         name = os.path.basename(d.rstrip("/"))
         path = os.path.join(d, "hostname")
-        onion = None
-        try:
-            with open(path, encoding="ascii", errors="strict") as fh:
-                onion = fh.read().strip()
-        except (OSError, UnicodeDecodeError):
-            onion = None
+        onion = _read_address_file(path)
         ok = bool(onion and ONION_RE.fullmatch(onion))
         all_ok = all_ok and ok
         details.append({"name": name, "address": onion if ok else None, "published": ok})

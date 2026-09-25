@@ -131,16 +131,16 @@ ACCEPTED: dict[tuple[str, str, str], str] = {
      "onion = raw.decode('ASCII').strip()"):
         'Codec names are normalised case-insensitively; this is the same codec.',
     ('entrypoint._publish_addresses',
-     "if target.read_bytes().decode('ascii').strip() == onion:",
-     "if target.read_bytes().decode('ASCII').strip() == onion:"):
+     "if _read_small_regular_file(target).decode('ascii').strip() == onion:",
+     "if _read_small_regular_file(target).decode('ASCII').strip() == onion:"):
         'Codec names are normalised case-insensitively; this is the same codec.',
     ('entrypoint._publish_addresses',
-     'fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o644)',
-     'fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, )'):
+     'fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)',
+     'fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, )'):
         'The mode passed to os.open is only a request the umask narrows; this writer sets the mode outright with fchmod on the descriptor afterwards, so the value here cannot be observed.',
     ('entrypoint._publish_addresses',
-     'fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o644)',
-     'fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 421)'):
+     'fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)',
+     'fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 421)'):
         'The mode passed to os.open is only a request the umask narrows; this writer sets the mode outright with fchmod on the descriptor afterwards, so the value here cannot be observed.',
     ('entrypoint._publish_addresses',
      "fh.write(onion.encode('ascii') + b'\\n')",
@@ -232,30 +232,6 @@ ACCEPTED: dict[tuple[str, str, str], str] = {
     ('healthcheck._hidden_service_dirs',
      'with open(TORRC, encoding="utf-8", errors="replace") as fh:',
      'with open(TORRC, encoding="UTF-8", errors="replace") as fh:'):
-        'Codec names are normalised case-insensitively; this is the same codec.',
-    ('healthcheck._published_state',
-     'onion = None',
-     'onion = ""'):
-        'Empty string and None are both falsy, and the value is only ever tested.',
-    ('healthcheck._published_state',
-     'with open(path, encoding="ascii", errors="strict") as fh:',
-     'with open(path, encoding=None, errors="strict") as fh:'):
-        'encoding=None takes the locale encoding, which is UTF-8 here and in the image, so the outcome is identical for every input this reads.',
-    ('healthcheck._published_state',
-     'with open(path, encoding="ascii", errors="strict") as fh:',
-     'with open(path, encoding="ascii", errors=None) as fh:'):
-        "errors defaults to 'strict', the value that was replaced.",
-    ('healthcheck._published_state',
-     'with open(path, encoding="ascii", errors="strict") as fh:',
-     'with open(path, errors="strict") as fh:'):
-        'encoding=None takes the locale encoding, which is UTF-8 here and in the image, so the outcome is identical for every input this reads.',
-    ('healthcheck._published_state',
-     'with open(path, encoding="ascii", errors="strict") as fh:',
-     'with open(path, encoding="ascii", ) as fh:'):
-        "errors defaults to 'strict', the value that was replaced.",
-    ('healthcheck._published_state',
-     'with open(path, encoding="ascii", errors="strict") as fh:',
-     'with open(path, encoding="ASCII", errors="strict") as fh:'):
         'Codec names are normalised case-insensitively; this is the same codec.',
     ('healthcheck._circuit_status_lines',
      'lines = resp.decode("utf-8", "replace").splitlines()',

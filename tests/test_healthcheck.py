@@ -996,3 +996,42 @@ def test_a_non_numeric_proc_entry_before_the_target_does_not_stop_the_scan(
     assert hc._tor_running() is True
     assert hc._vanguards_running() is True
     assert len(list(hc._each_cmdline())) == 2
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# the hostname read cannot be turned into a hang or a crash
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _hc_returns_promptly(fn, seconds=5):
+    import threading
+    done = threading.Event()
+    box = {}
+
+    def run():
+        try:
+            box["value"] = fn()
+        except BaseException as exc:
+            box["exc"] = exc
+        done.set()
+
+    threading.Thread(target=run, daemon=True).start()
+    assert done.wait(seconds), "blocked until the engine's healthcheck timeout"
+    if "exc" in box:
+        raise box["exc"]
+    return box["value"]
+
+
+def test_a_fifo_hostname_is_not_published_and_does_not_block(hc, tmp_path):
+    d = tmp_path / "app"
+    d.mkdir()
+    os.mkfifo(d / "hostname")
+    ok, details = _hc_returns_promptly(lambda: hc._published_state([str(d)]))
+    assert ok is False and details[0]["published"] is False
+
+
+def test_a_hostname_linked_to_an_endless_file_is_not_read(hc, tmp_path):
+    d = tmp_path / "app"
+    d.mkdir()
+    (d / "hostname").symlink_to("/dev/zero")
+    ok, _details = _hc_returns_promptly(lambda: hc._published_state([str(d)]))
+    assert ok is False
