@@ -134,3 +134,24 @@ def test_show_still_says_not_generated_when_nothing_is_there(hf, capsys, tmp_pat
     doc = json.loads(capsys.readouterr().out)
     assert rc == hf.EXIT_NOT_READY
     assert "not generated yet" in doc["error"]
+
+
+def test_a_missing_key_reported_from_inside_fails_the_host_doctor(hf, monkeypatch,
+                                                                  capsys, closed_keys):
+    """Inside, a service with no secret key is reported as `key modes for <n>`.
+    The host used to take only checks named `key dir`/`secret key`/`<n>:`, so
+    that failure was dropped and the host said ok with nothing checked."""
+    inner = {"checks": [{"check": "key modes for app", "ok": False,
+                         "detail": "cannot stat: no such file", "severity": "fail"}]}
+    rc, doc, _checks, _ = _doctor(hf, monkeypatch, capsys, closed_keys, inner)
+    assert rc == hf.EXIT_FAIL
+    assert "key modes for app (checked in container)" in doc["failures"]
+
+
+def test_a_service_the_container_says_nothing_about_is_not_a_pass(hf, monkeypatch,
+                                                                  capsys, closed_keys):
+    inner = {"checks": [{"check": "key dir other is 0700", "ok": True,
+                         "detail": "mode=0o700", "severity": "fail"}]}
+    rc, _doc, checks, _ = _doctor(hf, monkeypatch, capsys, closed_keys, inner)
+    assert rc == hf.EXIT_FAIL
+    assert "reported nothing" in checks["key modes for app"]["detail"]

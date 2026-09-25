@@ -78,8 +78,15 @@ against the code, and scanning the whole history before anything is published.
   `is_symlink()` check. Key files are now read through `O_NOFOLLOW`.
 - **CI's secret scan never looked at history** (`gitleaks --no-git`). It now
   scans every commit as well as the tree; the full history is clean.
-- **The CI runner had been stopped since 2026-09-12**, so pushes ran no CI. It
-  is running again.
+- **`restore` and `decrypt-key` accepted a truncated key.** A member merely
+  named `hs_ed25519_secret_key` counted as an identity, so an empty one restored
+  with `ok: true`, and with `--force` would have moved the real key aside for it.
+  Every such member must now be the 96-byte, tagged file Tor writes.
+- **`doctor` could pass a service it never checked**, when the container's own
+  report used a check name the host did not collect. A service nobody reported
+  on is now a failure.
+- **`status` blamed waiting for an inconsistent key set**; it now gives the
+  inconsistency as the reason.
 - Documentation corrected where it no longer matched the code: an `sbom`
   command that booted Tor instead, a `docker run` example with `-v` after the
   image name, "nothing stays root" (the supervisor does, with `0xc2`/`0xc0`), a

@@ -16,6 +16,17 @@ from loader import repo_root
 REPO = repo_root(__file__)
 CLI_PATH = REPO / "scripts" / "hiddenforge"
 PUBLIC_TAG = b"== ed25519v1-public: type0 =="
+SECRET_TAG = b"== ed25519v1-secret: type0 =="
+
+
+def _sk(fill: int) -> bytes:
+    """A byte-accurate Tor secret key file: the 32-byte tag, then 64 key bytes.
+
+    restore and decrypt-key refuse anything else named hs_ed25519_secret_key, so a
+    fixture that is merely 96 bytes of filler would now test the refusal instead of
+    the path it was written for.
+    """
+    return SECRET_TAG.ljust(32, b"\x00") + bytes([fill]) * 64
 # A fixture value, not a credential: every test writes it to a temp file and
 # hands it to gpg, and nothing outside this file has ever been encrypted with it.
 TEST_PASSPHRASE = "correct horse battery staple"  # noqa: S105
@@ -40,7 +51,7 @@ def keys(tmp_path):
     d = tmp_path / "tor-keys" / "app"
     d.mkdir(parents=True)
     (d / "hs_ed25519_public_key").write_bytes(PUBLIC_TAG.ljust(32, b"\x00") + b"\x11" * 32)
-    (d / "hs_ed25519_secret_key").write_bytes(b"\x22" * 96)
+    (d / "hs_ed25519_secret_key").write_bytes(_sk(0x22))
     (d / "hostname").write_text("a" * 56 + ".onion\n")
     for p in d.iterdir():
         os.chmod(p, 0o600)
@@ -66,7 +77,7 @@ def test_backup_restore_roundtrip(hf, keys, tmp_path, capsys):
     rc, doc = _run(hf, capsys, ["restore", "--keys", str(dest), "--input", str(out),
                                 "--tool", "gpg", "--passphrase-file", str(pp), "--json"])
     assert rc == 0 and doc["ok"]
-    assert (dest / "app" / "hs_ed25519_secret_key").read_bytes() == b"\x22" * 96
+    assert (dest / "app" / "hs_ed25519_secret_key").read_bytes() == _sk(0x22)
     assert (dest / "app" / "hostname").read_text().strip() == "a" * 56 + ".onion"
 
 
@@ -120,7 +131,7 @@ def test_restore_force_archives_nested_conflicts(hf, keys, tmp_path, capsys):
                     "--passphrase-file", str(pp), "--json"]) == 0
     capsys.readouterr()
     # Make the on-disk key differ so the restore is a genuine conflict.
-    (keys / "app" / "hs_ed25519_secret_key").write_bytes(b"\x33" * 96)
+    (keys / "app" / "hs_ed25519_secret_key").write_bytes(_sk(0x33))
     rc = hf.main(["restore", "--keys", str(keys), "--input", str(out), "--tool", "gpg",
                   "--passphrase-file", str(pp), "--force", "--json"])
     assert rc == 0, capsys.readouterr().out
@@ -128,7 +139,7 @@ def test_restore_force_archives_nested_conflicts(hf, keys, tmp_path, capsys):
     archived = Path(doc["archived"])
     assert (archived / "app" / "hs_ed25519_secret_key").exists(), \
         "nested conflict was not archived"
-    assert (keys / "app" / "hs_ed25519_secret_key").read_bytes() == b"\x22" * 96
+    assert (keys / "app" / "hs_ed25519_secret_key").read_bytes() == _sk(0x22)
 
 
 def test_restore_forces_key_modes_ignoring_archive(hf, tmp_path, capsys):
@@ -148,9 +159,9 @@ def test_restore_forces_key_modes_ignoring_archive(hf, tmp_path, capsys):
         d.mode = 0o755
         tar.addfile(d)
         f = tarfile.TarInfo("app/hs_ed25519_secret_key")
-        f.size = 6
+        f.size = len(_sk(0x4b))
         f.mode = 0o644
-        tar.addfile(f, io.BytesIO(b"secret"))
+        tar.addfile(f, io.BytesIO(_sk(0x4b)))
 
     pp = tmp_path / "pp"
     pp.write_text("a passphrase\n")
@@ -212,7 +223,7 @@ def test_encrypt_key_really_encrypts_and_roundtrips(hf, keys, tmp_path, capsys):
     rc, doc = _run(hf, capsys, ["decrypt-key", "--keys", str(keys), "--name", "app",
                                 "--tool", "gpg", "--passphrase-file", str(pp), "--json"])
     assert rc == 0 and doc["ok"] is True
-    assert (keys / "app" / "hs_ed25519_secret_key").read_bytes() == b"\x22" * 96
+    assert (keys / "app" / "hs_ed25519_secret_key").read_bytes() == _sk(0x22)
 
 
 def test_decrypt_key_wrong_passphrase_fails_closed(hf, keys, tmp_path, capsys):
@@ -257,8 +268,8 @@ def test_restore_rejects_path_traversal(hf, tmp_path, capsys):
         # and this test passes even with the `..` guard deleted -- measured by
         # the mutation spot-check, which reported the guard SURVIVED.
         keep = tarfile.TarInfo("app/hs_ed25519_secret_key")
-        keep.size = 4
-        tar.addfile(keep, io.BytesIO(b"key!"))
+        keep.size = len(_sk(0x4b))
+        tar.addfile(keep, io.BytesIO(_sk(0x4b)))
         f = tarfile.TarInfo("../escaped")
         f.size = 6
         tar.addfile(f, io.BytesIO(b"secret"))
@@ -308,8 +319,8 @@ def test_restore_rejects_an_absolute_member_path(hf, tmp_path, capsys):
         member.size = 6
         tar.addfile(member, io.BytesIO(b"secret"))
         keep = tar.tarinfo("app/hs_ed25519_secret_key")
-        keep.size = 4
-        tar.addfile(keep, io.BytesIO(b"key!"))
+        keep.size = len(_sk(0x4b))
+        tar.addfile(keep, io.BytesIO(_sk(0x4b)))
 
     blob, pp = _sealed(hf, tmp_path, build)
     keys = tmp_path / "restored"
@@ -348,8 +359,8 @@ def test_restore_rejects_link_and_device_members(hf, tmp_path, capsys, kind):
         # otherwise empty gets refused for holding no identity, which would let
         # this test pass with the member-type guard deleted.
         keep = tar.tarinfo("app/hs_ed25519_secret_key")
-        keep.size = 4
-        tar.addfile(keep, io.BytesIO(b"key!"))
+        keep.size = len(_sk(0x4b))
+        tar.addfile(keep, io.BytesIO(_sk(0x4b)))
 
     blob, pp = _sealed(hf, tmp_path, build)
     keys = tmp_path / "restored"
@@ -553,7 +564,7 @@ def test_decrypt_key_refuses_a_symlinked_directory_in_the_destination(hf, keys,
     buf = _io.BytesIO()
     with _tarfile.open(fileobj=buf, mode="w", format=_tarfile.PAX_FORMAT) as tar:
         info = _tarfile.TarInfo(name="sub/hs_ed25519_secret_key")
-        payload = b"\x33" * 96
+        payload = _sk(0x33)
         info.size = len(payload)
         info.mode = 0o600
         tar.addfile(info, _io.BytesIO(payload))
@@ -604,7 +615,7 @@ def test_restore_refuses_every_shape_of_traversing_name(hf, tmp_path, name, caps
     # The key member keeps the archive a plausible backup; see
     # test_restore_rejects_path_traversal for why that matters.
     blob = _encrypted_archive(
-        hf, tmp_path, {"app/hs_ed25519_secret_key": b"k" * 32, name: b"k"})
+        hf, tmp_path, {"app/hs_ed25519_secret_key": _sk(0x6b), name: b"k"})
     dest = tmp_path / "dest"
     rc = hf.main(["restore", "--input", str(blob), "--keys", str(dest),
                   "--tool", "gpg", "--passphrase-file", str(pp), "--json"])
@@ -620,14 +631,14 @@ def test_restore_creates_nested_directories_it_was_given(hf, tmp_path, capsys):
     pp = tmp_path / "pp"
     pp.write_text("correct horse battery staple\n")
     blob = _encrypted_archive(
-        hf, tmp_path, {"app/sub/deep/hs_ed25519_secret_key": b"\x44" * 32})
+        hf, tmp_path, {"app/sub/deep/hs_ed25519_secret_key": _sk(0x44)})
     dest = tmp_path / "dest"
     rc = hf.main(["restore", "--input", str(blob), "--keys", str(dest),
                   "--tool", "gpg", "--passphrase-file", str(pp), "--json"])
     capsys.readouterr()
     assert rc == 0
     got = dest / "app" / "sub" / "deep" / "hs_ed25519_secret_key"
-    assert got.read_bytes() == b"\x44" * 32
+    assert got.read_bytes() == _sk(0x44)
     assert stat.S_IMODE(os.stat(got).st_mode) == 0o600
     assert stat.S_IMODE(os.stat(dest / "app" / "sub").st_mode) == 0o700
 
@@ -642,9 +653,9 @@ def test_restore_forces_0600_whatever_the_archive_declares(hf, tmp_path, capsys)
     buf = _io.BytesIO()
     with _tarfile.open(fileobj=buf, mode="w", format=_tarfile.PAX_FORMAT) as tar:
         info = _tarfile.TarInfo(name="app/hs_ed25519_secret_key")
-        info.size = 4
+        info.size = len(_sk(0x4b))
         info.mode = 0o777
-        tar.addfile(info, _io.BytesIO(b"key!"))
+        tar.addfile(info, _io.BytesIO(_sk(0x4b)))
     ciphertext, _m = hf._encrypt_bytes("gpg", buf.getvalue(),
                                        "correct horse battery staple")
     blob = tmp_path / "loose.gpg"
@@ -720,8 +731,8 @@ def test_restore_refuses_a_control_character_in_a_member_name(hf, tmp_path,
     """
     def build(tar, io):
         info = tar.tarinfo(name)
-        info.size = 4
-        tar.addfile(info, io.BytesIO(b"key!"))
+        info.size = len(_sk(0x4b))
+        tar.addfile(info, io.BytesIO(_sk(0x4b)))
 
     blob, pp = _sealed(hf, tmp_path, build)
     dest = tmp_path / "dest"
@@ -776,7 +787,7 @@ def _key_set(d: Path, fill: int, onion_char: str) -> None:
     d.mkdir(parents=True, exist_ok=True)
     (d / "hs_ed25519_public_key").write_bytes(PUBLIC_TAG.ljust(32, b"\x00")
                                              + bytes([fill]) * 32)
-    (d / "hs_ed25519_secret_key").write_bytes(bytes([fill]) * 96)
+    (d / "hs_ed25519_secret_key").write_bytes(_sk(fill))
     (d / "hostname").write_text(onion_char * 56 + ".onion\n")
 
 
@@ -802,7 +813,7 @@ def test_decrypt_key_refuses_to_overwrite_a_different_live_key(hf, keys, tmp_pat
                                 "--tool", "gpg", "--passphrase-file", str(pp), "--json"])
     assert rc == hf.EXIT_FAIL and doc["ok"] is False
     assert "--force" in doc["error"]
-    assert (keys / "app" / "hs_ed25519_secret_key").read_bytes() == b"\x33" * 96
+    assert (keys / "app" / "hs_ed25519_secret_key").read_bytes() == _sk(0x33)
 
 
 def test_decrypt_key_force_moves_the_live_key_aside_whole(hf, keys, tmp_path, capsys):
@@ -815,8 +826,8 @@ def test_decrypt_key_force_moves_the_live_key_aside_whole(hf, keys, tmp_path, ca
                                 "--force", "--json"])
     assert rc == 0, doc
     archived = Path(doc["archived"])
-    assert (archived / "hs_ed25519_secret_key").read_bytes() == b"\x33" * 96
-    assert (keys / "app" / "hs_ed25519_secret_key").read_bytes() == b"\x22" * 96
+    assert (archived / "hs_ed25519_secret_key").read_bytes() == _sk(0x33)
+    assert (keys / "app" / "hs_ed25519_secret_key").read_bytes() == _sk(0x22)
     assert not (keys / "app" / "extra-live-file").exists(), "mixed key set"
     assert stat.S_IMODE(os.stat(keys / "app").st_mode) == 0o700
 
@@ -861,7 +872,7 @@ def test_a_conflict_refusal_leaves_nothing_behind(hf, keys, tmp_path, capsys):
         for name in ("app/hs_ed25519_secret_key", "other/hs_ed25519_secret_key"):
             info = tar.tarinfo(name)
             info.size = 96
-            tar.addfile(info, io.BytesIO(b"\x44" * 96))
+            tar.addfile(info, io.BytesIO(_sk(0x44)))
 
     blob, pp = _sealed(hf, tmp_path, build)
     rc = hf.main(["restore", "--keys", str(keys), "--input", str(blob),
@@ -908,3 +919,38 @@ def test_restore_leaves_files_it_did_not_write_alone(hf, keys, tmp_path, capsys)
     assert stat.S_IMODE(os.stat(other).st_mode) == 0o644
     assert stat.S_IMODE(os.stat(dest / "app" / "hs_ed25519_secret_key").st_mode) == 0o600
     assert stat.S_IMODE(os.stat(dest / "app").st_mode) == 0o700
+
+
+@pytest.mark.parametrize("payload,why", [
+    (b"", "empty"),
+    (b"\x00" * 50, "truncated"),
+    (b"x" * 96, "right size, no Tor tag"),
+])
+@pytest.mark.parametrize("command", ["restore", "decrypt-key"])
+def test_a_member_named_like_a_key_that_is_not_one_is_refused(hf, tmp_path, capsys,
+                                                              payload, why, command):
+    """A 0-byte `hs_ed25519_secret_key` used to count as an identity: restore
+    reported ok:true, and with --force it would have moved the real key aside
+    and installed the empty one. Every member with that name must be the
+    96-byte, tagged file Tor writes."""
+    name = ("app/hs_ed25519_secret_key" if command == "restore"
+            else "hs_ed25519_secret_key")
+
+    def build(tar, io):
+        info = tar.tarinfo(name)
+        info.size = len(payload)
+        tar.addfile(info, io.BytesIO(payload))
+
+    blob, pp = _sealed(hf, tmp_path, build)
+    keys = tmp_path / "k"
+    keys.mkdir()
+    if command == "restore":
+        argv = ["restore", "--keys", str(keys), "--input", str(blob)]
+    else:
+        blob.rename(keys / "app.keys.tar.gpg")
+        argv = ["decrypt-key", "--keys", str(keys), "--name", "app"]
+    rc = hf.main([*argv, "--tool", "gpg", "--passphrase-file", str(pp), "--json"])
+    doc = json.loads(capsys.readouterr().out)
+    assert rc != 0, why
+    assert "named like a Tor secret key" in doc["error"]
+    assert not (keys / "app").exists()

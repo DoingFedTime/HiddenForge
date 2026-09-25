@@ -639,6 +639,23 @@ def test_status_names_the_missing_condition_when_the_healthcheck_is_ready(
     assert "'starting'" in doc["reason"]
 
 
+def test_status_names_an_inconsistent_key_set_as_the_reason(hf, tmp_path, capsys,
+                                                            monkeypatch):
+    """Waiting never fixes a hostname that disagrees with its key, so the reason
+    must say so rather than "not published yet"."""
+    keys = _inconsistent_volume(tmp_path)
+    monkeypatch.setattr(hf, "_docker_inspect", lambda c: (
+        {"State": {"Running": True, "Health": {"Status": "healthy"}},
+         "RestartCount": 0}, None))
+    monkeypatch.setattr(hf, "_resolve_container", lambda c: "cid")
+    monkeypatch.setattr(hf, "_docker_exec_json", lambda c, a: None)
+    monkeypatch.setattr(hf, "_docker_exec_text", lambda c, a: None)
+    rc = hf.main(["status", "--container", "tor", "--keys", str(keys), "--json"])
+    doc = json.loads(capsys.readouterr().out)
+    assert rc == hf.EXIT_NOT_READY
+    assert "restore the whole directory" in doc["reason"]
+
+
 def test_status_surfaces_dropped_mappings(hf, tmp_path, capsys, monkeypatch):
     """A mapping that never made it into the torrc must be visible in status."""
     os.chmod(tmp_path, 0o700)

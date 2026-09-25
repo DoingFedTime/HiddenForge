@@ -311,6 +311,27 @@ MUTATIONS = [
         "    required = REQUIRED_CAP_ADD",
         "tests/test_cli.py -k doctor",
     ),
+    (
+        "restore/decrypt-key accept a truncated or untagged secret key",
+        "scripts/hiddenforge",
+        "            if m.size != SECRET_KEY_FILE_LEN or not head.startswith(SECRET_TAG):",
+        "            if False:",
+        "tests/test_backup.py -k named_like_a_key",
+    ),
+    (
+        "doctor passes a tor-owned service the container reported nothing about",
+        "scripts/hiddenforge",
+        "for n in closed if n not in covered)",
+        "for n in closed if False)",
+        "tests/test_doctor_keys.py",
+    ),
+    (
+        "status blames waiting for an inconsistent key set",
+        "scripts/hiddenforge",
+        "        if inconsistent:\n            reason =",
+        "        if False:\n            reason =",
+        "tests/test_cli.py -k inconsistent_key_set_as_the_reason",
+    ),
 ]
 
 

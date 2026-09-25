@@ -105,8 +105,10 @@ SECRET_FILE = "hs_ed25519_secret_key"
 PUBLIC_FILE = "hs_ed25519_public_key"
 HOSTNAME_FILE = "hostname"
 PUBLIC_TAG = b"== ed25519v1-public: type0 =="
+SECRET_TAG = b"== ed25519v1-secret: type0 =="
 TAG_LEN = 32
 PUBKEY_LEN = 32
+SECRET_KEY_FILE_LEN = TAG_LEN + 64   # tag + 64-byte expanded Ed25519 secret
 
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9\-]{0,62}$")
 ONION_RE = re.compile(r"^[a-z2-7]{56}\.onion$")
@@ -824,7 +826,13 @@ def cmd_status(args) -> int:
         # said ready while Docker's health status was still "starting" (it
         # re-runs only every 60s), so `status` answered not-ready with no reason.
         # Name the condition that is actually missing.
-        if not running:
+        inconsistent = [e for e in (address_for(keys, a["name"]) for a in addresses
+                                    if keys.is_dir() and a.get("name")
+                                    and NAME_RE.fullmatch(str(a["name"])))
+                        if e["source"] == "inconsistent"]
+        if inconsistent:
+            reason = "; ".join(_inconsistent_error(e) for e in inconsistent)
+        elif not running:
             reason = "the container is not running"
         elif not healthy:
             reason = (f"the engine's health status is {health!r}, not 'healthy'"
@@ -998,13 +1006,24 @@ def _append_in_container_key_checks(checks: list[dict], container: str | None,
             "container could not be asked; run `docker exec <container> su-exec "
             "tor hiddenforge doctor --keys-only`", severity="warn") for name in closed)
         return
+    covered: set[str] = set()
     for c in inner:
         if not isinstance(c, dict) or not isinstance(c.get("check"), str):
             continue
-        if any(c["check"].startswith((f"key dir {n} ", f"secret key {n} ", f"{n}: "))
-               for n in closed):
-            checks.append(_check(bool(c.get("ok")), c["check"] + " (checked in container)",
-                                 str(c.get("detail", "")), str(c.get("severity", "fail"))))
+        for n in closed:
+            if (c["check"].startswith((f"key dir {n} ", f"secret key {n} ", f"{n}: "))
+                    or c["check"] == f"key modes for {n}"):
+                covered.add(n)
+                checks.append(_check(bool(c.get("ok")),
+                                     c["check"] + " (checked in container)",
+                                     str(c.get("detail", "")),
+                                     str(c.get("severity", "fail"))))
+    # A service the container said nothing about was not checked by anyone.
+    # Silence there used to read as a pass.
+    checks.extend(_check(
+        False, f"key modes for {n}",
+        "the container's own check reported nothing for this service, so its "
+        "key modes were not verified") for n in closed if n not in covered)
 
 
 def cmd_doctor(args) -> int:
@@ -1908,7 +1927,7 @@ def _close_dir_fds(cache: dict) -> None:
             os.close(fd)
 
 
-def _check_archive_members(members, accept_envelope: bool) -> None:
+def _check_archive_members(tar, members, accept_envelope: bool) -> None:
     """Refuse a whole archive, before anything touches the disk, if any member is unsafe.
 
     Shared by `restore` and `decrypt-key`, which used to carry two copies of this
@@ -1923,6 +1942,11 @@ def _check_archive_members(members, accept_envelope: bool) -> None:
     sequence rewrites the terminal. And an archive that carries no identity:
     reporting success over an empty volume is the worst answer a restore can
     give, because the operator believes the key is back.
+
+    A member merely NAMED like a secret key is not one. Every
+    `hs_ed25519_secret_key` must be exactly the 96 bytes Tor writes and start
+    with Tor's tag: a truncated or empty one used to count as "an identity",
+    and with --force that moved the real key aside and installed the empty one.
     """
     has_identity = False
     for m in members:
@@ -1942,8 +1966,18 @@ def _check_archive_members(members, accept_envelope: bool) -> None:
         # `encrypt-key` leaves behind: a volume whose keys were encrypted with
         # --delete-plaintext has no SECRET_FILE in it, and refusing to restore
         # THAT backup would be a worse bug than the one this check exists to stop.
-        if m.isfile() and (name.name == SECRET_FILE
-                           or (accept_envelope and ".keys.tar." in name.name)):
+        if m.isfile() and name.name == SECRET_FILE:
+            fh = tar.extractfile(m)
+            head = fh.read(TAG_LEN) if fh is not None else b""
+            if m.size != SECRET_KEY_FILE_LEN or not head.startswith(SECRET_TAG):
+                raise ValueError(
+                    f"refusing archive member {m.name!r}: it is named like a Tor "
+                    f"secret key but is {m.size} bytes"
+                    + ("" if head.startswith(SECRET_TAG) else " without Tor's key tag")
+                    + f", not the {SECRET_KEY_FILE_LEN}-byte key Tor writes. The "
+                      "archive is truncated or is not a hiddenforge backup.")
+            has_identity = True
+        elif m.isfile() and accept_envelope and ".keys.tar." in name.name:
             has_identity = True
     if not has_identity:
         raise ValueError(
@@ -2041,7 +2075,7 @@ def cmd_restore(args) -> int:
             members = tar.getmembers()
             # Every member is judged before the destination is touched, so a
             # refused archive leaves the volume exactly as it was found.
-            _check_archive_members(members, accept_envelope=True)
+            _check_archive_members(tar, members, accept_envelope=True)
             keys = Path(args.keys)
             keys.mkdir(parents=True, exist_ok=True)
             # Every write below is made relative to this descriptor, never by
@@ -2234,7 +2268,7 @@ def _encrypt_or_decrypt_dir(args, encrypt: bool) -> int:
         plaintext = _decrypt_bytes(tool, blob.read_bytes(), passphrase)
         with tarfile.open(fileobj=io.BytesIO(plaintext), mode="r") as tar:
             members = tar.getmembers()
-            _check_archive_members(members, accept_envelope=False)
+            _check_archive_members(tar, members, accept_envelope=False)
             # Never write into an existing key set. The key IS the address: this
             # used to extract straight over whatever was in <keys>/<name>/, with
             # no --force and no copy kept, so decrypting an old envelope after the
