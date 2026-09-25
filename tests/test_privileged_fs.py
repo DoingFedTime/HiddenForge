@@ -110,6 +110,32 @@ def test_chmod_dir_nofollow_leaks_no_file_descriptors(tmp_path):
     assert after <= before + 1, f"fd leak: {before} -> {after}"
 
 
+def _record_chowns(monkeypatch, calls, *, realpath=False, basename=False):
+    """Record every ownership change _chown_r makes, by path.
+
+    It chowns symlinks with lchown and everything else through a descriptor
+    (fchown), so both are recorded; an fchown is reported with the path the
+    descriptor was opened on, read back from /proc/self/fd.
+    """
+    real_chown, real_fchown = os.chown, os.fchown
+
+    def fmt(p):
+        if basename:
+            return os.path.basename(p)
+        return os.path.realpath(p) if realpath else p
+
+    def recording_chown(path, uid, gid, *args, **kwargs):
+        calls.append((fmt(path), kwargs.get("follow_symlinks", True)))
+        return real_chown(path, uid, gid, *args, **kwargs)
+
+    def recording_fchown(fd, uid, gid):
+        calls.append((fmt(os.readlink(f"/proc/self/fd/{fd}")), False))
+        return real_fchown(fd, uid, gid)
+
+    monkeypatch.setattr(os, "chown", recording_chown)
+    monkeypatch.setattr(os, "fchown", recording_fchown)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # _chown_r — the function that had the real bug
 # ─────────────────────────────────────────────────────────────────────────────
@@ -134,16 +160,11 @@ def test_chown_r_never_follows_symlinks(tmp_path, monkeypatch):
     (d / "evil").symlink_to(outside_target)
 
     calls = []
-    real_chown = os.chown
-
-    def recording_chown(path, uid, gid, *args, **kwargs):
-        calls.append((path, kwargs.get("follow_symlinks", True)))
-        return real_chown(path, uid, gid, *args, **kwargs)
-
-    monkeypatch.setattr(os, "chown", recording_chown)
+    _record_chowns(monkeypatch, calls)
     e._chown_r(str(d), os.getuid(), os.getgid())
 
     assert calls, "no chown calls recorded"
+    assert str(outside_target) not in [p for p, _ in calls], "chowned the link target"
     followed = [p for p, follow in calls if follow]
     assert not followed, f"these chowns would follow a symlink: {followed}"
 
@@ -158,16 +179,10 @@ def test_chown_r_does_not_descend_into_symlinked_directories(tmp_path, monkeypat
     (d / "sneaky").symlink_to(outside)
 
     calls = []
-    real_chown = os.chown
-
-    def recording_chown(path, uid, gid, *args, **kwargs):
-        calls.append(os.path.realpath(path))
-        return real_chown(path, uid, gid, *args, **kwargs)
-
-    monkeypatch.setattr(os, "chown", recording_chown)
+    _record_chowns(monkeypatch, calls, realpath=True)
     e._chown_r(str(d), os.getuid(), os.getgid())
 
-    escaped = [p for p in calls if "SHOULD_NOT_BE_TOUCHED" in p]
+    escaped = [p for p, _ in calls if "SHOULD_NOT_BE_TOUCHED" in p]
     assert not escaped, f"walk descended through a symlink: {escaped}"
 
 
@@ -180,15 +195,10 @@ def test_chown_r_still_chowns_the_legitimate_tree(tmp_path, monkeypatch):
     sub.mkdir()
     (sub / "a.auth").write_text("x")
 
-    seen = []
-    real_chown = os.chown
-
-    def recording_chown(path, uid, gid, *args, **kwargs):
-        seen.append(os.path.basename(path))
-        return real_chown(path, uid, gid, *args, **kwargs)
-
-    monkeypatch.setattr(os, "chown", recording_chown)
+    calls = []
+    _record_chowns(monkeypatch, calls, basename=True)
     e._chown_r(str(d), os.getuid(), os.getgid())
+    seen = [p for p, _ in calls]
 
     assert "hs_ed25519_secret_key" in seen
     assert "authorized_clients" in seen
@@ -269,3 +279,23 @@ def test_prepare_hs_dir_chmods_then_chowns(tmp_path, monkeypatch):
 
     assert d.is_dir()
     assert order == [("chmod", str(d), 0o700), ("chown", str(d), 12345, 67890)]
+
+
+def test_chown_r_refuses_a_hardlinked_file(tmp_path, monkeypatch, capsys):
+    """A hardlink is the same inode as a file elsewhere, so chowning it chowns
+    that file too, and lchown does not help (there is no link to not-follow).
+    Run as root at boot over the key volume, that handed an outside file to the
+    tor uid. Refused, and said so."""
+    d = tmp_path / "hs"
+    d.mkdir()
+    outside = tmp_path / "outside-file"
+    outside.write_text("not the key volume's")
+    os.link(outside, d / "hs_ed25519_secret_key")
+    (d / "hostname").write_text("x.onion")
+    calls = []
+    _record_chowns(monkeypatch, calls, basename=True)
+    e._chown_r(str(d), os.getuid(), os.getgid())
+    seen = [p for p, _ in calls]
+    assert "outside-file" not in seen and "hs_ed25519_secret_key" not in seen
+    assert "hostname" in seen, "the rest of the directory is still handed over"
+    assert "2 hard links" in capsys.readouterr().out

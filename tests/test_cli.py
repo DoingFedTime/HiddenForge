@@ -1463,3 +1463,23 @@ def test_show_does_not_hang_on_a_fifo_planted_as_the_hostname(hf, tmp_path, caps
                      daemon=True).start()
     assert done.wait(5), "show blocked on a FIFO"
     capsys.readouterr()
+
+
+def test_setup_force_does_not_write_through_a_hardlinked_output(hf, tmp_path, capsys):
+    """O_NOFOLLOW never stopped a hardlink: `setup --force` over a deploy.sh
+    hard-linked to another file wrote the script into that file and made it
+    0755. Output is now a fresh O_EXCL temp renamed into place."""
+    out = tmp_path / "out"
+    out.mkdir()
+    precious = tmp_path / "precious"
+    precious.write_text("do not touch")
+    os.chmod(precious, 0o600)
+    os.link(precious, out / "deploy.sh")
+    assert hf.main(["setup", "--backend", "web:80", "-o", str(out), "--force",
+                    "--non-interactive", "--json"]) == 0
+    capsys.readouterr()
+    assert precious.read_text() == "do not touch"
+    assert stat.S_IMODE(os.stat(precious).st_mode) == 0o600
+    assert (out / "deploy.sh").read_text().startswith("#!/usr/bin/env bash")
+    assert os.stat(out / "deploy.sh").st_nlink == 1
+    assert not list(out.glob(".*.tmp")), "no temp file left behind"

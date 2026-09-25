@@ -27,11 +27,13 @@ from __future__ import annotations
 
 import argparse
 import base64
+import errno
 import hashlib
 import ipaddress
 import json
 import os
 import re
+import secrets
 import shlex
 import shutil
 import stat
@@ -280,21 +282,38 @@ def _read_nofollow(path: Path, max_bytes: int = 8192) -> bytes:
 
 
 def _write_text_nofollow(path: Path, text: str, mode: int = 0o644) -> None:
-    """Write text through an O_NOFOLLOW descriptor, setting the mode on that fd.
+    """Write a file without ever opening an inode that already exists.
 
-    Path.write_text() follows a final-component symlink, so a symlink planted at
-    an output path (setup's fragment or deploy script, sbom's JSON) would have
-    its target truncated. O_NOFOLLOW refuses instead, and fchmod on a dup of the
-    same fd sets the mode with no path-based TOCTOU window.
+    The file is written to a fresh temp created with O_EXCL beside it and renamed
+    over the target, so nothing that sits at the path is written through: not a
+    symlink (whose target used to be truncated before O_NOFOLLOW was added), and
+    not a HARDLINK, which O_NOFOLLOW never stopped -- `setup --force` over a
+    `deploy.sh` hard-linked to another file wrote the script into that file and
+    made it 0755. A symlink, FIFO or directory at the path is still refused
+    outright rather than silently replaced: something planted there is worth
+    saying out loud. The mode is set with fchmod on the descriptor, so the umask
+    cannot narrow it.
     """
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, mode)
-    meta = os.dup(fd)
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        pass
+    else:
+        if not stat.S_ISREG(st.st_mode):
+            raise OSError(errno.EEXIST, f"refusing to replace {path}: it is not a "
+                                        "regular file")
+    tmp = path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(text)
-        os.fchmod(meta, mode)
-    finally:
-        os.close(meta)
+            fh.flush()
+            os.fchmod(fh.fileno(), mode)
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
 
 
 def read_pubkey(path: Path) -> bytes:
@@ -1951,6 +1970,7 @@ def _check_archive_members(tar, members, accept_envelope: bool) -> None:
     and with --force that moved the real key aside and installed the empty one.
     """
     has_identity = False
+    seen_files: set[tuple[str, ...]] = set()
     for m in members:
         if not (m.isfile() or m.isdir()):
             raise ValueError(f"refusing unsafe archive member {m.name!r}")
@@ -1964,6 +1984,13 @@ def _check_archive_members(tar, members, accept_envelope: bool) -> None:
                 f"({bad[0]!r}) in its name: {m.name!r}")
         if m.isfile() and not name.parts:
             raise ValueError(f"refusing archive member with an empty name {m.name!r}")
+        if m.isfile():
+            # tar allows a name twice (the last one wins on extraction); for key
+            # material that is an ambiguity, not a feature, and it would collide
+            # with the O_EXCL write below.
+            if name.parts in seen_files:
+                raise ValueError(f"refusing archive with a duplicate member {m.name!r}")
+            seen_files.add(name.parts)
         # Either a plaintext key, or (for a whole-volume restore) the envelope
         # `encrypt-key` leaves behind: a volume whose keys were encrypted with
         # --delete-plaintext has no SECRET_FILE in it, and refusing to restore
@@ -2009,7 +2036,11 @@ def _extract_files(tar, members, root_fd: int, dir_fds: dict) -> None:
             continue
         parts = Path(m.name).parts
         parent_fd = _dir_fd_under(root_fd, parts[:-1], dir_fds)
-        fd = os.open(parts[-1], os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW,
+        # O_EXCL: by now every target is known to be absent (the conflict scan
+        # refused or moved each existing one aside), so anything found at the
+        # name was planted since -- and O_TRUNC would write key material through
+        # it if it were a hardlink to a file outside the volume.
+        fd = os.open(parts[-1], os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
                      0o600, dir_fd=parent_fd)
         with os.fdopen(fd, "wb") as fh:
             os.fchmod(fh.fileno(), 0o600)

@@ -69,6 +69,15 @@ against the code, and scanning the whole history before anything is published.
   arriving with that name linked to `hs_ed25519_secret_key` had the key
   overwritten with the address and made world-readable, as root. The temp file
   now has a random name and is created with `O_EXCL`, so it is always a new inode.
+- **Three more writes that could land on an inode that was not theirs**, found
+  by a third review pass hunting the same class. Startup's recursive chown
+  followed a hardlinked file out of the service directory (it now chowns through
+  a descriptor and refuses any file with more than one link; exploitable only
+  where `fs.protected_hardlinks` is off). `setup --force` wrote through a
+  hardlinked output file (output is now a fresh `O_EXCL` temp renamed into
+  place). And `restore`/`decrypt-key` extraction could write through a hardlink
+  planted after the conflict scan (the write is now `O_EXCL`; duplicate archive
+  members are refused).
 - **A FIFO or an endless file in the key volume could stop or kill the
   supervisor.** Its once-a-second reads of `hostname` and `<name>.onion` blocked
   for ever on a FIFO (a dead Tor then went unnoticed) and read a link to

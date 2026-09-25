@@ -954,3 +954,48 @@ def test_a_member_named_like_a_key_that_is_not_one_is_refused(hf, tmp_path, caps
     assert rc != 0, why
     assert "named like a Tor secret key" in doc["error"]
     assert not (keys / "app").exists()
+
+
+def test_extraction_never_writes_through_a_hardlink_planted_after_the_scan(hf, tmp_path):
+    """Between the conflict scan and the write, a hardlink planted at a target
+    name would have had key material written THROUGH it (O_TRUNC) into the
+    file it links to, outside the volume. Every target is known to be absent at
+    that point, so the write is O_EXCL and refuses instead."""
+    import io
+    import tarfile
+    outside = tmp_path / "outside"
+    outside.write_bytes(b"outside the volume")
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        info = tarfile.TarInfo("app/hs_ed25519_secret_key")
+        info.size = len(_sk(0x53))
+        tar.addfile(info, io.BytesIO(_sk(0x53)))
+    buf.seek(0)
+    keys = tmp_path / "keys"
+    (keys / "app").mkdir(parents=True)
+    os.link(outside, keys / "app" / "hs_ed25519_secret_key")   # the planted link
+    root_fd = os.open(keys, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    dir_fds: dict = {}
+    try:
+        with tarfile.open(fileobj=buf, mode="r") as tar, pytest.raises(FileExistsError):
+            hf._extract_files(tar, tar.getmembers(), root_fd, dir_fds)
+    finally:
+        hf._close_dir_fds(dir_fds)
+        os.close(root_fd)
+    assert outside.read_bytes() == b"outside the volume"
+
+
+def test_restore_refuses_a_duplicate_member(hf, tmp_path, capsys):
+    def build(tar, io):
+        for fill in (0x41, 0x42):
+            info = tar.tarinfo("app/hs_ed25519_secret_key")
+            info.size = len(_sk(fill))
+            tar.addfile(info, io.BytesIO(_sk(fill)))
+
+    blob, pp = _sealed(hf, tmp_path, build)
+    dest = tmp_path / "dest"
+    rc = hf.main(["restore", "--keys", str(dest), "--input", str(blob), "--tool", "gpg",
+                  "--passphrase-file", str(pp), "--json"])
+    assert rc != 0
+    assert "duplicate member" in json.loads(capsys.readouterr().out)["error"]
+    assert not dest.exists() or not any(dest.iterdir())

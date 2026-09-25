@@ -111,7 +111,42 @@ def _chown_r(path, uid, gid):
     os.chown(path, uid, gid, follow_symlinks=False)
     for root, dirs, files in os.walk(path, followlinks=False):
         for name in dirs + files:
-            os.chown(os.path.join(root, name), uid, gid, follow_symlinks=False)
+            _chown_one(os.path.join(root, name), uid, gid)
+
+
+def _chown_one(path, uid, gid):
+    """chown one entry of the key volume without reaching any other inode.
+
+    A symlink is lchown'ed (its own inode, never its target). Anything else is
+    opened O_NOFOLLOW|O_NONBLOCK and chowned through that descriptor, after
+    checking the descriptor's link count: a HARDLINK is the same inode as a file
+    somewhere else, so chowning it chowns that file too -- and lchown does not
+    help, because there is no link to not-follow. Tor never hard-links its own
+    files, so a regular file with more than one link is refused, loudly, and left
+    alone. Checking and chowning through one descriptor leaves no window to swap
+    the file between the two. Device nodes are refused before any open: opening
+    one can have side effects, and a key volume has no business holding one.
+    """
+    st = os.lstat(path)
+    if stat.S_ISLNK(st.st_mode):
+        os.chown(path, uid, gid, follow_symlinks=False)
+        return
+    if stat.S_ISCHR(st.st_mode) or stat.S_ISBLK(st.st_mode):
+        print(f"Warning: not taking ownership of device node {_safe(path)} in the "
+              "key volume; it does not belong there.")
+        return
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISDIR(st.st_mode) and st.st_nlink > 1:
+            print(f"Warning: not taking ownership of {_safe(path)}: it has "
+                  f"{st.st_nlink} hard links, so it is also a file outside this "
+                  "directory. Tor never hard-links its key files; remove the "
+                  "extra links.")
+            return
+        os.fchown(fd, uid, gid)
+    finally:
+        os.close(fd)
 
 
 def _open_dir_nofollow(path):

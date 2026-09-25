@@ -355,6 +355,33 @@ MUTATIONS = [
         "    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)",
         "tests/test_cli.py -k fifo",
     ),
+    (
+        "_chown_r chowns a hardlinked file (and so the file it links to) again",
+        "entrypoint.py",
+        "        if not stat.S_ISDIR(st.st_mode) and st.st_nlink > 1:",
+        "        if False:",
+        "tests/test_privileged_fs.py -k hardlinked",
+    ),
+    (
+        "setup writes through whatever inode sits at the output path again",
+        "scripts/hiddenforge",
+        "    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)\n"
+        "    try:\n        with os.fdopen(fd, \"w\", encoding=\"utf-8\") as fh:\n"
+        "            fh.write(text)\n            fh.flush()\n"
+        "            os.fchmod(fh.fileno(), mode)\n        os.replace(tmp, path)",
+        "    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, mode)\n"
+        "    try:\n        with os.fdopen(fd, \"w\", encoding=\"utf-8\") as fh:\n"
+        "            fh.write(text)\n            fh.flush()\n"
+        "            os.fchmod(fh.fileno(), mode)",
+        "tests/test_cli.py -k hardlinked_output",
+    ),
+    (
+        "extraction writes key material through a hardlink planted after the scan",
+        "scripts/hiddenforge",
+        "        fd = os.open(parts[-1], os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,",
+        "        fd = os.open(parts[-1], os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW,",
+        "tests/test_backup.py -k planted_after_the_scan",
+    ),
 ]
 
 
