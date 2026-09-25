@@ -206,6 +206,10 @@ jobs:
     runs-on: docker
     steps:
       - uses: https://github.com/actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # Full history, for gitleaks: a secret in any past commit is public
+          # for as long as the repository is.
+          fetch-depth: 0
 
       - name: Build the image to scan
         run: |
@@ -245,8 +249,14 @@ jobs:
             --exclude-rule=dockerfile.security.missing-user-entrypoint.missing-user-entrypoint \
             --error --quiet /src
 
-      - name: gitleaks
+      - name: gitleaks (every commit, then the working tree)
         run: |
+          # --no-git alone scans only the checked-out files, so a secret that
+          # was committed and later deleted would pass. The history scan is the
+          # one that matters for a public repository; the tree scan also covers
+          # anything the build left untracked.
+          docker run --rm -v "$PWD:/src" zricethezav/gitleaks@sha256:cdbb7c955abce02001a9f6c9f602fb195b7fadc1e812065883f695d1eeaba854 detect \
+            --redact --config /src/.gitleaks.toml --source /src --log-opts="--all"
           docker run --rm -v "$PWD:/src" zricethezav/gitleaks@sha256:cdbb7c955abce02001a9f6c9f602fb195b7fadc1e812065883f695d1eeaba854 detect \
             --no-git --redact --config /src/.gitleaks.toml --source /src
 
