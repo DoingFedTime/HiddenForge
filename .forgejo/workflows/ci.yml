@@ -72,7 +72,7 @@ jobs:
           python3 -m py_compile scripts/hiddenforge
       - name: lint + type toolchain
         run: |
-          python3 -m venv /tmp/hf-lint
+          python3 -m venv --clear /tmp/hf-lint
           # pytest and hypothesis are REQUIRED, not optional: typecheck.sh
           # checks tests/ as well as the sources (that is the point of it), and
           # without them mypy reports 12 import-not-found errors and the job
@@ -100,7 +100,7 @@ jobs:
       - uses: https://github.com/actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: host unit + property tests (coverage floor enforced)
         run: |
-          python3 -m venv /tmp/hf-unit
+          python3 -m venv --clear /tmp/hf-unit
           /tmp/hf-unit/bin/pip install --quiet --require-hashes \
             -r requirements-ci.txt
           /tmp/hf-unit/bin/python -m pytest -q --cov=entrypoint \
@@ -110,11 +110,40 @@ jobs:
       - name: manifest.json must match the code
         run: python3 scripts/check_manifest.py
 
-      - name: mutation spot-check (curated, security-critical)
-        # mutmut's full run is unreliable under this pytest config (see the
-        # script's docstring); this proves the suite kills a wrong answer in
-        # key handling, validation and the hardening directives.
+      - name: mutation spot-check (scripts/hiddenforge, which mutmut cannot reach)
+        # mutmut only generates mutants for files ending in .py, and the operator
+        # CLI is an extensionless script. This proves the suite kills a wrong
+        # answer in its backup, restore and image-reference handling. The three
+        # .py files get a full mutation run in the `mutation` job below.
         run: /tmp/hf-unit/bin/python scripts/mutation_spotcheck.py
+
+  mutation:
+    # The full run takes twenty minutes and more (the gate re-grades every
+    # timeout on its own), so it is not on the path of every
+    # push: it runs for a TAG (the release trigger) and on the daily schedule,
+    # which is where a regression has to be caught before it ships. Run it
+    # locally before asking for a review -- `mutmut run && python
+    # scripts/mutation_gate.py` -- rather than finding out at the tag.
+    #
+    # Its own venv: mutmut pulls in thirteen packages nothing else needs (libcst,
+    # textual, rich, pygments, ...), and widening the toolchain that lints and
+    # tests the code for the benefit of one job is the wrong trade.
+    if: >-
+      github.event_name == 'schedule' ||
+      startsWith(github.ref, 'refs/tags/v')
+    runs-on: docker
+    steps:
+      - uses: https://github.com/actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: every surviving mutant must be explained
+        run: |
+          python3 -m venv --clear /tmp/hf-mutation
+          /tmp/hf-mutation/bin/pip install --quiet --require-hashes \
+            -r requirements-mutation.txt
+          # The console script, NOT `python -m mutmut`: the module form re-imports
+          # mutmut.__main__ from inside the trampoline and dies on
+          # set_start_method. See review/MUTATION-2026-09-18.md.
+          /tmp/hf-mutation/bin/mutmut run --max-children 6
+          /tmp/hf-mutation/bin/python scripts/mutation_gate.py
 
   build-and-test:
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
@@ -145,18 +174,26 @@ jobs:
 
       - name: vanity generator smoke (result matches the prefix)
         run: |
-          mkdir -p /tmp/hf-keys && chmod 700 /tmp/hf-keys
-          docker run --rm -v /tmp/hf-keys:/keys sambent.dev/sam/hiddenforge:ci \
+          # A FRESH directory per run, not a fixed /tmp path. On a
+          # self-hosted runner /tmp survives between jobs, so the second run
+          # found the first run's key and `vanity` refused it -- correctly, a
+          # key IS the .onion address and there is no recovery -- and the job
+          # failed for a reason that had nothing to do with the commit. Passing
+          # --force instead would have hidden exactly the refusal worth having.
+          KEYS=$(mktemp -d)
+          chmod 700 "$KEYS"
+          trap 'find "$KEYS" -mindepth 1 -delete 2>/dev/null || :; rmdir "$KEYS" 2>/dev/null || :' EXIT
+          docker run --rm -v "$KEYS":/keys sambent.dev/sam/hiddenforge:ci \
             vanity --prefix a --name ci --out /keys --threads 2 \
             --uid "$(id -u)" --gid "$(id -g)" --json
-          grep -q '^a' /tmp/hf-keys/ci/hostname
+          grep -q '^a' "$KEYS/ci/hostname"
 
       - name: live acceptance suite (backend + emitted fragment + real .onion)
         env:
           HIDDENFORGE_E2E: "1"
           HIDDENFORGE_TEST_IMAGE: sambent.dev/sam/hiddenforge:ci
         run: |
-          python3 -m venv /tmp/hf-e2e
+          python3 -m venv --clear /tmp/hf-e2e
           /tmp/hf-e2e/bin/pip install --quiet --require-hashes \
             -r requirements-ci.txt
           /tmp/hf-e2e/bin/python -m pytest tests/test_e2e_live.py -v

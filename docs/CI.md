@@ -13,6 +13,7 @@ tests happen.
 |---|---|
 | `lint` | hadolint (threshold `warning`), `ruff`, `py_compile` incl. the extensionless CLI, and `mypy` over sources *and* tests |
 | `unit` | host unit + property tests with the coverage floor enforced; `manifest.json` is checked against the code (not just parsed) |
+| `mutation` | a full `mutmut run` over `entrypoint.py`, `healthcheck.py` and `vanity.py`, then `scripts/mutation_gate.py`: every mutant that survives must be explained in the gate's allowlist or the job fails. The gate also re-runs each mutant mutmut recorded as a `timeout` on its own, because that label is a wall-clock bound rather than a verdict and has been measured hiding live survivors; a mutant that really hangs must be named in `DOCUMENTED_HANGS`. Tag/schedule only -- the run takes twenty minutes and more, of which the timeout re-grade is the slow half. See `review/MUTATION-2026-09-18.md` |
 | `build-and-test` | `docker build`, the in-container torrc test, the CLI contract checks, a vanity smoke test, and the live acceptance suite (`HIDDENFORGE_E2E=1`) |
 | `security` | trivy (image + fs), semgrep (security-audit + dockerfile), gitleaks; runs on a daily schedule so an advisory published after the last commit is still caught. Accepted findings live in `.trivyignore`/`.gitleaks.toml` |
 | `reproducibility` | builds the same tree twice under the documented flags and fails if the OCI index digests differ |
@@ -36,7 +37,9 @@ Pushing a `v*` tag runs the whole workflow, including the live acceptance suite
 in `build-and-test`. **Do not publish an image until that run is green on
 the tagged commit** -- a tag whose CI never ran, or failed, must not become an
 image. The `reproducibility` and `security` jobs run on a tag too, so the released
-bits are reproducible and scanned at the moment they are tagged.
+bits are reproducible and scanned at the moment they are tagged. `mutation` runs
+on a tag for the same reason: a regression that the test suite would not have
+caught must not be discovered after the image is published.
 
 ## Running the same checks by hand
 
@@ -85,6 +88,7 @@ forgejo-runner exec -i -self-hosted -W .forgejo/workflows/ci.yml -j security -E 
 forgejo-runner exec -i -self-hosted -W .forgejo/workflows/ci.yml -j reproducibility -E push
 forgejo-runner exec -i -self-hosted -W .forgejo/workflows/ci.yml -j build-and-test -E push
 forgejo-runner exec -i -self-hosted -W .forgejo/workflows/ci.yml -j pin-freshness -E schedule
+forgejo-runner exec -i -self-hosted -W .forgejo/workflows/ci.yml -j mutation -E schedule
 ```
 
 **Known local limitation.** The `security` job's final "Upload security reports"

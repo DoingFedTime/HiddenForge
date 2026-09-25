@@ -4,7 +4,7 @@
 Distinguishes four states, so a consumer never publishes an address that does not
 exist yet:
 
-    process_up              we are running (always true if this executes)
+    process_up              a Tor process exists in this container
     tor_bootstrapped        the control socket reports bootstrap PROGRESS=100
     hidden_service_published every configured HiddenServiceDir has a valid hostname
     hidden_service_reachable Tor holds BUILT introduction circuits for the service
@@ -46,9 +46,59 @@ import sys
 CONTROL_SOCKET = "/var/lib/tor/control.sock"
 TORRC = "/etc/tor/torrc"
 VANGUARDS_BIN = "/opt/vanguards-venv/bin/vanguards"
+# argv[0] of the Tor daemon, as the entrypoint actually execs it:
+#     su-exec tor tor -f /etc/tor/torrc
+# so argv[0] is the bare name "tor", NOT an absolute path. Checked against a
+# running container rather than assumed -- an absolute-path match here would
+# have made `process_up` permanently false on a perfectly healthy service.
+TOR_ARGV0 = "tor"
+# Named so the process scan can be pointed at a fixture tree in a test. Every
+# other absolute path this module depends on was already a constant; this was the
+# one that made _vanguards_running untestable outside a container.
+PROC_ROOT = "/proc"
 
 ONION_RE = re.compile(r"^[a-z2-7]{56}\.onion$")
 HSDIR_RE = re.compile(r"^\s*HiddenServiceDir\s+(\S+)\s*$")
+
+
+def _each_cmdline():
+    """Yield every readable /proc/<pid>/cmdline as bytes.
+
+    Scans /proc rather than shelling out to pgrep, which is not in the image.
+    """
+    try:
+        entries = os.listdir(PROC_ROOT)
+    except OSError:
+        return
+    for pid in entries:
+        if not pid.isdigit():
+            continue
+        try:
+            with open(os.path.join(PROC_ROOT, pid, "cmdline"), "rb") as fh:
+                yield fh.read()
+        except OSError:
+            continue          # process exited mid-scan, or not ours to read
+
+
+def _tor_running():
+    """True if the Tor daemon itself is alive.
+
+    `process_up` used to be the literal constant True, documented as "we are
+    running (always true if this executes)". A field in a machine contract that
+    cannot ever be false is not a check -- it is something that looks like one,
+    and `manifest.json` advertises it to integrators beside fields that do mean
+    something. Measured: running the healthcheck in a container with no Tor at
+    all still reported `process_up: true`.
+
+    Matched on argv[0] alone, not on a substring of the whole command line:
+    Vanguards is invoked with `--control_socket /var/lib/tor/control.sock`, so
+    any looser test for "tor" finds the addon and calls it the daemon.
+    """
+    for cmdline in _each_cmdline():
+        argv0 = cmdline.split(b"\x00", 1)[0]
+        if argv0 and os.path.basename(argv0.decode("utf-8", "replace")) == TOR_ARGV0:
+            return True
+    return False
 
 
 def _vanguards_running():
@@ -65,20 +115,7 @@ def _vanguards_running():
     report it here. Scans /proc directly rather than shelling out to pgrep,
     which is not in the image.
     """
-    try:
-        entries = os.listdir("/proc")
-    except OSError:
-        return False
-    for pid in entries:
-        if not pid.isdigit():
-            continue
-        try:
-            with open(f"/proc/{pid}/cmdline", "rb") as fh:
-                if VANGUARDS_BIN.encode() in fh.read():
-                    return True
-        except OSError:
-            continue          # process exited mid-scan, or not ours to read
-    return False
+    return any(VANGUARDS_BIN.encode() in cmdline for cmdline in _each_cmdline())
 
 
 def _query():
@@ -264,7 +301,7 @@ def _intro_points(resp):
 def evaluate():
     """Return (rc, doc). rc 0 ready, 1 not ready, 2 cannot evaluate."""
     doc = {
-        "process_up": True,
+        "process_up": _tor_running(),
         "tor_bootstrapped": False,
         "circuit_established": False,
         "hidden_service_published": False,

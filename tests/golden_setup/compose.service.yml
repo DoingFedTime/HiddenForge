@@ -44,7 +44,7 @@ services:
     environment:
       BLOG_TOR_SERVICE_HOSTS: "80:web:80"
     volumes:
-      - ./tor-keys:/var/lib/tor/hidden_service
+      - "./tor-keys:/var/lib/tor/hidden_service"
     networks:
       - tor-internal
       - tor-external

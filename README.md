@@ -358,6 +358,23 @@ podman-compose -f podman-compose.yml exec tor su-exec tor cat /var/lib/tor/hidde
 The `podman-compose.yml` is otherwise identical to `docker-compose.yml`: same
 seccomp, read-only filesystem, tmpfs mounts, and Tor hardening.
 
+**What dropping `DAC_OVERRIDE` costs you, measured rather than predicted.** Tor
+writes `hostname` as `tor`, mode 0600, so the root supervisor cannot read it
+either — and reading it is how the `<name>.onion` file in your key volume gets
+written. Under Podman that file is therefore never created, and because the key
+directory belongs to a subuid inside the user namespace, the host cannot read it
+directly:
+
+```console
+$ hiddenforge show --keys ./tor-keys --json
+{"address": null, ...,"derived_matches": null, "onion": null}
+```
+
+That is the trade working as intended, not a fault: the address is still served,
+and the command above is the right way to read it. The container says so once in
+its log — which `logging: driver: none` discards — so it is written here too.
+Docker publishes `<name>.onion` normally, and `hiddenforge show` works there.
+
 **Verify your setup is actually rootless:**
 
 ```bash

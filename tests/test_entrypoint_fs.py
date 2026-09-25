@@ -41,6 +41,57 @@ def test_write_dropped_mappings_empty_is_noop_when_absent(tmp_path, monkeypatch)
     assert not path.exists()
 
 
+def test_write_dropped_mappings_says_how_many_it_recorded(tmp_path, monkeypatch, capsys):
+    """`hiddenforge status` reads the file, but the boot log is what an operator
+    reads first, and the count is the cue that there is a file to go and read."""
+    path = tmp_path / "dropped-mappings"
+    monkeypatch.setattr(e, "DROPPED_MAPPINGS", str(path))
+    e._write_dropped_mappings(["a: bad", "b: worse"], TorPw(os.getuid(), os.getgid()))
+    assert capsys.readouterr().out == f"Recorded 2 dropped mapping(s) in {path}\n"
+
+
+def test_write_dropped_mappings_is_0600_regardless_of_umask(tmp_path, monkeypatch):
+    """The mode passed to os.open is only a request -- the umask masks it -- so a
+    umask that leaves a bit set would leave this file readable by other uids in
+    the container. It lists which services were refused and why. The mode is set
+    explicitly on the descriptor for that reason, and this test only means
+    anything with a permissive umask in force."""
+    path = tmp_path / "dropped-mappings"
+    monkeypatch.setattr(e, "DROPPED_MAPPINGS", str(path))
+    old = os.umask(0o000)
+    try:
+        e._write_dropped_mappings(["a: bad"], TorPw(os.getuid(), os.getgid()))
+    finally:
+        os.umask(old)
+    assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+
+
+def test_write_dropped_mappings_refuses_a_symlinked_target(tmp_path, monkeypatch, capsys):
+    """/var/lib/tor is a tmpfs, but it is handed to the tor user immediately
+    afterwards and this file is written as root. A symlink planted at the path
+    must not become a root-owned write to wherever it points."""
+    outside = tmp_path / "outside"
+    outside.write_text("sensitive")
+    path = tmp_path / "dropped-mappings"
+    path.symlink_to(outside)
+    monkeypatch.setattr(e, "DROPPED_MAPPINGS", str(path))
+    e._write_dropped_mappings(["a: bad"], TorPw(os.getuid(), os.getgid()))
+    assert outside.read_text() == "sensitive"
+    assert f"Warning: could not write {path}" in capsys.readouterr().out
+
+
+def test_write_dropped_mappings_reports_a_failed_removal(tmp_path, monkeypatch, capsys):
+    """A stale file that cannot be removed will mislead `hiddenforge status` into
+    reporting last boot's failures as this boot's. Silence there is the worst
+    outcome; the directory case (EISDIR) stands in for any unlink failure."""
+    path = tmp_path / "dropped-mappings"
+    path.mkdir()
+    (path / "blocker").write_text("x")
+    monkeypatch.setattr(e, "DROPPED_MAPPINGS", str(path))
+    e._write_dropped_mappings([], TorPw(os.getuid(), os.getgid()))
+    assert f"Warning: could not remove {path}" in capsys.readouterr().out
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # _publish_addresses
 # ─────────────────────────────────────────────────────────────────────────────

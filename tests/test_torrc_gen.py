@@ -482,6 +482,161 @@ def test_collision_keeps_the_first_and_drops_the_second(monkeypatch):
     assert "HiddenServicePort 9000" not in torrc
 
 
+def test_a_collision_skips_only_that_var_not_the_rest_of_the_environment(monkeypatch):
+    """Skipping must be `continue`, not `break`.
+
+    Env vars are iterated in sorted order, so turning either skip into a `break`
+    silently drops every service whose name sorts after the offending one --
+    exactly the "one typo takes down the other onions" failure the collision
+    handling exists to prevent. Mutation testing survived both skips, because
+    every existing case put the bad service last, where a break looks identical.
+    Ordering here: MYAPP < MyApp (collides) < zzz (must survive).
+    """
+    _set_services(monkeypatch,
+                  MYAPP_TOR_SERVICE_HOSTS="80:127.0.0.1:8080",
+                  MyApp_TOR_SERVICE_HOSTS="9000:127.0.0.1:9000",
+                  zzz_TOR_SERVICE_HOSTS="443:127.0.0.1:8443")
+    torrc, dirs = e.build_torrc_string()
+    assert sorted(dirs) == ["/var/lib/tor/hidden_service/myapp",
+                            "/var/lib/tor/hidden_service/zzz"]
+    assert "HiddenServicePort 443 127.0.0.1:8443" in torrc
+
+
+def test_an_invalid_service_name_skips_only_that_var(monkeypatch):
+    """Same `continue` vs `break` property on the name-validation skip.
+
+    `_X_TOR_SERVICE_HOSTS` derives the name "-x", which is refused for its leading
+    hyphen; "_" sorts before "z", so a `break` there would lose the valid service.
+    """
+    monkeypatch.setenv("_X_TOR_SERVICE_HOSTS", "80:127.0.0.1:8080")
+    monkeypatch.setenv("zzz_TOR_SERVICE_HOSTS", "443:127.0.0.1:8443")
+    torrc, dirs = e.build_torrc_string()
+    assert dirs == ["/var/lib/tor/hidden_service/zzz"]
+    assert "HiddenServicePort 443 127.0.0.1:8443" in torrc
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# The "nothing configured" warning
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_an_empty_environment_says_so(monkeypatch, capsys):
+    """A container that starts Tor with no hidden services at all is almost
+    always a compose file with a misspelled variable name. It boots -- taking it
+    down would be worse -- but it must not do so quietly."""
+    e.build_torrc_string()
+    assert capsys.readouterr().out == (
+        "Warning: no *_TOR_SERVICE_HOSTS env vars found — "
+        "Tor will start but no hidden services will be configured.\n")
+
+
+def test_a_configured_service_does_not_trigger_the_warning(monkeypatch, capsys):
+    """The inverse matters as much: a false 'nothing configured' on a healthy
+    container trains the operator to ignore the one case that is real."""
+    _set_services(monkeypatch, SERVICE_TOR_SERVICE_HOSTS="80:127.0.0.1:8080")
+    e.build_torrc_string()
+    assert "no *_TOR_SERVICE_HOSTS env vars found" not in capsys.readouterr().out
+
+
+def test_a_service_that_was_entirely_dropped_still_counts_as_nothing_configured(
+        monkeypatch, capsys):
+    """The variable was set, but no service survived it, so Tor really is
+    starting with no onions. Say so."""
+    _set_services(monkeypatch, BAD_TOR_SERVICE_HOSTS="99999:127.0.0.1:8080")
+    _torrc, dirs = e.build_torrc_string()
+    assert dirs == []
+    assert "no *_TOR_SERVICE_HOSTS env vars found" in capsys.readouterr().out
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Every refusal names what it refused
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_a_dropped_service_names_the_variable_the_name_and_the_value(monkeypatch, capsys):
+    """These messages are the only diagnostic an operator gets: the shipped
+    compose file sets `logging: driver: none`, so the container's stdout is all
+    there is, and `hiddenforge status` reads the dropped-mappings file. A reason
+    that does not say WHICH variable and WHICH value is not a diagnostic."""
+    _set_services(monkeypatch, BAD_TOR_SERVICE_HOSTS="99999:127.0.0.1:8080")
+    dropped = []
+    e.build_torrc_string(dropped=dropped)
+    reason = "\n".join(dropped)
+    assert reason == ("BAD_TOR_SERVICE_HOSTS: invalid mapping '99999:127.0.0.1:8080': "
+                      "Port 99999 out of range in 99999:127.0.0.1:8080\n"
+                      "BAD_TOR_SERVICE_HOSTS: no valid port mappings; service dropped")
+    assert capsys.readouterr().out == (
+        "Configuring hidden service: bad\n"
+        "Service hosts: 99999:127.0.0.1:8080\n"
+        "Skipping invalid mapping '99999:127.0.0.1:8080': "
+        "Port 99999 out of range in 99999:127.0.0.1:8080\n"
+        "ERROR: service 'bad' has no valid port mappings "
+        "(from BAD_TOR_SERVICE_HOSTS='99999:127.0.0.1:8080') — skipping it. Tor cannot "
+        "start a hidden service with no ports, so emitting it would "
+        "take down every other service too. Fix this mapping.\n"
+        "Warning: no *_TOR_SERVICE_HOSTS env vars found — "
+        "Tor will start but no hidden services will be configured.\n")
+
+
+def test_a_malformed_mapping_names_the_mapping_that_was_malformed(monkeypatch, capsys):
+    _set_services(monkeypatch, SVC_TOR_SERVICE_HOSTS="80:127.0.0.1:8080,1:2:3:4")
+    dropped = []
+    e.build_torrc_string(dropped=dropped)
+    reason = "\n".join(dropped)
+    assert "SVC_TOR_SERVICE_HOSTS: malformed mapping '1:2:3:4'" in reason
+    assert "Skipping malformed mapping: '1:2:3:4'" in capsys.readouterr().out
+
+
+def test_an_invalid_port_names_the_port_and_the_mapping(monkeypatch, capsys):
+    _set_services(monkeypatch, SVC_TOR_SERVICE_HOSTS="80:127.0.0.1:99999")
+    dropped = []
+    e.build_torrc_string(dropped=dropped)
+    reason = "\n".join(dropped)
+    assert "99999" in reason
+    assert "80:127.0.0.1:99999" in reason
+    assert "99999" in capsys.readouterr().out
+
+
+def test_an_unresolvable_host_names_the_host_and_the_mapping(monkeypatch, mock_dns, capsys):
+    _set_services(monkeypatch, SVC_TOR_SERVICE_HOSTS="80:nosuchhost:8080")
+    dropped = []
+    e.build_torrc_string(dropped=dropped)
+    reason = "\n".join(dropped)
+    assert reason == (
+        "SVC_TOR_SERVICE_HOSTS: invalid mapping '80:nosuchhost:8080': "
+        "Cannot resolve 'nosuchhost' in 80:nosuchhost:8080: "
+        "[Errno -2] Name or service not known. "
+        "Is the backend container running and on the same network?\n"
+        "SVC_TOR_SERVICE_HOSTS: no valid port mappings; service dropped")
+
+
+def test_a_collision_names_both_variables(monkeypatch, capsys):
+    """"Rename one" is only actionable if the message says which two collided."""
+    _set_services(monkeypatch,
+                  MYAPP_TOR_SERVICE_HOSTS="80:127.0.0.1:8080",
+                  myapp_TOR_SERVICE_HOSTS="9000:127.0.0.1:9000")
+    dropped = []
+    e.build_torrc_string(dropped=dropped)
+    reason = "\n".join(dropped)
+    assert reason == ("myapp_TOR_SERVICE_HOSTS: service name 'myapp' collides with "
+                      "MYAPP_TOR_SERVICE_HOSTS")
+    assert ("ERROR: myapp_TOR_SERVICE_HOSTS maps to service 'myapp', which is "
+            "already defined by MYAPP_TOR_SERVICE_HOSTS — skipping it. "
+            "Service names are lowercased and underscores become hyphens, so "
+            "names that differ only in case or in _ vs - collide. Rename one."
+            ) in capsys.readouterr().out
+
+
+def test_an_invalid_service_name_names_the_variable_and_the_rule(monkeypatch, capsys):
+    monkeypatch.setenv("_X_TOR_SERVICE_HOSTS", "80:127.0.0.1:8080")
+    dropped = []
+    e.build_torrc_string(dropped=dropped)
+    reason = "\n".join(dropped)
+    assert reason == ("_X_TOR_SERVICE_HOSTS: invalid service name: "
+                      "Invalid service name '-x': only lowercase alphanumeric "
+                      "and hyphens allowed, max 63 chars")
+    assert ("Skipping invalid service name from _X_TOR_SERVICE_HOSTS: "
+            "Invalid service name '-x'") in capsys.readouterr().out
+
+
 def test_distinct_names_are_unaffected(monkeypatch):
     """Guard against 'fixing' collisions by dropping legitimate second services."""
     _set_services(monkeypatch,
@@ -491,3 +646,58 @@ def test_distinct_names_are_unaffected(monkeypatch):
     assert torrc.count("HiddenServiceDir") == 2
     assert sorted(dirs) == ["/var/lib/tor/hidden_service/api",
                             "/var/lib/tor/hidden_service/web"]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Every refusal names the mapping it came from
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Each validator is handed the whole mapping as its `label`, so its message can
+# say which of a service's mappings was wrong. That label is the second
+# occurrence of the mapping text in every reason below; without it the message
+# degrades to "Port 99999 out of range in None", which for a service with twenty
+# mappings tells an operator nothing they did not already know.
+
+def test_a_colon_less_mapping_is_named(monkeypatch, capsys):
+    _set_services(monkeypatch, SVC_TOR_SERVICE_HOSTS="80:127.0.0.1:8080, 8080 ")
+    dropped = []
+    e.build_torrc_string(dropped=dropped)
+    assert "SVC_TOR_SERVICE_HOSTS: malformed mapping '8080'" in "\n".join(dropped)
+
+
+def test_a_bad_target_host_names_its_mapping_twice(monkeypatch, capsys):
+    _set_services(monkeypatch, SVC_TOR_SERVICE_HOSTS="80:back end:8080")
+    dropped = []
+    e.build_torrc_string(dropped=dropped)
+    reason = "\n".join(dropped)
+    assert "Invalid hostname 'back end' in 80:back end:8080" in reason
+    assert reason.count("80:back end:8080") == 2
+
+
+def test_a_bad_target_port_names_its_mapping_twice(monkeypatch, capsys):
+    _set_services(monkeypatch, SVC_TOR_SERVICE_HOSTS="80:127.0.0.1:abc")
+    dropped = []
+    e.build_torrc_string(dropped=dropped)
+    reason = "\n".join(dropped)
+    assert "Invalid port 'abc' in 80:127.0.0.1:abc" in reason
+    assert reason.count("80:127.0.0.1:abc") == 2
+
+
+def test_a_bad_onion_port_in_the_two_part_form_names_its_mapping_twice(
+        monkeypatch, capsys):
+    _set_services(monkeypatch, SVC_TOR_SERVICE_HOSTS="abc:8080")
+    dropped = []
+    e.build_torrc_string(dropped=dropped)
+    reason = "\n".join(dropped)
+    assert "Invalid port 'abc' in abc:8080" in reason
+    assert reason.count("abc:8080") == 2
+
+
+def test_a_bad_target_port_in_the_two_part_form_names_its_mapping_twice(
+        monkeypatch, capsys):
+    _set_services(monkeypatch, SVC_TOR_SERVICE_HOSTS="80:abc")
+    dropped = []
+    e.build_torrc_string(dropped=dropped)
+    reason = "\n".join(dropped)
+    assert "Invalid port 'abc' in 80:abc" in reason
+    assert reason.count("80:abc") == 2

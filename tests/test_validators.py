@@ -184,3 +184,115 @@ def test_resolve_valid_ip_passthrough(mock_dns, good_ip):
 
 def test_resolve_whitespace_stripped(mock_dns):
     assert e.resolve_to_ip(" 10.0.0.5 ", "label") == "10.0.0.5"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# What the refusals say
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Every one of these raises a ValueError whose message is built with _safe(), and
+# `raise ValueError(None)` passes any test that only checks the exception type --
+# which is all the suite did, so mutation testing survived stripping the message
+# from every validator. Two things are actually being asserted here:
+#
+#   1. The message names the value that was refused. The shipped compose file
+#      sets `logging: driver: none`, and a container that refuses a mapping
+#      without saying which one leaves the operator with a silent onion.
+#   2. The value is control-character ESCAPED on its way into that message.
+#      These values come from the environment and land in a log an operator may
+#      later read with the json-file driver enabled; a raw ANSI escape or bare
+#      newline in there forges log lines. That escaping is the whole reason
+#      _safe() exists, and it is only exercised at these call sites.
+
+def test_a_refused_service_name_is_quoted_back_escaped():
+    with pytest.raises(ValueError) as exc:
+        e.validate_service_name("web\nORPort 9001")
+    message = str(exc.value)
+    assert message == (
+        "Invalid service name 'web\\x0aORPort 9001': only lowercase alphanumeric "
+        "and hyphens allowed, max 63 chars")
+    assert "\n" not in message
+
+
+def test_a_refused_port_names_the_value_and_the_label_escaped():
+    with pytest.raises(ValueError) as exc:
+        e.validate_port("80\x1b[31m", "80\x1b[31m:127.0.0.1:8080")
+    message = str(exc.value)
+    assert message.count("\\x1b[31m") == 2, "both the value and its label are escaped"
+    assert "\x1b" not in message
+
+
+def test_an_out_of_range_port_names_the_port_and_the_label():
+    """A separate message from the shape refusal: "65536 out of range" and
+    "'8 0' is not a port" are different mistakes with different fixes."""
+    with pytest.raises(ValueError) as exc:
+        e.validate_port("65536", "65536:127.0.0.1:8080")
+    message = str(exc.value)
+    assert "65536" in message
+    assert "out of range" in message
+    assert "65536:127.0.0.1:8080" in message
+
+
+def test_a_refused_hostname_names_the_value_and_the_label_escaped():
+    with pytest.raises(ValueError) as exc:
+        e.validate_hostname("host\nX", "80:host\nX:8080")
+    message = str(exc.value)
+    assert message.count("\\x0a") == 2
+    assert "\n" not in message
+
+
+def test_hostname_accepts_uppercase():
+    """DNS labels are case-insensitive and Docker/Compose service names are
+    matched case-insensitively too. Narrowing the class to lowercase would
+    refuse a legitimate backend and drop the mapping."""
+    assert e.validate_hostname("Backend", "label") == "Backend"
+    assert e.validate_hostname("API.Example.COM", "label") == "API.Example.COM"
+
+
+def test_a_refused_dotted_quad_names_the_address_and_the_label(mock_dns):
+    with pytest.raises(ValueError) as exc:
+        e.resolve_to_ip("999.999.999.999", "80:999.999.999.999:8080")
+    message = str(exc.value)
+    assert "Invalid IPv4 address '999.999.999.999'" in message
+    assert "80:999.999.999.999:8080" in message
+
+
+def test_an_unresolvable_host_says_what_to_check(mock_dns):
+    """The overwhelmingly common cause is a backend that is not up yet or not on
+    the same network. The message is the only place that is said."""
+    with pytest.raises(ValueError) as exc:
+        e.resolve_to_ip("nosuchhost", "80:nosuchhost:8080")
+    message = str(exc.value)
+    assert message == (
+        "Cannot resolve 'nosuchhost' in 80:nosuchhost:8080: "
+        "[Errno -2] Name or service not known. "
+        "Is the backend container running and on the same network?")
+
+
+def test_an_escaping_hostname_cannot_forge_a_log_line(mock_dns):
+    """Whatever the resolver failure text contains, the host it was asked about
+    came from the environment."""
+    with pytest.raises(ValueError) as exc:
+        e.resolve_to_ip("evil\x1b[2Khost", "label")
+    assert "\x1b" not in str(exc.value)
+    assert "\\x1b[2Khost" in str(exc.value)
+
+
+def test_a_resolver_answer_that_is_not_an_ipv4_address_is_named(monkeypatch):
+    """This is the one value reaching the torrc that the module did not build or
+    validate itself, so the refusal has to be specific about what came back."""
+    monkeypatch.setattr(e.socket, "gethostbyname", lambda host: "not-an-ip")
+    with pytest.raises(ValueError) as exc:
+        e.resolve_to_ip("backend", "80:backend:8080")
+    assert str(exc.value) == (
+        "Resolver returned a non-IPv4 value 'not-an-ip' for 'backend' "
+        "in 80:backend:8080 — refusing to write it to the torrc")
+
+
+def test_a_successful_resolution_is_announced_with_both_ends(mock_dns, capsys):
+    """An operator reading the boot log needs to see which name became which
+    address; that is the only record of what the torrc was built from."""
+    e.resolve_to_ip("backend", "label")
+    out = capsys.readouterr().out
+    assert "Resolved 'backend'" in out
+    assert "192.0.2.1" in out

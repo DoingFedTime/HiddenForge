@@ -106,6 +106,7 @@ hiddenforge show --keys ./tor-keys --name myapp --json
  "onion":"abcdefghijklmnopqrstuvwxyz234567abcdefghijklmnopqrstuv.onion",
  "public_key_path":"./tor-keys/myapp/hs_ed25519_public_key",
  "source":"published",
+ "derived_matches":true,
  "ok":true,"exit_code":0}
 ```
 
@@ -283,8 +284,17 @@ over that digest. ML-DSA (post-quantum) is also checked when `pqsign` is
 installed; if not, it is reported as `null` (optional) rather than a failure. A
 present-but-invalid signature is a failure. `--skip-registry` verifies the
 signatures alone. Result fields: `registry_digest`, `signed_digest`,
-`digest_match`, `ssh_fido2`, `mldsa`, `failures`. Exit `0` verified, `1` not
-verified, `2` bad arguments.
+`digest_match`, `ssh_fido2`, `mldsa`, `failures`, `unchecked`, `complete`. Exit
+`0` verified, `1` not verified, `2` bad arguments.
+
+**Gate on `ok and complete`, not on `ok` alone.** `ok` means nothing that ran
+failed; `complete` means nothing was left unrun. They differ exactly when a
+declared check could not be performed -- most often `pqsign` missing on the
+runner, which leaves the post-quantum half of the hybrid signature unverified
+and lists it in `unchecked`. A gate keying on `ok` alone accepts that image,
+which is signature-stripping arriving through the verifier's reporting rather
+than through the signature. An unreachable registry is not in this category: it
+is a hard failure and shows up in `failures`.
 
 ```bash
 hiddenforge sbom --image sambent.dev/sam/hiddenforge:latest --out hf.spdx.json --json
@@ -359,6 +369,13 @@ print(addr["onion"], addr["key_path"])
 
 ## 9. Troubleshooting
 
+- **`show --json` reports `derived_matches: false`** — the `hostname` file and the
+  public key in that directory describe different addresses, so the key set is
+  inconsistent (a partial restore, or files from two services in one directory).
+  Tor rewrites `hostname` from the key when it starts, so it will serve the
+  DERIVED address, not the one reported. Do not publish this address; restore the
+  whole directory from one backup. `null` means the comparison could not be made
+  (no readable public key), which is not the same as agreement.
 - **`show --json` exits 4 / `onion: null`** — the key is not generated yet. Poll
   `status --json` until `ready`. First boot can take 60–120 s.
 - **`status` says `container not found`** — pass `--container <your-compose-service>`;

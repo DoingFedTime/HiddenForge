@@ -61,6 +61,21 @@ TAG_LEN = 32
 PUBKEY_LEN = 32
 SECRET_LEN = 64
 
+
+class KeyRaceError(FileExistsError):
+    """A key set appeared at the destination while the search was running.
+
+    Distinct from the ordinary "it already exists, pass --force" refusal, and it
+    has its own exit code (3) in the contract this module and the host CLI share:
+    2 means the operator asked for something impossible, 3 means something else
+    wrote to the key volume underneath us and nothing was clobbered. Telling an
+    automated caller that a race was a usage error sends it to the wrong remedy.
+
+    It subclasses FileExistsError so any caller that only knows the old shape
+    still catches it.
+    """
+
+
 B32_ALPHABET = set("abcdefghijklmnopqrstuvwxyz234567")  # RFC 4648 base32, lower
 ONION_RE = re.compile(r"^[a-z2-7]{56}\.onion$")
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9\-]{0,62}$")
@@ -282,7 +297,7 @@ def generate(prefix: str, name: str, out: Path, threads: int, force: bool,
         except OSError as exc:
             # Destination appeared between the pre-check and the rename.
             if target.exists():
-                raise FileExistsError(
+                raise KeyRaceError(
                     f"{target} appeared while the search was running; refusing to "
                     f"clobber it (exit 3)"
                 ) from exc
@@ -313,28 +328,47 @@ def _unique_archive_path(out: Path, name: str) -> Path:
 def _harden(keydir: Path, uid: int | None, gid: int | None) -> None:
     """0700 dir, 0600 secret/public, 0644 hostname; chown if requested.
 
-    Uses O_NOFOLLOW-free chmod on the directory we just created/renamed, and
-    lchown semantics via os.chown(follow_symlinks=False) so a symlink planted in
-    the output directory cannot redirect a privileged chown.
+    Every mode and owner is set on a DESCRIPTOR opened with ``O_NOFOLLOW``, never
+    on a path. The previous version tested ``p.is_symlink()`` and then called
+    ``os.chmod(p, ...)``, which re-resolves the name: between the two, a process
+    able to write into the operator-supplied output directory could replace a
+    regular file with a symlink and have this chmod land on its target. Linux has
+    no ``lchmod``, so holding the descriptor is the only way to close that, and it
+    is the same pattern entrypoint.py already uses for the key directories and the
+    torrc. ``os.chown`` does support ``follow_symlinks=False``, but doing it on
+    the descriptor keeps the mode and the owner referring to one inode.
+
+    A symlink is still refused rather than followed: the open fails with ELOOP and
+    the entry is left exactly as it was found. Tor has no use for a symlink inside
+    a HiddenServiceDir, so nothing legitimate is lost.
     """
-    if uid is not None or gid is not None:
-        u = uid if uid is not None else -1
-        g = gid if gid is not None else -1
-        os.chown(keydir, u, g, follow_symlinks=False)
-    for p in keydir.iterdir():
-        if p.is_symlink():
-            # Never follow anything unexpected that found its way in.
-            os.chown(p, uid if uid is not None else -1, gid if gid is not None else -1,
-                     follow_symlinks=False)
-            continue
-        if p.name == HOSTNAME_FILE:
-            os.chmod(p, 0o644)
-        else:
-            os.chmod(p, 0o600)
-        if uid is not None or gid is not None:
-            os.chown(p, uid if uid is not None else -1, gid if gid is not None else -1,
-                     follow_symlinks=False)
-    os.chmod(keydir, 0o700)
+    u = uid if uid is not None else -1
+    g = gid if gid is not None else -1
+    chown = uid is not None or gid is not None
+
+    dir_fd = os.open(keydir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        for name in sorted(os.listdir(dir_fd)):
+            try:
+                fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dir_fd)
+            except OSError:
+                # ELOOP: a symlink. Leave it alone entirely -- chowning it would
+                # still be safe, but a symlink here means the directory is not
+                # what we just wrote, and quietly tidying it would hide that.
+                continue
+            try:
+                os.fchmod(fd, 0o644 if name == HOSTNAME_FILE else 0o600)
+                if chown:
+                    os.fchown(fd, u, g)
+            finally:
+                os.close(fd)
+        # The directory last: 0700 closes it to everyone else, and doing it after
+        # the entries means we could still open them by name.
+        os.fchmod(dir_fd, 0o700)
+        if chown:
+            os.fchown(dir_fd, u, g)
+    finally:
+        os.close(dir_fd)
 
 
 # ---------------------------------------------------------------------------
@@ -431,6 +465,15 @@ def main(argv: list[str] | None = None) -> int:
     try:
         result = generate(args.prefix, args.name, Path(args.out), threads,
                           args.force, args.uid, args.gid)
+    except KeyRaceError as exc:
+        # Must precede the FileExistsError arm: KeyRaceError is a subclass, and
+        # the shared exit-code contract (manifest.json, `hiddenforge info`) gives
+        # a lost race its own code. Before this, a race exited 2 -- "usage,
+        # validation, or environment error" -- which tells an automated caller to
+        # fix its arguments when the correct response is to retry or investigate
+        # what else is writing to the key volume.
+        return _emit(3, args.json, {"error": str(exc), "name": args.name},
+                     f"error: {exc}")
     except FileExistsError as exc:
         return _emit(2, args.json, {"error": str(exc), "name": args.name},
                      f"error: {exc}")

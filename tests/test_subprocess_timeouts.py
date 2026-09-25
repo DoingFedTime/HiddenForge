@@ -7,11 +7,18 @@ oversight. This asserts the distinction is written down at the call site, so tha
 the presence of neither a timeout nor a comment becomes a reviewable signal.
 """
 import re
-from pathlib import Path
 
 import pytest
 
-REPO = Path(__file__).resolve().parent.parent
+from loader import repo_root
+
+# This is a source-TEXT audit, so it must read the real sources, never a copy of
+# the tree. mutmut runs the suite from `mutants/`, where entrypoint.py has been
+# rewritten into one function-per-mutant with the call sites' justifying comments
+# detached -- reading that copy fails the audit on an unmutated baseline, which
+# aborts mutmut's stats phase (`-x`) and leaves every mutant with no tests to run.
+# repo_root() walks up to the directory that actually holds scripts/hiddenforge.
+REPO = repo_root(__file__)
 FILES = [REPO / "entrypoint.py", REPO / "scripts" / "hiddenforge"]
 
 CALL_RE = re.compile(r"subprocess\.(?:run|Popen)\(")

@@ -27,7 +27,13 @@ VANGUARDS_STATE  = '/var/lib/tor/vanguards.state'
 VANGUARDS_MAX_RESTARTS = 5     # failed starts/exits in quick succession before giving up
 VANGUARDS_RETRY_DELAY  = 10    # seconds between (re)start attempts
 HF_CLI           = '/usr/local/bin/hiddenforge'
+DATA_DIR         = '/var/lib/tor'
+# The key volume's mount point inside the container, and the parent of every
+# per-service HiddenServiceDir. Named once: it was spelled out literally in four
+# places, so a change to the layout had four chances to be missed, and none of
+# the code that used it could be exercised anywhere but inside the container.
 KEYS_ROOT        = '/var/lib/tor/hidden_service'
+TORRC_PATH       = '/etc/tor/torrc'
 DROPPED_MAPPINGS = '/var/lib/tor/dropped-mappings'
 ONION_RE         = re.compile(r'[a-z2-7]{56}\.onion')
 
@@ -405,7 +411,7 @@ VanguardsLiteEnabled 1
         print(f"Configuring hidden service: {service_name}")
         print(f"Service hosts: {safe_hosts}")
 
-        hs_dir = f"/var/lib/tor/hidden_service/{service_name}"
+        hs_dir = f"{KEYS_ROOT}/{service_name}"
 
         # The service block is assembled separately and only committed if at
         # least one port mapping survives validation.  Tor REFUSES TO START AT
@@ -528,7 +534,7 @@ def generate_basic_torrc():
     # hidden service configured on the host, which is information a compromised
     # in-container process should not get for free. Grant traverse, withhold list.
     # (The per-service directories below remain 0700, owned by tor.)
-    parent_hs = Path('/var/lib/tor/hidden_service')
+    parent_hs = Path(KEYS_ROOT)
     if parent_hs.exists():
         # 0o751 is the minimum that works: Tor (uid 100) is "other" relative to
         # this root-owned bind mount and must be able to traverse it. The
@@ -556,9 +562,8 @@ def generate_basic_torrc():
     # fchmod/fchown operate on a DUPLICATE of the write descriptor: os.fdopen()
     # takes ownership of the original and closes it when the with-block exits, so
     # using it afterwards raises EBADF.
-    torrc_path = '/etc/tor/torrc'
     torrc_fd = os.open(
-        torrc_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o640
+        TORRC_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o640
     )
     meta_fd = None
     try:
@@ -572,7 +577,7 @@ def generate_basic_torrc():
         if meta_fd is not None:
             os.close(meta_fd)
 
-    print("Generated Tor configuration at /etc/tor/torrc")
+    print(f"Generated Tor configuration at {TORRC_PATH}")
     return hs_dirs, dropped
 
 
@@ -596,7 +601,20 @@ def _write_dropped_mappings(reasons, tor_pw):
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
         with os.fdopen(fd, 'w') as fh:
             fh.write('\n'.join(reasons) + '\n')
-        os.chown(path, tor_pw.pw_uid, tor_pw.pw_gid, follow_symlinks=False)
+            # The mode passed to os.open is a REQUEST: the kernel applies the
+            # process umask to it, so 0o600 there guarantees "no more than 0600",
+            # not "exactly 0600" -- and it silently does the right thing only
+            # because every umask in use clears the bits we did not ask for.
+            # This file records which services were refused and why; state it
+            # outright, the way the torrc write and the address publisher already
+            # do, rather than inheriting it from the runtime's umask.
+            os.fchmod(fh.fileno(), 0o600)
+            # fchown on the descriptor we just wrote, not lchown on the path.
+            # A path-based chown re-resolves the name, so it is a second lookup
+            # that can land on a different inode than the one O_NOFOLLOW opened;
+            # the descriptor cannot be redirected. Same reasoning as the torrc
+            # write in generate_basic_torrc and the fchmod in _publish_addresses.
+            os.fchown(fh.fileno(), tor_pw.pw_uid, tor_pw.pw_gid)
         print(f"Recorded {len(reasons)} dropped mapping(s) in {DROPPED_MAPPINGS}")
     except OSError as exc:
         print(f"Warning: could not write {DROPPED_MAPPINGS}: {exc}")
@@ -716,14 +734,28 @@ def _publish_addresses(hs_dirs, keys_root=KEYS_ROOT, gate=None):
         except OSError as exc:
             _warn_publish_once(name, 'read hostname', exc)
             continue
-        onion = raw.decode('ascii', 'ignore').strip()
+        # Decode STRICTLY. 'ignore' would delete any byte outside ASCII and then
+        # match what was left, so a hostname file holding one stray byte beside a
+        # valid address would publish an address that is not what the file says --
+        # a sanitised answer to a question that should have been refused. A
+        # non-ASCII byte in a file Tor wrote itself means the key volume is not in
+        # the state we think it is. Skipping is the loud-enough failure: the
+        # address simply never appears, and the operator can read the file.
+        # (The decode is still guarded, not bare: an uncaught UnicodeDecodeError
+        # here would kill the supervision loop that calls this once a second.)
+        try:
+            onion = raw.decode('ascii').strip()
+        except UnicodeDecodeError:
+            continue
         if not ONION_RE.fullmatch(onion):
             continue
         target = root / f'{name}.onion'
         try:
-            if target.read_bytes().decode('ascii', 'ignore').strip() == onion:
+            if target.read_bytes().decode('ascii').strip() == onion:
                 continue
-        except OSError:
+        except (OSError, UnicodeDecodeError):
+            # Unreadable or not ASCII: treat the published copy as absent and
+            # rewrite it. A corrupted address file must not be left in place.
             pass
         pending.append((name, onion, target))
 
@@ -830,6 +862,24 @@ class _CapData(ctypes.Structure):
                 ('inheritable', ctypes.c_uint32)]
 
 
+_CAP_NAMES = {
+    CAP_CHOWN: "CHOWN",
+    CAP_DAC_OVERRIDE: "DAC_OVERRIDE",
+    CAP_FOWNER: "FOWNER",
+    CAP_SETGID: "SETGID",
+    CAP_SETUID: "SETUID",
+}
+
+
+def _permitted_capabilities(libc):
+    """The calling process's permitted capability set, or None if unreadable."""
+    header = _CapHeader(_LINUX_CAPABILITY_VERSION_3, 0)
+    data = (_CapData * 2)()
+    if libc.capget(ctypes.byref(header), ctypes.byref(data)) != 0:
+        return None
+    return data[0].permitted | (data[1].permitted << 32)
+
+
 def _drop_setup_capabilities(mask=POST_SETUP_CAPS):
     """Narrow the supervisor's capabilities to `mask`, permanently.
 
@@ -851,6 +901,23 @@ def _drop_setup_capabilities(mask=POST_SETUP_CAPS):
     whose actual security posture is unchanged from the previous release.
     """
     libc = ctypes.CDLL('libc.so.6', use_errno=True)
+    # capset REFUSES a permitted set that is not a subset of the current one, so
+    # asking to keep a capability the runtime never granted fails the whole call
+    # and drops NOTHING. Measured on the project's own podman-compose.yml, which
+    # deliberately withholds DAC_OVERRIDE: the supervisor printed "could not drop
+    # setup capabilities: Operation not permitted" and then kept CHOWN for the
+    # life of the container, on the runtime the deployed instance actually uses.
+    # Dropping what we can is strictly better than dropping nothing, so the
+    # request is narrowed to what is held rather than sent whole and refused.
+    held = _permitted_capabilities(libc)
+    if held is not None:
+        wanted = mask & held
+        if wanted != mask:
+            missing = [_CAP_NAMES.get(b, f"bit {b}")
+                       for b in range(64) if (mask >> b) & 1 and not (held >> b) & 1]
+            print(f"Note: this runtime did not grant {', '.join(missing)}; "
+                  f"dropping everything else regardless.")
+        mask = wanted
     header = _CapHeader(_LINUX_CAPABILITY_VERSION_3, 0)
     data = (_CapData * 2)()
     data[0].effective = data[0].permitted = mask & 0xFFFFFFFF
@@ -861,8 +928,9 @@ def _drop_setup_capabilities(mask=POST_SETUP_CAPS):
         print(f"Warning: could not drop setup capabilities: {os.strerror(err)}. "
               f"Continuing with the capabilities the runtime granted.")
         return False
-    print(f"Dropped setup capabilities; supervisor retains 0x{mask:02x} "
-          f"(DAC_OVERRIDE, SETGID, SETUID).")
+    kept = ", ".join(_CAP_NAMES.get(b, f"bit {b}")
+                     for b in range(64) if (mask >> b) & 1) or "nothing"
+    print(f"Dropped setup capabilities; supervisor retains 0x{mask:02x} ({kept}).")
     return True
 
 
@@ -1009,7 +1077,7 @@ def main():
     # This must happen AFTER generate_basic_torrc() creates hidden_service
     # subdirs: once /var/lib/tor is owned by the tor user (mode 0700), root
     # without CAP_DAC_OVERRIDE cannot traverse into it.
-    data_dir = Path('/var/lib/tor')
+    data_dir = Path(DATA_DIR)
     if data_dir.exists():
         # Podman does not support the uid=/gid=/mode= tmpfs mount options that
         # Docker uses.  When running under Podman the tmpfs starts root-owned;

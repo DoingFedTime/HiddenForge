@@ -162,6 +162,122 @@ def test_vanity_short_prefix_matches(workdir):
     assert vanity.derive_onion(pub) == hostname
 
 
+def _assert_stack_up(proc):
+    """Fail with the cause named, not with `assert 1 == 0`.
+
+    A host that has run out of Docker subnets produces the same red as a broken
+    entrypoint, and the two need completely different responses. Seen on a
+    self-hosted runner shared with forty-five other compose projects: every
+    acceptance test failed at `up`, with the real reason four lines into a
+    captured stderr nobody reads before assuming a regression.
+    """
+    if proc.returncode == 0:
+        return
+    if "address pools have been fully subnetted" in (proc.stderr or ""):
+        raise AssertionError(
+            "docker has no free subnets left on this host, so the stack could "
+            "not be created. This is the machine, not the code: free a network "
+            "(`docker network ls`) and re-run.\n" + proc.stderr)
+    raise AssertionError(f"the stack did not come up:\n{proc.stderr}")
+
+
+def _in_container(workdir, script: str) -> str:
+    """Run a shell snippet inside the running tor container, as root."""
+    proc = subprocess.run(
+        _compose(workdir, "exec", "-T", "tor", "sh", "-c", script, override=True),
+        capture_output=True, text=True, timeout=60)
+    assert proc.returncode == 0, f"{script!r} failed: {proc.stderr}"
+    return proc.stdout.strip()
+
+
+def _proc_field(workdir, pid: str, field: str) -> str:
+    return _in_container(workdir, f"awk '/^{field}:/{{print $2}}' /proc/{pid}/status")
+
+
+@requires_image
+def test_the_running_container_has_the_posture_the_fragment_promises(workdir):
+    """The emitted fragment asks for a hardened runtime. This checks it got one.
+
+    Every property here was previously an assertion about a YAML file rather
+    than about a process: the fragment says `cap_drop: [ALL]` and `read_only`,
+    and nothing confirmed that the Tor daemon actually ends up with an empty
+    capability set, that the supervisor's irreversible drop really happened, or
+    that the tmpfs mounts carry the flags the file asks for. A container that
+    silently failed the drop would serve traffic and pass every other test.
+
+    Measured live, so it is checked from inside the container against /proc.
+    """
+    entrypoint = _load(REPO / "entrypoint.py", "hf_entrypoint_e2e")
+    subprocess.run([str(CLI), "setup", "--backend", "web:80", "--name", "demo",
+                    "--keys", "./tor-keys", "--out", str(workdir)],
+                   check=True, capture_output=True)
+    shutil.copy(DEMO / "app.yml", workdir / "app.yml")
+    shutil.copytree(DEMO / "site", workdir / "site")
+    try:
+        proc = subprocess.run(_compose(workdir, "up", "-d", override=True),
+                              capture_output=True, text=True, timeout=300)
+        _assert_stack_up(proc)
+
+        published = workdir / "tor-keys" / "demo.onion"
+        deadline = time.time() + 300
+        while time.time() < deadline and not published.exists():
+            time.sleep(3)
+        assert published.exists(), "address file was never published\n" + \
+            subprocess.run(_compose(workdir, "logs", "--tail", "40", "tor",
+                                    override=True),
+                           capture_output=True, text=True).stdout
+
+        tor_pid = _in_container(workdir, "pgrep -x tor | head -1")
+        sup_pid = "1"   # the supervisor is the container's init
+        assert tor_pid, "no tor process in the container"
+
+        # Tor: not root, and no capabilities at all. su-exec's uid change clears
+        # permitted and effective; an empty ambient set keeps them cleared.
+        assert _proc_field(workdir, tor_pid, "Uid").split()[0] == "100"
+        assert _proc_field(workdir, tor_pid, "CapEff") == "0" * 16
+        assert _proc_field(workdir, tor_pid, "CapPrm") == "0" * 16
+
+        # The supervisor stays root for the container's life, so what bounds it
+        # is its capability set. The drop must have happened, and must have come
+        # out of PERMITTED -- a capability still permitted can be raised again.
+        expected = f"{entrypoint.POST_SETUP_CAPS:016x}"
+        assert _proc_field(workdir, sup_pid, "CapEff") == expected
+        assert _proc_field(workdir, sup_pid, "CapPrm") == expected
+        retained = entrypoint.POST_SETUP_CAPS
+        assert not retained & (1 << entrypoint.CAP_CHOWN), "CHOWN was not given up"
+        assert not retained & (1 << entrypoint.CAP_FOWNER), "FOWNER was not given up"
+
+        for pid, who in ((tor_pid, "tor"), (sup_pid, "the supervisor")):
+            assert _proc_field(workdir, pid, "NoNewPrivs") == "1", who
+            # 2 == SECCOMP_MODE_FILTER. Docker's default profile applies to the
+            # whole container; Tor's own Sandbox 1 stacks on top of it.
+            assert _proc_field(workdir, pid, "Seccomp") == "2", who
+
+        # read_only: true, checked by trying to write rather than by reading YAML.
+        wrote = subprocess.run(
+            _compose(workdir, "exec", "-T", "tor", "sh", "-c",
+                     "touch /rootfs-write-probe", override=True),
+            capture_output=True, text=True, timeout=60)
+        assert wrote.returncode != 0, "the root filesystem is writable"
+
+        assert _in_container(workdir, "stat -c %a /var/lib/tor") == "700"
+        assert _in_container(workdir, "stat -c %u /var/lib/tor") == "100"
+        # These are mount points inside the container under test, not temporary
+        # files this process creates.
+        for mount in ("/tmp", "/etc/tor", "/var/lib/tor"):  # noqa: S108
+            opts = _in_container(
+                workdir, f"awk '$2==\"{mount}\"{{print $4}}' /proc/mounts").split(",")
+            for flag in ("noexec", "nosuid", "nodev"):
+                assert flag in opts, f"{mount} is missing {flag}: {opts}"
+
+        key = "/var/lib/tor/hidden_service/demo/hs_ed25519_secret_key"
+        assert _in_container(workdir, f"stat -c %a {key}") == "600"
+        assert _in_container(workdir, f"stat -c %U {key}") == "tor"
+    finally:
+        subprocess.run(_compose(workdir, "down", "-v", override=True),
+                       capture_output=True, timeout=120)
+
+
 @requires_image
 def test_demo_publishes_and_show_agrees(workdir):
     subprocess.run([str(CLI), "setup", "--backend", "web:80", "--name", "demo",
@@ -172,7 +288,7 @@ def test_demo_publishes_and_show_agrees(workdir):
     try:
         proc = subprocess.run(_compose(workdir, "up", "-d", override=True),
                               capture_output=True, text=True, timeout=300)
-        assert proc.returncode == 0, proc.stderr
+        _assert_stack_up(proc)
 
         published = workdir / "tor-keys" / "demo.onion"
         deadline = time.time() + 300

@@ -23,7 +23,7 @@ result rather than reproducing.
 | R8 | Every in-image CLI subcommand works | `docker run <image> <cmd>` | **pass** - `version`/`info`/`doctor` behave; `doctor` fails closed with a named error when no engine is on PATH |
 | R9 | Image contents are what they should be | inspect the built image | **pass** - 40 apk packages; no pip/gcc/cc/make/curl/sshd; no `hs_ed25519*` or `.onion` baked in |
 | R10 | Tor accepts the generated torrc | `tor --verify-config` in the image, as `tor` | **pass** - "Configuration was valid" (Tor 0.4.9.12, OpenSSL 3.5.8) |
-| R11 | Untrusted parsers survive fuzzing | `fuzz/fuzz_parsers.py` under atheris | **pass** - 325,460 runs in 61s, no crash |
+| R11 | Untrusted parsers survive fuzzing | `fuzz/fuzz_parsers.py` under atheris | **pass** - 162,177 runs in 900s, no crash, re-run 2026-09-18 after the target gained the key-path invariants. The older 325,460-run figure was over a weaker property set and is superseded; see "R11, re-run" below |
 | R12 | The service is stable over time | soak, sample memory/PIDs/restarts | **pass** - 90s: memory plateaus ~156 MiB, PIDs steady at 37, 0 restarts |
 
 Supporting detail for the rows that produced a finding, and the arm64 position,
@@ -80,7 +80,17 @@ platforms when one has never been built.
   but the image should not ship a known-vulnerable OpenSSL. `openssl=3.5.8-r0` is
   now pinned explicitly rather than inherited from the base digest; rescan clean.
 - **Fuzzing (R11) found a real crash:** a lone surrogate in an environment value
-  reached a log line and aborted startup. Fixed; 325k runs clean.
+  reached a log line and aborted startup. Fixed.
+- **R11, re-run (2026-09-18).** The target gained a third invariant when the key
+  path turned out to be an input channel reaching two operator-executed files, so
+  the old run was no longer evidence for what the target now asserts. The re-run
+  found a crash on its second input, and the crash was in the invariant rather
+  than the code: it compared LINE COUNTS, and `shlex.quote` puts a newline inside
+  single quotes, which adds a line without adding a command. Checked by hand that
+  the rendered script is still valid bash and that the payload never becomes a
+  command word. The invariant now compares STRUCTURE -- the fragment's parsed YAML
+  keys and volumes, and deploy.sh's shell words -- which is what it was always
+  trying to say and which a newline cannot trip. 162,177 runs, no crash.
 - **R9 key-material audit:** no `hs_ed25519*` or `.onion` material in any layer.
 
 `docker network prune` is needed between runs: repeated stacks exhaust Docker's

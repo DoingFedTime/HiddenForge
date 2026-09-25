@@ -31,6 +31,23 @@ def repo_root(from_file) -> Path:
     return here.parent
 
 
+def source_path(from_file, relative) -> Path:
+    """Locate a source file, preferring the copy in the tree the tests are IN.
+
+    `repo_root` deliberately walks out of `mutants/` to find the real repository,
+    because scripts/hiddenforge is not copied there. That is exactly the wrong
+    answer for a file mutmut DID rewrite: loading /repo/vanity.py while the
+    mutant lives at /repo/mutants/vanity.py runs unmutated code, and every one of
+    its mutants survives while the report calls it tested.
+
+    So: take the sibling copy when there is one, and fall back to the real root
+    when there is not. Under a normal pytest run the two are the same directory.
+    """
+    here = Path(from_file).resolve()
+    local = here.parent.parent / relative
+    return local if local.exists() else repo_root(from_file) / relative
+
+
 class NoCacheLoader(importlib.machinery.SourceFileLoader):
     def get_code(self, fullname):
         return compile(self.get_source(fullname), self.path, "exec", dont_inherit=True)

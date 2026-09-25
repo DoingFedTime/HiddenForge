@@ -15,3 +15,12 @@ pytest==9.0.3
 hypothesis==6.155.1
 coverage==7.14.1
 pytest-cov==7.1.0
+# The compose fragment and the deploy script are checked by PARSING them, not
+# by matching strings: `privileged: true` smuggled into a key path is a YAML
+# question. Without this, those tests called pytest.importorskip and SKIPPED in
+# CI -- measured: the mutation spot-check reported the container-escape guard
+# SURVIVED, because the only test that kills it was never run here.
+PyYAML==6.0.3
+# Stubs, because the lint job type-checks the tests too and an untyped
+# import is an error there.
+types-PyYAML==6.0.12.20250915

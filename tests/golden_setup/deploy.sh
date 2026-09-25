@@ -11,8 +11,8 @@ if ! command -v docker >/dev/null 2>&1; then
 fi
 
 echo "==> Preparing key directory ./tor-keys"
-mkdir -p "./tor-keys"
-chmod 700 "./tor-keys" 2>/dev/null || :
+mkdir -p ./tor-keys
+chmod 700 ./tor-keys 2>/dev/null || :
 
 echo "==> Bringing the stack up"
 docker compose -f "$BASE" -f compose.service.yml up -d
