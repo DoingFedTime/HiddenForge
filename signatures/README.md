@@ -22,6 +22,9 @@ been reproduced**; the arm64 manifest has not. An amd64-only build produces a
 different index digest than the two-platform index, and that is expected, not a
 failure -- reproduce with the same `--platform` value the release used. A
 consumer on arm64 needs the arm64 manifest digest, which is not published here.
+(The unreleased tree's arm64 image now builds reproducibly and passes the in-image
+checks under qemu; see `docs/PRODUCTION-READINESS.md` R6. That says nothing about
+the 2.0.4 arm64 manifest, which has still not been reproduced.)
 Until an arm64 build is reproduced on a builder that can run it, treat arm64 as
 unverified.
 

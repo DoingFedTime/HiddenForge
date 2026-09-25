@@ -7,15 +7,16 @@ is reachable only through hiddenforge's Tor sidecar.
 Three commands, no file editing in the hiddenforge repo:
 
 ```bash
-# 1. Emit the merge fragment (writes compose.service.yml, deploy.sh, README.txt)
-../../../scripts/hiddenforge setup --backend web:80 --name demo --out .
+# 1. Emit the merge fragment (writes compose.service.yml, deploy.sh, README.txt,
+#    hiddenforge.json)
+../../scripts/hiddenforge setup --backend web:80 --name demo --out .
 
 # 2. Bring the merged stack up
 docker compose -f app.yml -f compose.service.yml up -d
 
 # 3. Read the address (retry until `ready` is true; first boot can take ~60-120s)
-../../../scripts/hiddenforge status --keys ./tor-keys --container tor --json
-../../../scripts/hiddenforge show   --keys ./tor-keys --name demo --json
+../../scripts/hiddenforge status --keys ./tor-keys --container tor --json
+../../scripts/hiddenforge show   --keys ./tor-keys --name demo --json
 ```
 
 `show --json` prints:
@@ -24,8 +25,9 @@ docker compose -f app.yml -f compose.service.yml up -d
 {"name":"demo","onion":"<56 chars>.onion","key_path":"./tor-keys/demo/hs_ed25519_secret_key", ...}
 ```
 
-The address is also written to `./tor-keys/demo.onion`, so a consumer with no
-hiddenforge installed can just read that file from the mount.
+Once the service is reachable, the address is also written to
+`./tor-keys/demo.onion`, so a consumer with no hiddenforge installed can just
+read that file from the mount.
 
 Tear down:
 
