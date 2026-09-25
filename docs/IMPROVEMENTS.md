@@ -1,5 +1,13 @@
 # HiddenForge branch record: 2.1.0
 
+> **Superseded in three places (2026-09-25).** This record is kept as written,
+> but these lines are no longer true and the code wins: **E4**, the CLI now
+> reads the secret key's bytes in `backup` and `encrypt-key`, to encrypt them,
+> and never prints them; **C4**, the address file is written only once the
+> service is reachable, not as soon as Tor writes the key; and **R6 in OPEN**,
+> the arm64 image has since been built twice under qemu with identical digests
+> and passes the in-image checks (see `docs/PRODUCTION-READINESS.md`).
+
 **Closed 2026-09-12 at commit `7913514`.** This is a record of what this branch
 changed and why, not a promise of future work. Sections A to I are the completed
 ledger (each item is done `[x]` or a deliberate non-change `[-]` with its reason

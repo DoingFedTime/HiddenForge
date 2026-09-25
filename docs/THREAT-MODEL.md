@@ -236,6 +236,6 @@ hiddenforge doctor --json                 # caps, read-only, modes, torrc direct
 hiddenforge status --json                 # readiness + dropped_mappings
 hiddenforge verify-image --json           # both signatures, against the PINNED keys
 docker exec <c> su-exec tor tor --verify-config -f /etc/tor/torrc   # Tor accepts it
-.venv/bin/pytest -q                       # 292 unit/property tests
+.venv/bin/pytest -q                       # the host unit/property suite
 HIDDENFORGE_E2E=1 .venv/bin/pytest tests/test_e2e_live.py   # live acceptance
 ```

@@ -59,6 +59,34 @@ without verifying the archive, a `verify-image` that printed VERIFIED for a
 stripped post-quantum signature, and `--keys` and `--container` values that were
 both injectable into the compose fragment and the 0755 deploy script.
 
+### Fixed (pre-publication pass, 2026-09-25)
+Found by running the shipped configurations live, reading every public document
+against the code, and scanning the whole history before anything is published.
+- **`doctor` failed the recommended Docker deployment.** From the host each
+  service directory is tor-owned 0700, so the key-mode check hit EACCES and
+  failed every service -- via the command `docs/INTEGRATION.md` gives for
+  verifying a deployment. The modes are now checked from inside the container as
+  the tor user; if the container cannot be asked, that is a named warning.
+- **`show` said "not generated yet" for a key that exists** but that the host
+  cannot read, which under rootless Podman is permanent. It now says which case
+  it is (exit code unchanged, 4).
+- **`status` could answer not-ready with no reason**, when Docker's health status
+  lagged the in-container healthcheck. It now names the missing condition.
+- **`vanity` failed inside docker on a key path containing `:`**, as
+  "invalid mode: /keys". Refused up front with the reason.
+- **`backup` could read through a key file swapped for a symlink** after its
+  `is_symlink()` check. Key files are now read through `O_NOFOLLOW`.
+- **CI's secret scan never looked at history** (`gitleaks --no-git`). It now
+  scans every commit as well as the tree; the full history is clean.
+- **The CI runner had been stopped since 2026-09-12**, so pushes ran no CI. It
+  is running again.
+- Documentation corrected where it no longer matched the code: an `sbom`
+  command that booted Tor instead, a `docker run` example with `-v` after the
+  image name, "nothing stays root" (the supervisor does, with `0xc2`/`0xc0`), a
+  pip pin that was removed in 2.1.0, arm64 described as never built (it now
+  builds twice with identical digests), and a banner loaded from a third-party
+  image host (now vendored, without its EXIF block).
+
 ### Fixed (second review, 2026-09-25)
 An independent pass over the fixes below, each finding reproduced before it was
 changed and re-reproduced by a second, adversarial reviewer.
