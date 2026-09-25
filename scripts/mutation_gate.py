@@ -178,7 +178,7 @@ ACCEPTED: dict[tuple[str, str, str], str] = {
     ('entrypoint.main',
      'vanguards_last_start  = 0.0',
      'vanguards_last_start  = None'):
-        'An initialiser for a monotonic-clock comparison. time.monotonic() is far larger than any of these constants, so they all compare the same way.',
+        'It is read only in the branch that handles a Vanguards exit, and every path that creates a Vanguards process assigns it first, so the initial value is never read.',
     ('entrypoint.main',
      'vanguards_last_start  = 0.0',
      'vanguards_last_start  = 1.0'):
@@ -194,7 +194,7 @@ ACCEPTED: dict[tuple[str, str, str], str] = {
     ('entrypoint.main',
      'vanguards_next_attempt = 0.0',
      'vanguards_next_attempt = None'):
-        'An initialiser for a monotonic-clock comparison. time.monotonic() is far larger than any of these constants, so they all compare the same way.',
+        'Two assignments share this text. At startup the mutant IS killed (a failed first start compares against it on the next tick). This survivor is the reset after a successful restart: it is never compared, because the next exit either gives up or assigns now + VANGUARDS_RETRY_DELAY before the comparison runs.',
     ('entrypoint._drop_setup_capabilities',
      'for b in range(64) if (mask >> b) & 1 and not (held >> b) & 1]',
      'for b in range(65) if (mask >> b) & 1 and not (held >> b) & 1]'):
