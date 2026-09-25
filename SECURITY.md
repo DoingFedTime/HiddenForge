@@ -31,6 +31,9 @@ Please include:
 In scope:
 - Dockerfile / build process
 - `entrypoint.py` logic and torrc generation
+- The operator CLI (`scripts/hiddenforge`): `setup`'s generated files, key
+  handling in `backup`/`restore`/`encrypt-key`/`decrypt-key`/`vanity`, and
+  `verify-image`'s signature checking
 - Tor configuration hardening gaps
 - Supply chain / dependency issues
 - Container escape via misconfiguration
@@ -43,7 +46,7 @@ Out of scope:
 
 ## Accepted findings (and why)
 
-Static scanners flag two things here that are deliberate. Both are recorded so a
+Static scanners flag three things here that are deliberate. All are recorded so a
 future reader does not "fix" them into a regression.
 
 **The container starts as root.** `hadolint`/Trivy DS-0002 and
@@ -51,9 +54,15 @@ future reader does not "fix" them into a regression.
 instruction. The entrypoint needs root for exactly two things at startup: it
 chowns the operator's key bind mount to the `tor` user, and it uses `su-exec` to
 drop to `tor` before Tor and Vanguards run. A non-root `USER` would make both
-impossible. The processes that face the network (Tor, Vanguards, the CLI when it
-reads keys) run as `tor`; nothing stays root. The mitigation that matters is the
-capability set and `no-new-privileges`, which `hiddenforge doctor` verifies.
+impossible. The processes that face the network (Tor, Vanguards) and the CLI
+commands that only read keys (`show`, `doctor`) run as `tor`. The supervisor
+itself stays root for the container's life, because it republishes the address
+and restarts Vanguards, but it never touches the network, and once setup is done
+it drops everything except what that needs: measured, it holds `DAC_OVERRIDE`,
+`SETUID` and `SETGID` under the Docker compose file (`CapEff 0xc2`) and only
+`SETUID` and `SETGID` under the Podman one (`0xc0`). Tor itself runs with no
+capabilities at all. The mitigations that matter are that capability set and
+`no-new-privileges`, which `hiddenforge doctor` verifies.
 
 **`setuptools` is listed in `requirements.txt` with a CVE against it.** It is a
 build-only dependency: `stem` is built from an sdist and needs it, and it is

@@ -127,14 +127,41 @@ MUTATIONS = [
         "            total += path.stat().st_size\n"
         "            count += 1\n"
         "            if total > max_bytes:\n"
-        '                raise ValueError("key volume is unexpectedly large")\n'
-        "            data = path.read_bytes()",
-        "            data = path.read_bytes()\n"
+        '                raise ValueError("key volume is unexpectedly large")\n',
+        "            data = _read_nofollow(path, max_bytes)\n"
         "            total += len(data)\n"
         "            count += 1\n"
         "            if total > max_bytes:\n"
-        '                raise ValueError("key volume is unexpectedly large")',
-        "tests/test_backup.py",
+        '                raise ValueError("key volume is unexpectedly large")\n',
+        "tests/test_backup.py -k 'size_budget or oversized'",
+    ),
+    (
+        "backup reads a key file through a symlink swapped in after the check",
+        "scripts/hiddenforge",
+        "            data = _read_nofollow(path, max_bytes)",
+        "            data = path.read_bytes()",
+        "tests/test_backup.py -k swapped_for_a_symlink",
+    ),
+    (
+        "vanity accepts a key path the engine cannot mount",
+        "scripts/hiddenforge",
+        '    if ":" in str(keys):',
+        "    if False:",
+        "tests/test_cli.py -k cannot_mount",
+    ),
+    (
+        "doctor fails every tor-owned service directory seen from the host",
+        "scripts/hiddenforge",
+        "        except PermissionError:\n            closed.append(name)\n            continue\n",
+        "",
+        "tests/test_doctor_keys.py",
+    ),
+    (
+        "status answers not-ready without saying why",
+        "scripts/hiddenforge",
+        "    if not ready and not reason:",
+        "    if False:",
+        "tests/test_cli.py -k missing_condition",
     ),
     (
         "the key path goes into the compose fragment unquoted (container escape)",

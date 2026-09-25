@@ -392,7 +392,35 @@ def test_an_oversized_key_volume_is_refused_before_it_is_read(hf, tmp_path,
 
     monkeypatch.setattr(Path, "stat", huge_stat)
     monkeypatch.setattr(Path, "read_bytes", refuse_read)
+    # Key files are read through _read_nofollow now; refuse that too, so the
+    # test still proves the guard runs BEFORE any read, whichever way it reads.
+    monkeypatch.setattr(hf, "_read_nofollow",
+                        lambda path, *a, **kw: refuse_read(path))
     with pytest.raises(ValueError, match="unexpectedly large"):
+        hf._tar_keys(keys)
+
+
+def test_a_key_file_swapped_for_a_symlink_is_not_read_through(hf, tmp_path,
+                                                              monkeypatch):
+    """rglob and is_symlink() are one lookup, the read is another. A file
+    replaced by a symlink in between must fail, not archive the link's target."""
+    keys = tmp_path / "keys"
+    (keys / "app").mkdir(parents=True)
+    victim = keys / "app" / "hs_ed25519_secret_key"
+    victim.write_bytes(b"k" * 96)
+    outside = tmp_path / "outside-secret"
+    outside.write_bytes(b"not a key, and not in the volume")
+    real_is_symlink = Path.is_symlink
+
+    def swap_after_check(self):
+        answer = real_is_symlink(self)
+        if self == victim and not answer:
+            victim.unlink()
+            victim.symlink_to(outside)
+        return answer
+
+    monkeypatch.setattr(Path, "is_symlink", swap_after_check)
+    with pytest.raises(OSError):
         hf._tar_keys(keys)
 
 

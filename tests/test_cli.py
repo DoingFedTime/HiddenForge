@@ -616,6 +616,29 @@ def test_status_not_ready_exits_4(hf, tmp_path, capsys, monkeypatch):
     assert json.loads(capsys.readouterr().out)["ready"] is False
 
 
+def test_status_names_the_missing_condition_when_the_healthcheck_is_ready(
+        hf, tmp_path, capsys, monkeypatch):
+    """Measured on the committed compose file: the address was published and the
+    in-container healthcheck said ready, while Docker's health status was still
+    "starting" (it re-runs every 60s). `status` answered not-ready with
+    reason null, which tells an integrator nothing."""
+    os.chmod(tmp_path, 0o700)
+    _write_service(tmp_path, "app", VECTOR_PUB_HEX, VECTOR_ONION)
+    monkeypatch.setattr(hf, "_docker_inspect", lambda c: (
+        {"State": {"Running": True, "Health": {"Status": "starting"}},
+         "RestartCount": 0}, None))
+    monkeypatch.setattr(hf, "_resolve_container", lambda c: "cid")
+    monkeypatch.setattr(hf, "_docker_exec_json", lambda c, a: {
+        "tor_bootstrapped": True, "hidden_service_published": True,
+        "vanguards": True, "reason": None,
+        "services": [{"name": "app", "address": VECTOR_ONION, "published": True}]})
+    monkeypatch.setattr(hf, "_docker_exec_text", lambda c, a: None)
+    rc = hf.main(["status", "--container", "tor", "--keys", str(tmp_path), "--json"])
+    doc = json.loads(capsys.readouterr().out)
+    assert rc == hf.EXIT_NOT_READY and doc["ready"] is False
+    assert "'starting'" in doc["reason"]
+
+
 def test_status_surfaces_dropped_mappings(hf, tmp_path, capsys, monkeypatch):
     """A mapping that never made it into the torrc must be visible in status."""
     os.chmod(tmp_path, 0o700)
@@ -1392,3 +1415,18 @@ def test_the_descriptor_merge_command_quotes_the_output_path(hf, tmp_path, capsy
         words = shlex.split(doc[field])
         assert f"{out}/compose.service.yml" in words, field
         assert "touch" not in words, field
+
+
+def test_vanity_refuses_a_key_path_the_engine_cannot_mount(hf, tmp_path, capsys,
+                                                           monkeypatch):
+    """`-v <path>:/keys` is split on colons by the engine; the failure used to
+    surface as docker's "invalid mode: /keys", exit 1, with no mention of the
+    path. Refused up front, before any engine is involved."""
+    called = []
+    monkeypatch.setattr(hf.subprocess, "run", lambda *a, **k: called.append(a))
+    rc = hf.main(["vanity", "--prefix", "a", "--name", "x",
+                  "--keys", str(tmp_path / "a:b"), "--json"])
+    doc = json.loads(capsys.readouterr().out)
+    assert rc == hf.EXIT_USAGE and "contains ':'" in doc["error"]
+    assert not called
+    assert not (tmp_path / "a:b").exists()

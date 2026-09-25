@@ -89,8 +89,10 @@ Two ways, both stable:
 <keys>/<name>.onion          # e.g. ./tor-keys/myapp.onion, one line, mode 0644
 ```
 
-hiddenforge publishes this as soon as Tor writes the key, so any process that can
-read the mount can read the address. (The service directory itself is `0700`
+hiddenforge publishes this once the service is actually reachable (Tor holds
+established introduction circuits for it), not merely once Tor has written the
+key, so the file never names an address no client can reach yet. Any process
+that can read the mount can read it. (The service directory itself is `0700`
 owned by the container's `tor` user, so other files inside it are not readable by
 your host user — `<name>.onion` is the readable copy.)
 
@@ -106,14 +108,20 @@ hiddenforge show --keys ./tor-keys --name myapp --json
  "onion":"abcdefghijklmnopqrstuvwxyz234567abcdefghijklmnopqrstuv.onion",
  "public_key_path":"./tor-keys/myapp/hs_ed25519_public_key",
  "source":"published",
- "derived_matches":true,
+ "derived_matches":null,
  "ok":true,"exit_code":0}
 ```
 
 - `--name` → a single object with `onion`, `key_path`, `name` (plus extras).
 - no `--name` → `{"addresses":[...],"address":"<first or null>"}`.
 - exit code `4` means the address is not published yet; `onion` is `null`.
-- `source` is `hostname` | `published` | `derived` — how the address was obtained.
+- `source` is `hostname` | `published` | `derived` — how the address was obtained,
+  or `inconsistent` (exit `1`, no address) when `hostname` and the public key
+  disagree; see Troubleshooting.
+- `derived_matches` is `true` when the address was checked against the public
+  key, `false` when they disagree, and `null` when the public key could not be
+  read. From the host it is usually `null`: the key lives in the service
+  directory, which belongs to the container's `tor` user.
 
 The `key_path` is the **secret** key path; `show` never reads its contents.
 
@@ -141,7 +149,7 @@ Publish nothing until **`ready` is true**. It is the AND of:
 | field | meaning |
 |---|---|
 | `running` | the container is up |
-| `healthy` | Docker healthcheck passes (control socket reachable) |
+| `healthy` | Docker healthcheck passes: bootstrapped, a circuit established, every service holding established introduction points, and Vanguards alive |
 | `tor_bootstrapped` | Tor reports `PROGRESS=100` |
 | `hidden_service_published` | the address file exists |
 | `vanguards` | the guard-protection addon is alive |
@@ -222,13 +230,14 @@ hiddenforge rotate  --keys ./tor-keys --confirm ROTATE --json     # DESTRUCTIVE
 - `encrypt-key` / `decrypt-key` wrap a single service key directory using the
   same tools. `decrypt-key` refuses to write into a directory that already holds
   a key set; with `--force` it moves that directory aside whole
-  (`<name>.replaced-<epoch>`) and extracts into a fresh one.
+  (`<name>.replaced-<epoch>`) and extracts into a fresh one. hiddenforge does
+  **not** decrypt at boot: Tor needs the plaintext secret key in
+  `HiddenServiceDir`, which is the mount, so at-rest encryption is an
+  offline/manual step, not runtime.
 - `restore`, `decrypt-key` and `vanity --force` remove the published
   `<name>.onion` for every key they replace: until the container republishes it
   from the new key, that file names the old address. `show` then reports "not
-  ready" rather than a stale address. hiddenforge does **not** decrypt at boot: Tor needs the plaintext
-  secret key in `HiddenServiceDir`, which is the mount, so at-rest encryption is
-  an offline/manual step, not runtime.
+  ready" rather than a stale address.
 
 > These four commands need `age` or `gpg` on the machine that runs them. The
 > image intentionally ships no crypto tooling, so run them **on the host** (where
@@ -249,12 +258,15 @@ hiddenforge doctor --container tor --keys ./tor-keys --json
  "checks":[{"check":"cap_drop includes ALL","ok":true,"detail":"CapDrop=['ALL']","severity":"fail"}, ...]}
 ```
 
-FAIL-level checks: `cap_drop` includes `ALL`, `cap_add` stays within
-`{CHOWN,DAC_OVERRIDE,FOWNER,SETUID,SETGID}`, `no-new-privileges`, read-only
-rootfs, seccomp NOT unconfined, AppArmor applied, `pids_limit ≤ 512`, swap disabled
-(`MemorySwap == Memory`), no published ports, the generated torrc still contains
-every hardening directive (`ClientOnly`, `SafeLogging`, `VanguardsLiteEnabled`,
-PoW, Intro-point DoS, ...), key dir `0700`, and secret key `0600`.
+FAIL-level checks: `cap_drop` includes `ALL`; `cap_add` stays within
+`{CHOWN,DAC_OVERRIDE,FOWNER,SETUID,SETGID}` and includes every capability the
+runtime needs (all five under rootful Docker, `{CHOWN,SETUID,SETGID}` when the
+engine reports rootless); `no-new-privileges`; read-only rootfs; seccomp NOT
+unconfined; AppArmor applied (on hosts that have AppArmor); `pids_limit ≤ 512`;
+swap disabled (`MemorySwap == Memory`); no published ports; the generated torrc
+still contains every hardening directive (`ClientOnly`, `SafeLogging`,
+`VanguardsLiteEnabled`, PoW, Intro-point DoS, ...); key dir `0700`; secret key
+`0600`; and each key set's `hostname` agrees with its public key.
 `logging: none` is a warning (you may have disabled it deliberately). Exit `1` on
 any failure, `0` otherwise, `2` if the container cannot be inspected.
 
@@ -338,9 +350,15 @@ Every key command is also a subcommand of the image, so `docker pull` is enough:
 ```bash
 docker run --rm <image> version --json
 docker run --rm <image> info --json
-docker run --rm -v "$PWD/tor-keys:/keys" <image> vanity --prefix hi --name myapp --out /keys
-docker run --rm <image> setup --backend web:80 --name myapp -o /out -v "$PWD/out:/out"
+docker run --rm -v "$PWD/tor-keys:/keys" <image> vanity --prefix hi --name myapp \
+  --out /keys --uid "$(id -u)" --gid "$(id -g)"
+docker run --rm --user "$(id -u):$(id -g)" -v "$PWD/out:/out" <image> \
+  setup --backend web:80 --name myapp -o /out
 ```
+
+`--user` makes the generated files yours rather than root's (`setup` needs no
+privilege). Paths it prints, such as the `merge` command, are the container's
+(`/out/...`); on the host the files are in `./out`.
 
 ---
 
@@ -392,8 +410,13 @@ print(addr["onion"], addr["key_path"])
   `derived_onion`, and `derived_matches` is `false`. Restore the whole directory
   from one backup. `derived_matches: null` means the comparison could not be made
   (no readable public key), which is not the same as agreement.
-- **`show --json` exits 4 / `onion: null`** — the key is not generated yet. Poll
-  `status --json` until `ready`. First boot can take 60–120 s.
+- **`show --json` exits 4 / `onion: null`** — the address is not available yet;
+  the `error` field says which case. Either Tor has not generated the key (poll
+  `status --json` until `ready`; first boot can take 60–120 s), or the key exists
+  but its directory is not readable from the host and the published
+  `<name>.onion` has not been written yet. Under Docker that file appears once
+  the service is reachable; under rootless Podman it is never written, so read
+  the address inside the container (below).
 - **`status` says `container not found`** — pass `--container <your-compose-service>`;
   hiddenforge resolves Compose service labels automatically.
 - **The onion was reachable, then stopped after a redeploy** — your backend was

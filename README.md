@@ -14,7 +14,7 @@ whichever you prefer.
 
 **Documentation:** the full guide lives in the [wiki](https://sambent.dev/sam/HiddenForge/wiki).
 
-[![hiddenforge.png](https://i.postimg.cc/fR4BJ54k/hiddenforge.png)](https://postimg.cc/ykPFGm8z)
+![HiddenForge](docs/img/hiddenforge.png)
 
 ## Quick Start (3 steps)
 
@@ -40,9 +40,11 @@ docker compose exec tor cat /var/lib/tor/hidden_service/myapp/hostname
 All security flags are pre-configured in the compose file. The backend service
 is network-isolated and never exposed to the internet.
 
-**What it is:** a hardened Tor hidden service container. Tor 0.4.9.13 with the
-Vanguards guard-protection addon on Alpine 3.23, every dependency pinned and
-hash-verified at build time, built for a state-level adversary threat model.
+**What it is:** a hardened Tor hidden service container: Tor 0.4.9.13 on Alpine
+3.23 with Tor's built-in vanguards-lite pinned on, plus the Vanguards addon's
+bandguards and rendguard attack detectors. Every dependency is pinned (pip ones
+by SHA256, apk ones against Alpine's signed index), the build is reproducible,
+and it is built for a state-level adversary threat model.
 
 
 ---
@@ -135,10 +137,11 @@ software. HiddenForge pins every dependency at every layer.
 | `tor` apk | `0.4.9.13-r0` | A tampered Tor binary could de-anonymise every circuit |
 | `python3` apk | `3.12.14-r0` | The Python runtime executes the entrypoint and Vanguards |
 | `su-exec` apk | `0.3-r0` | This binary performs the privilege drop to the `tor` user |
+| `openssl` apk | `3.5.8-r0` | Pinned explicitly rather than inherited from the base image, so a known-vulnerable OpenSSL cannot ride in with it |
 | `py3-pip` apk | `25.1.1-r1` | Build-only; pinned so it can't be updated to a version that silently ignores `--require-hashes` |
+| `mkp224o` source | commit `5172c0fd` + SHA256 | The vanity generator, vendored as a tarball the Dockerfile hash-checks before building it |
 | `vanguards` pip | `0.3.1` + SHA256 | Guard protection addon; a compromised version could leak circuit topology |
 | `stem` pip | `1.8.2` + SHA256 | Tor controller library; underpins all Vanguards communication |
-| `ipaddress` pip | `1.0.23` + SHA256 | Transitive dep of vanguards |
 | `setuptools` pip | `82.0.1` + SHA256 | Build dep for stem; uninstalled post-build but listed for hash verification completeness |
 
 **How hash verification works:**
@@ -168,8 +171,10 @@ resolving once a security update lands, and the build fails outright rather than
 drifting. That is the safe failure mode, and it is the intended one — but it does
 mean a source build of an older tag will not necessarily reproduce, and pinned
 versions must be refreshed as Alpine moves. This has now bitten the project
-twice: `tor=0.4.9.8-r0` (fixed in 2.0.2) and `python3=3.12.13-r0` (fixed in
-2.0.4).
+three times: `tor=0.4.9.8-r0` (fixed in 2.0.2), `python3=3.12.13-r0` (fixed in
+2.0.4) and `tor=0.4.9.12-r0` (fixed after 2.1.0). A scheduled CI job
+(`pin-freshness`) checks every pin against the live index so the next one is
+caught before a build needs it.
 
 **Updating pinned versions:**
 
@@ -231,9 +236,11 @@ you pass `--allow-classical-only`:
 
 ```bash
 hiddenforge verify-image sambent.dev/sam/hiddenforge:latest --json
-docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
-  sambent.dev/sam/hiddenforge:latest sbom --out /tmp/hf.spdx.json
+hiddenforge sbom --image sambent.dev/sam/hiddenforge:latest --out hf.spdx.json
 ```
+
+(`sbom` runs on the host: it drives a digest-pinned syft container through the
+Docker socket, which the hiddenforge image deliberately does not have.)
 
 For the strongest guarantee, pin the verified digest in your compose file instead
 of the mutable `:latest` tag. Full step-by-step verification, both signatures
@@ -376,17 +383,19 @@ writes `hostname` as `tor`, mode 0600, so the root supervisor cannot read it
 either — and reading it is how the `<name>.onion` file in your key volume gets
 written. Under Podman that file is therefore never created, and because the key
 directory belongs to a subuid inside the user namespace, the host cannot read it
-directly:
+directly, and `hiddenforge show` says exactly that:
 
 ```console
-$ hiddenforge show --keys ./tor-keys --json
-{"address": null, ...,"derived_matches": null, "onion": null}
+$ hiddenforge show --keys ./tor-keys --name myapp --json
+{"error": "address not published yet: tor-keys/myapp exists but is not readable
+ by this user, and tor-keys/myapp.onion does not exist. ...", "exit_code": 4,
+ "onion": null, ...}
 ```
 
 That is the trade working as intended, not a fault: the address is still served,
-and the command above is the right way to read it. The container says so once in
-its log — which `logging: driver: none` discards — so it is written here too.
-Docker publishes `<name>.onion` normally, and `hiddenforge show` works there.
+and the `podman-compose ... exec tor su-exec tor cat ...` command above is the
+right way to read it. Docker publishes `<name>.onion` normally, and
+`hiddenforge show` works there.
 
 **Verify your setup is actually rootless:**
 
@@ -414,7 +423,7 @@ podman info --format '{{.Host.Security.Rootless}}'
 | No relay/exit | `ClientOnly 1`, `ExitPolicy reject *:*` |
 | No telemetry | pip/setuptools/urllib3 stripped from final image (Python stdlib remains) |
 | Input validation | All env vars validated before torrc write |
-| Supply chain | Every dep pinned by version + SHA256 hash |
+| Supply chain | Every dependency pinned by exact version; pip packages and the vendored generator also by SHA256 |
 | Base image | Alpine 3.23.5 digest-pinned |
 | Host isolation (optional) | Rootless Podman: container escape = host user, not real root |
 

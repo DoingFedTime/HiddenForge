@@ -118,6 +118,7 @@ CONTAINER_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.\-]*$")
 IMAGE_REF_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._/:@-]{0,254}$")
 HSDIR_RE = re.compile(r"^\s*HiddenServiceDir\s+(\S+)\s*$")
 TORRC_PATH = "/etc/tor/torrc"
+HF_IN_IMAGE = "/usr/local/bin/hiddenforge"
 
 # Directives every generated torrc must contain. Kept here so the emitter, the
 # tests and `doctor` agree. The authoritative generator is entrypoint.py; this
@@ -601,7 +602,7 @@ def cmd_show(args) -> int:
             if entry["onion"] is None:
                 return emit_json(EXIT_NOT_READY, name=args.name, onion=None,
                                  key_path=entry["key_path"], keys=str(keys),
-                                 error="address not generated yet")
+                                 error=_not_ready_error(keys, args.name))
             if args.json:
                 return emit_json(EXIT_OK, **entry)
             print(f"{entry['name']} {entry['onion']}")
@@ -642,6 +643,29 @@ def cmd_show(args) -> int:
     if not entries:
         _eprint(f"no services found in {keys}")
     return rc
+
+
+def _not_ready_error(keys: Path, name: str) -> str:
+    """Why there is no address, as precisely as the host can tell.
+
+    "Not generated yet" was the only answer, and under rootless Podman it is
+    false: the key exists, but its directory belongs to the tor user's subuid and
+    the published `<name>.onion` is never written (the supervisor holds no
+    DAC_OVERRIDE to read `hostname`). A caller told "not generated yet" waits for
+    ever. The exit code stays 4, because on Docker the same unreadable directory is
+    the ordinary state until the address is published.
+    """
+    d = keys / name
+    if not d.is_dir():
+        return "address not generated yet (no key directory for this service)"
+    if not os.access(d, os.R_OK | os.X_OK):
+        return (f"address not published yet: {d} exists but is not readable by this "
+                f"user, and {keys / (name + '.onion')} does not exist. Under Docker it "
+                "appears once the service is reachable. Under rootless Podman it is "
+                "never written; read the address inside the container instead: "
+                f"`podman exec <container> su-exec tor cat "
+                f"/var/lib/tor/hidden_service/{name}/hostname`")
+    return "address not generated yet (Tor has not written hostname)"
 
 
 def _inconsistent_error(entry: dict) -> str:
@@ -794,6 +818,23 @@ def cmd_status(args) -> int:
     healthy = health == "healthy"
     ready = bool(running and healthy and published and addresses
                  and all(a["onion"] for a in addresses))
+    if not ready and not reason:
+        # `ready` is an AND, and the in-container healthcheck only speaks for its
+        # own part of it. Measured: the service published and the healthcheck
+        # said ready while Docker's health status was still "starting" (it
+        # re-runs only every 60s), so `status` answered not-ready with no reason.
+        # Name the condition that is actually missing.
+        if not running:
+            reason = "the container is not running"
+        elif not healthy:
+            reason = (f"the engine's health status is {health!r}, not 'healthy'"
+                      + ("; it re-runs the healthcheck every 60s, so this follows "
+                         "the in-container state shortly" if health == "starting"
+                         else ""))
+        elif not addresses:
+            reason = "no service address could be read"
+        else:
+            reason = "not every service has a published address yet"
 
     doc = {
         "container": container,
@@ -887,11 +928,20 @@ def _docker_exec_text(container: str, argv: list[str]) -> str | None:
     return None
 
 
-def _append_key_checks(checks: list[dict], keys: Path) -> None:
-    """Verify on-disk key hygiene. Reads only modes/sizes, never key bytes."""
+def _append_key_checks(checks: list[dict], keys: Path) -> list[str]:
+    """Verify on-disk key hygiene. Reads only modes/sizes, never key bytes.
+
+    Returns the services whose directories this user may not enter. From the
+    host that is the normal, correct state of a running deployment -- each
+    service directory is 0700 and owned by the container's `tor` user -- so it is
+    not reported as a failure here; the caller checks those from inside the
+    container instead. It used to be a FAIL for every service, which made
+    `doctor` fail the project's own recommended Docker deployment.
+    """
+    closed: list[str] = []
     if not keys.is_dir():
         checks.append(_check(False, "key directory exists", f"{keys} not found"))
-        return
+        return closed
     dirmode = stat.S_IMODE(os.lstat(keys).st_mode)
     # 0751 (traverse, not list) is the intended mode: execute is required so the
     # host user can read <name>.onion by known path; group/world read or write is
@@ -910,6 +960,9 @@ def _append_key_checks(checks: list[dict], keys: Path) -> None:
         try:
             dmode = stat.S_IMODE(os.lstat(d).st_mode)
             smode = stat.S_IMODE(os.lstat(d / SECRET_FILE).st_mode)
+        except PermissionError:
+            closed.append(name)
+            continue
         except OSError as exc:
             checks.append(_check(False, f"key modes for {name}", f"cannot stat: {exc}"))
             continue
@@ -923,6 +976,35 @@ def _append_key_checks(checks: list[dict], keys: Path) -> None:
                 False, f"{name}: hostname file matches the public key",
                 f"hostname says {entry['hostname_onion']}, the public key is "
                 f"{entry['derived_onion']}; Tor serves the key's address"))
+    return closed
+
+
+def _append_in_container_key_checks(checks: list[dict], container: str | None,
+                                    closed: list[str]) -> None:
+    """Check the service directories the host may not enter, from inside.
+
+    The container's own `doctor --keys-only` runs as the tor user, which owns
+    those directories, so it can see the modes the host cannot. Only its checks
+    for the services the host could not inspect are taken.
+    """
+    doc = (_docker_exec_json(container, ["su-exec", "tor", HF_IN_IMAGE, "doctor",
+                                         "--keys-only", "--json"])
+           if container else None)
+    inner = doc.get("checks") if isinstance(doc, dict) else None
+    if not isinstance(inner, list):
+        checks.extend(_check(
+            False, f"key modes for {name}",
+            "the service directory belongs to the container's tor user and the "
+            "container could not be asked; run `docker exec <container> su-exec "
+            "tor hiddenforge doctor --keys-only`", severity="warn") for name in closed)
+        return
+    for c in inner:
+        if not isinstance(c, dict) or not isinstance(c.get("check"), str):
+            continue
+        if any(c["check"].startswith((f"key dir {n} ", f"secret key {n} ", f"{n}: "))
+               for n in closed):
+            checks.append(_check(bool(c.get("ok")), c["check"] + " (checked in container)",
+                                 str(c.get("detail", "")), str(c.get("severity", "fail"))))
 
 
 def cmd_doctor(args) -> int:
@@ -941,7 +1023,11 @@ def cmd_doctor(args) -> int:
     else:
         # In-container mode: no docker socket; verify on-disk key hygiene alone.
         checks = []
-        _append_key_checks(checks, Path(args.keys))
+        closed = _append_key_checks(checks, Path(args.keys))
+        if closed:
+            # No container to ask from here: say what could not be seen rather
+            # than reporting a clean result over directories never inspected.
+            _append_in_container_key_checks(checks, None, closed)
         failures = [c for c in checks if not c["ok"] and c["severity"] == "fail"]
         ok = not failures
         if args.json:
@@ -1036,8 +1122,11 @@ def cmd_doctor(args) -> int:
             not missing_directives, "generated torrc contains every hardening directive",
             "missing: " + "; ".join(missing_directives) if missing_directives else "all present"))
 
-    # On-disk key hygiene (host side; no docker exec needed).
-    _append_key_checks(checks, Path(args.keys))
+    # On-disk key hygiene: from the host where it can see, from inside the
+    # container for the service directories only the tor user may enter.
+    closed = _append_key_checks(checks, Path(args.keys))
+    if closed:
+        _append_in_container_key_checks(checks, resolved, closed)
     failures = [c for c in checks if not c["ok"] and c["severity"] == "fail"]
     warnings = [c for c in checks if not c["ok"] and c["severity"] == "warn"]
     ok = not failures
@@ -1455,6 +1544,19 @@ def cmd_vanity(args) -> int:
         return emit_json(EXIT_USAGE, error=str(exc))
 
     keys = Path(args.keys).resolve()
+    try:
+        validate_keys_dir(str(keys))
+    except ValueError as exc:
+        return emit_json(EXIT_USAGE, error=str(exc))
+    if ":" in str(keys):
+        # The path goes into `-v <path>:/keys`, and the engine splits that on
+        # colons: the rest becomes a destination and mount options. It failed as
+        # "invalid mode: /keys" from inside docker, exit 1, with no hint that
+        # the path was the problem.
+        return emit_json(EXIT_USAGE, keys=str(keys),
+                         error=f"key directory {str(keys)!r} contains ':', which "
+                               "the container engine cannot mount with -v; use a "
+                               "path without one")
     keys.mkdir(parents=True, exist_ok=True)
     target = keys / args.name
     if (target.exists() or target.is_symlink()) and not args.force:
@@ -1564,7 +1666,11 @@ def _tar_keys(keys: Path, max_bytes: int = 512 * 1024 * 1024) -> bytes:
             count += 1
             if total > max_bytes:
                 raise ValueError("key volume is unexpectedly large")
-            data = path.read_bytes()
+            # O_NOFOLLOW and a regular-file check on the descriptor: the
+            # is_symlink() test above is a separate lookup, so a file replaced by
+            # a symlink between the two would otherwise be read THROUGH it and
+            # its target's bytes archived as key material. It now fails loudly.
+            data = _read_nofollow(path, max_bytes)
             info = tarfile.TarInfo(name=str(rel))
             info.size = len(data)
             info.mtime = 0
