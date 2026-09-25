@@ -59,6 +59,67 @@ without verifying the archive, a `verify-image` that printed VERIFIED for a
 stripped post-quantum signature, and `--keys` and `--container` values that were
 both injectable into the compose fragment and the 0755 deploy script.
 
+### Fixed (second review, 2026-09-25)
+An independent pass over the fixes below, each finding reproduced before it was
+changed and re-reproduced by a second, adversarial reviewer.
+- **`verify-image` trusted whatever keys arrived with the signatures.** The signer
+  list was read from `<sigdir>/allowed-signers` and the ML-DSA key from
+  `<sigdir>/sambent-mldsa.pub`, so a directory carrying a substituted key and a
+  matching signature verified: a plain software ed25519 key labelled
+  `sam@sambent.com` gave `ssh_fido2: true`, and with a forged ML-DSA key as well
+  the result was a bare `VERIFIED`, `complete: true`. The two release signer keys
+  and the SHA-256 of the ML-DSA key are now pinned in the CLI; `--allowed-signers`
+  / `--mldsa-pub` name a different anchor explicitly and the result says so
+  (`trust_anchor`). The earlier "stripped ML-DSA" fix below addressed a symptom
+  of this; the cause was the missing anchor.
+- **`verify-image` exited 0 with half the hybrid signature unexamined.** With
+  both ML-DSA files deleted, or no `pqsign` installed, only the JSON `complete`
+  field said so. It now exits 1 unless `--allow-classical-only` is passed, and
+  `--skip-registry` is reported as `complete: false`. The digest file is read
+  once and the same bytes feed all three checks; it used to be read three times.
+- **`decrypt-key` overwrote a live key set.** It extracted straight over
+  `<keys>/<name>/` with no `--force` and no copy kept (the flag was parsed and
+  ignored), so decrypting an old envelope after the service had a new key
+  destroyed the live identity; and file-by-file overwriting could leave a mixed
+  key set. It now refuses a non-empty directory, and with `--force` moves it
+  aside whole and extracts into a fresh one. It also shares `restore`'s archive
+  validation, which it had drifted from (it skipped what restore refused, never
+  checked names for control characters, and accepted a keyless archive).
+- **The container could refuse to start with a false "Tor is running as root".**
+  `_assert_process_dropped` read the child's uid right after `Popen`, when the
+  child is still `su-exec`, which is root until its own `setuid()`. Measured: 294
+  of 300 reads in the image saw `su-exec` at uid 0, and 4 of 16 concurrent
+  rootless starts died. Uid 0 is now "not yet" while the process is `su-exec`,
+  and still fatal once it is Tor. Not in any release.
+- **`show` printed an address Tor would not serve.** With a `hostname` file that
+  disagreed with the public key it reported the file's address, exit 0.
+  Measured in the image: Tor rewrites `hostname` from the key at startup. `show`
+  now exits 1, reports no address (`source: "inconsistent"`), and carries both
+  as `hostname_onion` / `derived_onion`.
+- **A replaced key left its old published address behind.** `restore`,
+  `decrypt-key` and `vanity --force` now remove `<name>.onion` for each key they
+  replace; from the host, `show` falls back to that file and would have reported
+  the old address as current.
+- **`restore` created directories for archives it then refused**, from its
+  conflict scan; and its final pass chmod'ed every entry in the volume by path,
+  resetting unrelated published `<name>.onion` files from 0644 to 0600. Archives
+  are now validated before the volume is touched, the scan creates nothing, and
+  modes are set only on what restore wrote, through descriptors.
+- **`setup` still emitted two unquoted command lines**: `README.txt`'s
+  `hiddenforge show --keys ...` and `hiddenforge.json`'s `merge`/`bare_command`
+  (with `--out`). Both are now shell-quoted.
+- **The image could not be built.** Alpine pruned `tor=0.4.9.12-r0`; pinned to
+  `0.4.9.13-r0`, the version the index carries.
+- **The curated mutation check reported kills that never ran a test.** Targets
+  were split on whitespace, so `-k image_ref or validate_image` handed pytest the
+  paths `or` and `validate_image`; it exited 4 ("file not found") and any
+  non-zero exit counted as a kill. Only exit 1 is a kill now, and it rewrote the
+  real source files during a run (a concurrent build captured a mutant); it now
+  works in a throwaway copy. It gained curated mutations for every guard above
+  and for earlier fixes it did not cover.
+- `docs/THREAT-MODEL.md` said the CLI never reads or hashes the secret key;
+  `backup` and `--delete-plaintext` do both. Corrected, with what each does.
+
 ### Fixed
 - **`restore` reported success over an archive holding no identity.** An archive
   that decrypted but carried no `hs_ed25519_secret_key` and no encrypted key

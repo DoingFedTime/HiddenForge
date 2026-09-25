@@ -10,6 +10,7 @@ import subprocess
 import json
 import os
 import shlex
+import shutil
 import stat
 import sys
 from pathlib import Path
@@ -652,7 +653,7 @@ def test_engine_override(hf, monkeypatch):
 # verify-image / sbom
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _sigdir(tmp_path, digest="sha256:abc"):
+def _sigdir(tmp_path, digest="sha256:" + "ab" * 32):
     d = tmp_path / "sig"
     d.mkdir()
     (d / "hiddenforge.digest").write_text(digest)
@@ -665,20 +666,21 @@ def _sigdir(tmp_path, digest="sha256:abc"):
 
 def test_verify_image_ok(hf, tmp_path, capsys, monkeypatch):
     d = _sigdir(tmp_path)
-    monkeypatch.setattr(hf, "_resolve_registry_digest", lambda i: ("sha256:abc", None))
-    monkeypatch.setattr(hf, "_verify_ssh_signature", lambda s, i, b: (True, "Good"))
-    monkeypatch.setattr(hf, "_verify_mldsa_signature", lambda s: (None, "pqsign not installed"))
+    monkeypatch.setattr(hf, "_resolve_registry_digest", lambda i: ("sha256:" + "ab" * 32, None))
+    monkeypatch.setattr(hf, "_verify_ssh_signature", lambda *a: (True, "Good"))
+    monkeypatch.setattr(hf, "_verify_mldsa_signature", lambda *a: (True, "ok"))
     rc = hf.main(["verify-image", "example/img:1", "--sigdir", str(d), "--json"])
     assert rc == 0
     doc = json.loads(capsys.readouterr().out)
     assert doc["digest_match"] is True and doc["ssh_fido2"] is True
+    assert doc["trust_anchor"] == "pinned"
 
 
 def test_verify_image_digest_mismatch_fails(hf, tmp_path, capsys, monkeypatch):
     d = _sigdir(tmp_path)
     monkeypatch.setattr(hf, "_resolve_registry_digest", lambda i: ("sha256:deadbeef", None))
-    monkeypatch.setattr(hf, "_verify_ssh_signature", lambda s, i, b: (True, "Good"))
-    monkeypatch.setattr(hf, "_verify_mldsa_signature", lambda s: (None, "n/a"))
+    monkeypatch.setattr(hf, "_verify_ssh_signature", lambda *a: (True, "Good"))
+    monkeypatch.setattr(hf, "_verify_mldsa_signature", lambda *a: (None, "n/a"))
     rc = hf.main(["verify-image", "example/img:1", "--sigdir", str(d), "--json"])
     assert rc == hf.EXIT_FAIL
     doc = json.loads(capsys.readouterr().out)
@@ -693,8 +695,8 @@ def test_verify_image_bad_sigdir_exit_2(hf, tmp_path, capsys):
 
 def test_verify_image_skip_registry(hf, tmp_path, capsys, monkeypatch):
     d = _sigdir(tmp_path)
-    monkeypatch.setattr(hf, "_verify_ssh_signature", lambda s, i, b: (True, "Good"))
-    monkeypatch.setattr(hf, "_verify_mldsa_signature", lambda s: (True, "ok"))
+    monkeypatch.setattr(hf, "_verify_ssh_signature", lambda *a: (True, "Good"))
+    monkeypatch.setattr(hf, "_verify_mldsa_signature", lambda *a: (True, "ok"))
     rc = hf.main(["verify-image", "--sigdir", str(d), "--skip-registry", "--json"])
     assert rc == 0
     doc = json.loads(capsys.readouterr().out)
@@ -837,14 +839,18 @@ def test_exit_codes_are_documented(hf):
 # verify-image: half a hybrid signature is not a verified image
 # ─────────────────────────────────────────────────────────────────────────────
 
+DIGEST = b"sha256:" + b"a" * 64 + b"\n"
+
+
 def _signature_set(tmp_path, *, pub=True, sig=True):
     d = tmp_path / "signatures"
     d.mkdir()
-    (d / "hiddenforge.digest").write_text("sha256:" + "a" * 64 + "\n")
+    (d / "hiddenforge.digest").write_bytes(DIGEST)
     (d / "allowed-signers").write_text("sam@sambent.com ssh-ed25519 AAAA\n")
     (d / "hiddenforge.digest.sig").write_text("-----BEGIN SSH SIGNATURE-----\n")
     if pub:
-        (d / "sambent-mldsa.pub").write_bytes(b"\x00" * 1968)
+        # The real, pinned key: a stand-in would now be refused for not being it.
+        shutil.copy(REPO / "signatures" / "sambent-mldsa.pub", d / "sambent-mldsa.pub")
     if sig:
         (d / "hiddenforge.digest.mldsa").write_bytes(b"\x00" * 3325)
     return d
@@ -855,14 +861,14 @@ def test_a_stripped_mldsa_public_key_is_a_failure_not_a_shrug(hf, tmp_path):
     "nothing to report" lets an attacker downgrade it to a single classical
     signature by deleting one file, while the tool still prints VERIFIED."""
     sigdir = _signature_set(tmp_path, pub=False)
-    verdict, detail = hf._verify_mldsa_signature(sigdir)
+    verdict, detail = hf._verify_mldsa_signature(sigdir, DIGEST)
     assert verdict is False
     assert "has been altered" in detail
 
 
 def test_a_stripped_mldsa_signature_is_a_failure_too(hf, tmp_path):
     sigdir = _signature_set(tmp_path, sig=False)
-    verdict, detail = hf._verify_mldsa_signature(sigdir)
+    verdict, detail = hf._verify_mldsa_signature(sigdir, DIGEST)
     assert verdict is False
     assert "has been altered" in detail
 
@@ -871,7 +877,7 @@ def test_a_signature_set_with_no_post_quantum_half_is_not_checked(hf, tmp_path):
     """An older set that never had one. Not a failure, but not silently fine
     either: the caller is told it was not checked."""
     sigdir = _signature_set(tmp_path, pub=False, sig=False)
-    verdict, detail = hf._verify_mldsa_signature(sigdir)
+    verdict, detail = hf._verify_mldsa_signature(sigdir, DIGEST)
     assert verdict is None
     assert "carries no ML-DSA signature" in detail
 
@@ -880,7 +886,7 @@ def test_a_missing_verifier_is_reported_as_not_checked(hf, tmp_path, monkeypatch
     sigdir = _signature_set(tmp_path)
     monkeypatch.setattr(hf.shutil, "which",
                         lambda name: None if name == "pqsign" else "/usr/bin/" + name)
-    verdict, detail = hf._verify_mldsa_signature(sigdir)
+    verdict, detail = hf._verify_mldsa_signature(sigdir, DIGEST)
     assert verdict is None
     assert "NOT checked" in detail
 
@@ -892,11 +898,25 @@ def test_an_unchecked_half_never_prints_a_bare_verified(hf, tmp_path, monkeypatc
     sigdir = _signature_set(tmp_path, pub=False, sig=False)
     monkeypatch.setattr(hf, "_verify_ssh_signature", lambda *a, **kw: (True, "ok"))
     rc = hf.main(["verify-image", "example.com/x:1", "--sigdir", str(sigdir),
-                  "--skip-registry"])
+                  "--skip-registry", "--allow-classical-only"])
     out = capsys.readouterr().out
     assert rc == 0
     assert "VERIFIED, BUT NOT COMPLETELY" in out
     assert "carries no ML-DSA signature" in out
+
+
+def test_an_unchecked_half_is_refused_unless_explicitly_accepted(hf, tmp_path,
+                                                                 monkeypatch, capsys):
+    """Exit status is what a deploy script tests. Deleting both ML-DSA files used
+    to leave it at 0, which reduced the hybrid scheme to one classical signature
+    for every caller that did not also parse the JSON."""
+    sigdir = _signature_set(tmp_path, pub=False, sig=False)
+    monkeypatch.setattr(hf, "_verify_ssh_signature", lambda *a, **kw: (True, "ok"))
+    rc = hf.main(["verify-image", "example.com/x:1", "--sigdir", str(sigdir),
+                  "--skip-registry"])
+    out = capsys.readouterr().out
+    assert rc == hf.EXIT_FAIL
+    assert "NOT VERIFIED" in out and "--allow-classical-only" in out
 
 
 def test_a_fully_checked_image_says_verified_and_nothing_else(hf, tmp_path,
@@ -904,12 +924,27 @@ def test_a_fully_checked_image_says_verified_and_nothing_else(hf, tmp_path,
     """Guard against 'fixing' the above by qualifying every verdict."""
     sigdir = _signature_set(tmp_path)
     monkeypatch.setattr(hf, "_verify_ssh_signature", lambda *a, **kw: (True, "ok"))
-    monkeypatch.setattr(hf, "_verify_mldsa_signature", lambda sd: (True, "ok"))
-    rc = hf.main(["verify-image", "example.com/x:1", "--sigdir", str(sigdir),
-                  "--skip-registry"])
+    monkeypatch.setattr(hf, "_verify_mldsa_signature", lambda *a: (True, "ok"))
+    monkeypatch.setattr(hf, "_resolve_registry_digest",
+                        lambda i: (DIGEST.decode().strip(), None))
+    rc = hf.main(["verify-image", "example.com/x:1", "--sigdir", str(sigdir)])
     lines = capsys.readouterr().out.strip().splitlines()
     assert rc == 0
     assert lines[-1] == "VERIFIED"
+
+
+def test_skipping_the_registry_is_never_reported_as_complete(hf, tmp_path,
+                                                             monkeypatch, capsys):
+    """--skip-registry checks the signatures but never that the image in the
+    registry is the one they cover, so the answer is qualified, not bare."""
+    sigdir = _signature_set(tmp_path)
+    monkeypatch.setattr(hf, "_verify_ssh_signature", lambda *a, **kw: (True, "ok"))
+    monkeypatch.setattr(hf, "_verify_mldsa_signature", lambda *a: (True, "ok"))
+    rc = hf.main(["verify-image", "example.com/x:1", "--sigdir", str(sigdir),
+                  "--skip-registry", "--json"])
+    doc = json.loads(capsys.readouterr().out)
+    assert rc == 0 and doc["ok"] is True and doc["complete"] is False
+    assert any("--skip-registry" in u for u in doc["unchecked"])
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1119,7 +1154,9 @@ def test_a_hostname_that_disagrees_with_the_public_key_is_reported(hf, tmp_path)
 
     This project has already shipped an address nothing could reach once. An
     address the container will not serve is the same mistake in a different
-    place, so `show` says so rather than picking a side.
+    place. Measured in the image: Tor rewrote `hostname` to the key's address at
+    startup. So neither value is reported as THE address; both are kept under
+    their own names for diagnosis.
     """
     d = tmp_path / "app"
     d.mkdir()
@@ -1127,9 +1164,41 @@ def test_a_hostname_that_disagrees_with_the_public_key_is_reported(hf, tmp_path)
         PUBLIC_TAG.ljust(32, b"\x00") + bytes.fromhex(VECTOR_PUB_HEX))
     (d / "hostname").write_text("b" * 56 + ".onion\n")
     entry = hf.address_for(tmp_path, "app")
-    assert entry["source"] == "hostname"
-    assert entry["onion"] == "b" * 56 + ".onion"
+    assert entry["source"] == "inconsistent"
+    assert entry["onion"] is None
     assert entry["derived_matches"] is False
+    assert entry["hostname_onion"] == "b" * 56 + ".onion"
+    assert entry["derived_onion"] == VECTOR_ONION
+
+
+def _inconsistent_volume(tmp_path):
+    d = tmp_path / "app"
+    d.mkdir()
+    (d / "hs_ed25519_public_key").write_bytes(
+        PUBLIC_TAG.ljust(32, b"\x00") + bytes.fromhex(VECTOR_PUB_HEX))
+    (d / "hostname").write_text("b" * 56 + ".onion\n")
+    return tmp_path
+
+
+def test_show_refuses_an_inconsistent_key_set_by_exit_code(hf, tmp_path, capsys):
+    """It used to print the hostname file's address with exit 0: the address an
+    operator would publish, and not the one Tor serves."""
+    keys = _inconsistent_volume(tmp_path)
+    rc = hf.main(["show", "--keys", str(keys), "--name", "app", "--json"])
+    doc = json.loads(capsys.readouterr().out)
+    assert rc == hf.EXIT_FAIL and doc["ok"] is False
+    assert doc["onion"] is None
+    assert VECTOR_ONION in doc["error"]
+
+
+def test_show_human_output_names_no_address_for_an_inconsistent_set(hf, tmp_path,
+                                                                    capsys):
+    keys = _inconsistent_volume(tmp_path)
+    rc = hf.main(["show", "--keys", str(keys)])
+    out, err = capsys.readouterr()
+    assert rc == hf.EXIT_FAIL
+    assert "b" * 56 not in out and VECTOR_ONION not in out
+    assert "INCONSISTENT" in out and "error:" in err
 
 
 def test_an_agreeing_key_set_says_so(hf, tmp_path):
@@ -1231,11 +1300,12 @@ def test_verify_image_is_ok_but_not_complete_without_pqsign(hf, tmp_path, capsys
     reporting rather than through the signature.
     """
     d = _sigdir(tmp_path)
-    monkeypatch.setattr(hf, "_resolve_registry_digest", lambda i: ("sha256:abc", None))
-    monkeypatch.setattr(hf, "_verify_ssh_signature", lambda s, i, b: (True, "Good"))
+    monkeypatch.setattr(hf, "_resolve_registry_digest", lambda i: ("sha256:" + "ab" * 32, None))
+    monkeypatch.setattr(hf, "_verify_ssh_signature", lambda *a: (True, "Good"))
     monkeypatch.setattr(hf, "_verify_mldsa_signature",
-                        lambda s: (None, "pqsign not installed"))
-    rc = hf.main(["verify-image", "example/img:1", "--sigdir", str(d), "--json"])
+                        lambda *a: (None, "pqsign not installed"))
+    rc = hf.main(["verify-image", "example/img:1", "--sigdir", str(d), "--json",
+                  "--allow-classical-only"])
     doc = json.loads(capsys.readouterr().out)
     assert rc == 0
     assert doc["ok"] is True
@@ -1247,9 +1317,9 @@ def test_verify_image_is_complete_when_both_halves_verified(hf, tmp_path, capsys
                                                             monkeypatch):
     """The other side: a fully checked image must not be reported as partial."""
     d = _sigdir(tmp_path)
-    monkeypatch.setattr(hf, "_resolve_registry_digest", lambda i: ("sha256:abc", None))
-    monkeypatch.setattr(hf, "_verify_ssh_signature", lambda s, i, b: (True, "Good"))
-    monkeypatch.setattr(hf, "_verify_mldsa_signature", lambda s: (True, "ok"))
+    monkeypatch.setattr(hf, "_resolve_registry_digest", lambda i: ("sha256:" + "ab" * 32, None))
+    monkeypatch.setattr(hf, "_verify_ssh_signature", lambda *a: (True, "Good"))
+    monkeypatch.setattr(hf, "_verify_mldsa_signature", lambda *a: (True, "ok"))
     rc = hf.main(["verify-image", "example/img:1", "--sigdir", str(d), "--json"])
     doc = json.loads(capsys.readouterr().out)
     assert rc == 0
@@ -1269,8 +1339,8 @@ def test_an_unreachable_registry_fails_rather_than_reducing_to_signatures(
     d = _sigdir(tmp_path)
     monkeypatch.setattr(hf, "_resolve_registry_digest",
                         lambda i: (None, "registry unreachable"))
-    monkeypatch.setattr(hf, "_verify_ssh_signature", lambda s, i, b: (True, "Good"))
-    monkeypatch.setattr(hf, "_verify_mldsa_signature", lambda s: (True, "ok"))
+    monkeypatch.setattr(hf, "_verify_ssh_signature", lambda *a: (True, "Good"))
+    monkeypatch.setattr(hf, "_verify_mldsa_signature", lambda *a: (True, "ok"))
     rc = hf.main(["verify-image", "example/img:1", "--sigdir", str(d), "--json"])
     doc = json.loads(capsys.readouterr().out)
     assert rc == hf.EXIT_FAIL
@@ -1280,10 +1350,45 @@ def test_an_unreachable_registry_fails_rather_than_reducing_to_signatures(
 
 def test_a_failed_verification_is_never_complete(hf, tmp_path, capsys, monkeypatch):
     d = _sigdir(tmp_path)
-    monkeypatch.setattr(hf, "_resolve_registry_digest", lambda i: ("sha256:abc", None))
-    monkeypatch.setattr(hf, "_verify_ssh_signature", lambda s, i, b: (False, "bad sig"))
-    monkeypatch.setattr(hf, "_verify_mldsa_signature", lambda s: (True, "ok"))
+    monkeypatch.setattr(hf, "_resolve_registry_digest", lambda i: ("sha256:" + "ab" * 32, None))
+    monkeypatch.setattr(hf, "_verify_ssh_signature", lambda *a: (False, "bad sig"))
+    monkeypatch.setattr(hf, "_verify_mldsa_signature", lambda *a: (True, "ok"))
     rc = hf.main(["verify-image", "example/img:1", "--sigdir", str(d), "--json"])
     doc = json.loads(capsys.readouterr().out)
     assert rc == hf.EXIT_FAIL
     assert doc["ok"] is False and doc["complete"] is False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# setup: every COMMAND it prints is shell-quoted, not only deploy.sh
+# ─────────────────────────────────────────────────────────────────────────────
+
+_HOSTILE_KEYS = "./k; touch PWNED #"
+
+
+def test_the_readme_command_quotes_the_key_path(hf, tmp_path, capsys):
+    """README.txt is read by a person who copies its command lines into a shell.
+    The key path was escaped in compose.service.yml and deploy.sh but went into
+    README's `hiddenforge show --keys ...` line raw."""
+    out = tmp_path / "o"
+    assert hf.main(["setup", "--backend", "web:80", "--keys", _HOSTILE_KEYS,
+                    "-o", str(out), "--non-interactive", "--json"]) == 0
+    capsys.readouterr()
+    line = next(ln for ln in (out / "README.txt").read_text().splitlines()
+                if "hiddenforge show --keys" in ln)
+    words = shlex.split(line)
+    assert words[words.index("--keys") + 1] == _HOSTILE_KEYS
+    assert "touch" not in words[:words.index("--keys") + 1]
+
+
+def test_the_descriptor_merge_command_quotes_the_output_path(hf, tmp_path, capsys):
+    """hiddenforge.json is the machine descriptor; its `merge`/`bare_command` are
+    commands a program may hand to a shell."""
+    out = tmp_path / "o; touch PWNED #"
+    assert hf.main(["setup", "--backend", "web:80", "-o", str(out),
+                    "--non-interactive", "--json"]) == 0
+    doc = json.loads(capsys.readouterr().out)
+    for field in ("merge", "bare_command"):
+        words = shlex.split(doc[field])
+        assert f"{out}/compose.service.yml" in words, field
+        assert "touch" not in words, field

@@ -56,9 +56,20 @@ password: file permissions are the boundary, not an authentication secret.
 references are validated (`validate_image_ref`) because they are handed to
 `docker run` as argv (a leading `-` would be parsed as a flag) and interpolated
 into generated YAML (a newline would inject keys). Output files are written
-through `O_NOFOLLOW` descriptors. Key material is never read, printed, or copied:
-`show` reads only the public address, and `vanity` never reads the secret key's
+through `O_NOFOLLOW` descriptors. Key material is never printed: `show` reads
+only the public address, and `vanity` never reads the secret key's
 bytes.
+
+**Image verification.** `verify-image` trusts the signer keys pinned in the CLI
+(`PINNED_ALLOWED_SIGNERS`, `PINNED_MLDSA_PUB_SHA256`), never the keys shipped in
+the signature directory it is checking: before this was fixed, a directory with a
+substituted key and a matching signature verified as `VERIFIED`, complete. Both
+halves of the hybrid signature are required unless the operator passes
+`--allow-classical-only`. The limit, stated plainly: a pin in the CLI protects
+against a tampered signature directory, not against a tampered CLI. If both came
+from the same compromised clone, the pin is compromised with them, so the key
+fingerprints in `signatures/README.md` should also be checked against a copy
+obtained another way.
 
 **Startup privilege drop.** The container runs as root at PID 1 because it must
 chown the operator's key mount and then `su-exec` to `tor`. It probes
@@ -198,8 +209,13 @@ which mode it decrypted. Use `--require-aead` for a production key.
   in `HiddenServiceDir`, which is the mount, so runtime encryption would be
   theatre. The envelope tools are offline and manual.
 
-The script never reads, prints, copies, or hashes the secret key's *contents*:
-it stats the file and moves it; `show` reads only the public address.
+What the script does with the secret key's *contents*, precisely: `backup` and
+`encrypt-key` read it into an in-memory tar and encrypt that; `backup` reports
+the SHA-256 of that plaintext tar (a fingerprint of the key set, which confirms a
+guessed key set but reveals nothing else); `--delete-plaintext` decrypts its own
+output and compares that hash before deleting anything. It is never printed and
+never written to disk unencrypted except by `restore`/`decrypt-key`, which put it
+back where it came from. `show`, `status` and `doctor` read only public files.
 
 ### Standards, honestly
 
@@ -218,7 +234,7 @@ it stats the file and moves it; `show` reads only the public address.
 ```bash
 hiddenforge doctor --json                 # caps, read-only, modes, torrc directives
 hiddenforge status --json                 # readiness + dropped_mappings
-hiddenforge verify-image --json           # digest matches the signed digest
+hiddenforge verify-image --json           # both signatures, against the PINNED keys
 docker exec <c> su-exec tor tor --verify-config -f /etc/tor/torrc   # Tor accepts it
 .venv/bin/pytest -q                       # 292 unit/property tests
 HIDDENFORGE_E2E=1 .venv/bin/pytest tests/test_e2e_live.py   # live acceptance

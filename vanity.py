@@ -291,6 +291,11 @@ def generate(prefix: str, name: str, out: Path, threads: int, force: bool,
         if (target.exists() or target.is_symlink()) and force:
             archived = _unique_archive_path(out, name)
             os.rename(target, archived)
+            # The container's published copy of the address now names the key
+            # just archived, and `hiddenforge show` reads it from the host (where
+            # `hostname` is usually unreadable) until the container republishes.
+            # Remove it: absent means "not ready", stale means "wrong address".
+            (out / f"{name}.onion").unlink(missing_ok=True)
 
         try:
             os.rename(src, target)

@@ -40,7 +40,7 @@ docker compose exec tor cat /var/lib/tor/hidden_service/myapp/hostname
 All security flags are pre-configured in the compose file. The backend service
 is network-isolated and never exposed to the internet.
 
-**What it is:** a hardened Tor hidden service container. Tor 0.4.9.12 with the
+**What it is:** a hardened Tor hidden service container. Tor 0.4.9.13 with the
 Vanguards guard-protection addon on Alpine 3.23, every dependency pinned and
 hash-verified at build time, built for a state-level adversary threat model.
 
@@ -132,7 +132,7 @@ software. HiddenForge pins every dependency at every layer.
 | Dependency | Pinned to | Why it matters |
 |---|---|---|
 | Alpine base image | `alpine:3.23.5@sha256:...` | Digest pinning locks the exact OS bytes. A tag like `latest` or even `3.23.5` can be silently updated on the registry |
-| `tor` apk | `0.4.9.12-r0` | A tampered Tor binary could de-anonymise every circuit |
+| `tor` apk | `0.4.9.13-r0` | A tampered Tor binary could de-anonymise every circuit |
 | `python3` apk | `3.12.14-r0` | The Python runtime executes the entrypoint and Vanguards |
 | `su-exec` apk | `0.3-r0` | This binary performs the privilege drop to the `tor` user |
 | `py3-pip` apk | `25.1.1-r1` | Build-only; pinned so it can't be updated to a version that silently ignores `--require-hashes` |
@@ -209,12 +209,25 @@ ssh-keygen -Y verify -f allowed-signers -I sam@sambent.com -n file \
 skopeo inspect --raw docker://sambent.dev/sam/hiddenforge:latest | sha256sum
 ```
 
+Check the keys before trusting a result. Signature files verify against
+whatever public key sits beside them, so the keys are the trust anchor and must
+match these values, which are also pinned in `scripts/hiddenforge`:
+
+```
+ssh-keygen -lf allowed-signers   # SHA256:wL6piZbyXpTOzT7Z66f/Q+vegj0Ml0ZwVouGJ06+3Q0
+                                 # SHA256:YcUo1tBtj+Mlnpv9QpsWnJcMt77B4SipyD6OWSMjMB4
+sha256sum sambent-mldsa.pub      # 4ae873ade7ee596c815f55f3052c0f01020b1817f86eaf15ab67c8fc77cbfd22
+```
+
 Releases up to 2.0.3 additionally carried a cosign signature (`cosign.pub` is
 kept in the repo so those older releases stay verifiable). From 2.0.4 cosign is
 no longer used: it was the last part of the flow that depended on external
 tooling, and the ML-DSA + hardware pair is the attestation.
 
-The CLI wraps the digest check and the signature check in one command:
+The CLI wraps the digest check and both signature checks in one command. It
+verifies against the pinned keys, never against keys found in the signature
+directory, and it refuses (exit 1) when the ML-DSA half cannot be checked unless
+you pass `--allow-classical-only`:
 
 ```bash
 hiddenforge verify-image sambent.dev/sam/hiddenforge:latest --json
@@ -405,4 +418,4 @@ podman info --format '{{.Host.Security.Rootless}}'
 | Base image | Alpine 3.23.5 digest-pinned |
 | Host isolation (optional) | Rootless Podman: container escape = host user, not real root |
 
-**Tor version: 0.4.9.12**
+**Tor version: 0.4.9.13**

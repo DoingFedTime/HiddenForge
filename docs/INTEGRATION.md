@@ -220,7 +220,13 @@ hiddenforge rotate  --keys ./tor-keys --confirm ROTATE --json     # DESTRUCTIVE
 - `rotate` refuses without the literal `--confirm ROTATE` and archives the old
   identity to `tor-keys.rotated-<epoch>`.
 - `encrypt-key` / `decrypt-key` wrap a single service key directory using the
-  same tools. hiddenforge does **not** decrypt at boot: Tor needs the plaintext
+  same tools. `decrypt-key` refuses to write into a directory that already holds
+  a key set; with `--force` it moves that directory aside whole
+  (`<name>.replaced-<epoch>`) and extracts into a fresh one.
+- `restore`, `decrypt-key` and `vanity --force` remove the published
+  `<name>.onion` for every key they replace: until the container republishes it
+  from the new key, that file names the old address. `show` then reports "not
+  ready" rather than a stale address. hiddenforge does **not** decrypt at boot: Tor needs the plaintext
   secret key in `HiddenServiceDir`, which is the mount, so at-rest encryption is
   an offline/manual step, not runtime.
 
@@ -279,22 +285,31 @@ hiddenforge verify-image sambent.dev/sam/hiddenforge:latest --json
 ```
 
 Resolves the registry digest with `skopeo` (no pull), compares it to
-`signatures/hiddenforge.digest`, and verifies the SSH-FIDO2 (YubiKey) signature
-over that digest. ML-DSA (post-quantum) is also checked when `pqsign` is
-installed; if not, it is reported as `null` (optional) rather than a failure. A
-present-but-invalid signature is a failure. `--skip-registry` verifies the
-signatures alone. Result fields: `registry_digest`, `signed_digest`,
-`digest_match`, `ssh_fido2`, `mldsa`, `failures`, `unchecked`, `complete`. Exit
-`0` verified, `1` not verified, `2` bad arguments.
+`signatures/hiddenforge.digest`, and verifies both halves of the hybrid
+signature over that digest: SSH-FIDO2 (YubiKey) and ML-DSA-65 (post-quantum, via
+`pqsign`). The digest file is read once and the same bytes feed every check.
 
-**Gate on `ok and complete`, not on `ok` alone.** `ok` means nothing that ran
-failed; `complete` means nothing was left unrun. They differ exactly when a
-declared check could not be performed -- most often `pqsign` missing on the
-runner, which leaves the post-quantum half of the hybrid signature unverified
-and lists it in `unchecked`. A gate keying on `ok` alone accepts that image,
-which is signature-stripping arriving through the verifier's reporting rather
-than through the signature. An unreachable registry is not in this category: it
-is a hard failure and shows up in `failures`.
+**The trust anchor is pinned in the CLI**, not read from the signature
+directory: the release signer keys (`PINNED_ALLOWED_SIGNERS`) and the SHA-256 of
+the ML-DSA public key (`PINNED_MLDSA_PUB_SHA256`). A signature directory whose
+keys have been replaced fails, however valid the replaced signatures are. To
+verify an image signed by someone else, name their keys explicitly with
+`--allowed-signers FILE` and/or `--mldsa-pub FILE`; the result then says
+`"trust_anchor": "operator-supplied"`.
+
+A hybrid signature with one half unexamined is **not verified**: if the ML-DSA
+signature is missing from the set, or `pqsign` is not installed, the command
+fails (exit 1). `--allow-classical-only` accepts the SSH-FIDO2 signature alone,
+and the result then reports `complete: false`. `--skip-registry` verifies the
+signatures without comparing the registry, and is likewise reported as
+`complete: false`. Result fields: `registry_digest`, `signed_digest`,
+`digest_match`, `ssh_fido2`, `mldsa`, `trust_anchor`, `failures`, `unchecked`,
+`complete`. Exit `0` verified, `1` not verified, `2` bad arguments.
+
+**A deploy gate should require `ok and complete`.** `ok` is false whenever a
+check failed or a check the operator did not opt out of could not run; `complete`
+is false whenever anything at all was left unchecked, including by an explicit
+opt-out.
 
 ```bash
 hiddenforge sbom --image sambent.dev/sam/hiddenforge:latest --out hf.spdx.json --json
@@ -369,12 +384,13 @@ print(addr["onion"], addr["key_path"])
 
 ## 9. Troubleshooting
 
-- **`show --json` reports `derived_matches: false`** — the `hostname` file and the
-  public key in that directory describe different addresses, so the key set is
-  inconsistent (a partial restore, or files from two services in one directory).
-  Tor rewrites `hostname` from the key when it starts, so it will serve the
-  DERIVED address, not the one reported. Do not publish this address; restore the
-  whole directory from one backup. `null` means the comparison could not be made
+- **`show` exits 1 with `source: "inconsistent"`, `onion: null`** — the `hostname`
+  file and the public key in that directory describe different addresses (a
+  partial restore, or files from two services in one directory). Tor rewrites
+  `hostname` from the key when it starts and serves the key's address, so no
+  address is reported; both are in the document as `hostname_onion` and
+  `derived_onion`, and `derived_matches` is `false`. Restore the whole directory
+  from one backup. `derived_matches: null` means the comparison could not be made
   (no readable public key), which is not the same as agreement.
 - **`show --json` exits 4 / `onion: null`** — the key is not generated yet. Poll
   `status --json` until `ready`. First boot can take 60–120 s.

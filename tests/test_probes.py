@@ -439,3 +439,58 @@ def test_the_deadline_is_a_deadline(monkeypatch, capsys):
     # both spellings stop in the same place.
     assert e._assert_process_dropped(_Pid(), "Tor", timeout=0.4) is False
     assert clock["t"] == pytest.approx(0.4, abs=0.01)
+
+
+def test_su_exec_at_uid_zero_is_not_yet_not_failed(monkeypatch):
+    """The child is su-exec until it execs Tor, and su-exec is root until its own
+    setuid() -- that is its job. Measured in the image: a read right after Popen
+    saw `su-exec` at uid 0 in 294 of 300 tries, and treating that as failure
+    killed 4 of 16 concurrent container starts with a false "running as root"."""
+    frames = iter([
+        "Name:\tsu-exec\nUid:\t0\t0\t0\t0\n",
+        "Name:\tsu-exec\nUid:\t0\t0\t0\t0\n",
+        "Name:\ttor\nUid:\t100\t100\t100\t100\n",
+    ])
+
+    class Status:
+        def __init__(self, path):
+            pass
+
+        def read_text(self, encoding=None):
+            return next(frames)
+
+    monkeypatch.setattr(e, "Path", Status)
+    monkeypatch.setattr(e.time, "sleep", lambda s: None)
+    assert e._assert_process_dropped(_Pid(), "Tor", timeout=5) is True
+
+
+def test_the_target_itself_at_uid_zero_is_still_refused(monkeypatch, capsys):
+    """The allowance is for su-exec only: once the process is Tor, root is fatal."""
+    class Status:
+        def __init__(self, path):
+            pass
+
+        def read_text(self, encoding=None):
+            return "Name:\ttor\nUid:\t0\t0\t0\t0\n"
+
+    monkeypatch.setattr(e, "Path", Status)
+    assert e._assert_process_dropped(_Pid(5), "Tor", timeout=1) is False
+    assert "is running as root" in capsys.readouterr().out
+
+
+def test_a_su_exec_that_never_drops_is_refused_at_the_deadline(monkeypatch, capsys):
+    """Waiting on su-exec must not become waiting forever, or a pass."""
+    clock = {"t": 0.0}
+
+    class Status:
+        def __init__(self, path):
+            pass
+
+        def read_text(self, encoding=None):
+            return "Name:\tsu-exec\nUid:\t0\t0\t0\t0\n"
+
+    monkeypatch.setattr(e, "Path", Status)
+    monkeypatch.setattr(e.time, "monotonic", lambda: clock["t"])
+    monkeypatch.setattr(e.time, "sleep", lambda s: clock.__setitem__("t", clock["t"] + s))
+    assert e._assert_process_dropped(_Pid(), "Tor", timeout=1) is False
+    assert "could not confirm Tor dropped privileges" in capsys.readouterr().out

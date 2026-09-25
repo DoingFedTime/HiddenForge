@@ -654,8 +654,9 @@ def test_restore_refuses_an_archive_that_carries_no_identity(hf, tmp_path, capsy
     out = capsys.readouterr().out
     assert rc != 0, "an archive with no secret key must not report success"
     assert "no hs_ed25519_secret_key and no encrypted key envelope" in out
-    # And it must fail closed: nothing half-written into the volume.
-    assert not (dest / "app" / "hostname").exists()
+    # And it must fail closed: nothing at all written into the volume, not even
+    # the directories the archive names (the old conflict scan created those).
+    assert not dest.exists() or not any(dest.iterdir())
 
 
 def test_restore_still_accepts_a_real_backup(hf, keys, tmp_path, capsys):
@@ -737,3 +738,145 @@ def test_a_backup_of_an_encrypted_volume_still_restores(hf, keys, tmp_path, caps
                     "--tool", "gpg", "--passphrase-file", str(pp), "--json"]) == 0
     capsys.readouterr()
     assert (dest / "app" / "hs_ed25519_secret_key").read_bytes() == original
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# decrypt-key must never write over a live key set
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _key_set(d: Path, fill: int, onion_char: str) -> None:
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "hs_ed25519_public_key").write_bytes(PUBLIC_TAG.ljust(32, b"\x00")
+                                             + bytes([fill]) * 32)
+    (d / "hs_ed25519_secret_key").write_bytes(bytes([fill]) * 96)
+    (d / "hostname").write_text(onion_char * 56 + ".onion\n")
+
+
+def _encrypted_then_replaced(hf, keys, tmp_path, capsys):
+    """Encrypt app's key (0x22), then give app a DIFFERENT live key (0x33): the
+    state after a vanity --force, a rotate, or a container that regenerated."""
+    pp = tmp_path / "pp"
+    pp.write_text(TEST_PASSPHRASE + "\n")
+    assert hf.main(["encrypt-key", "--keys", str(keys), "--name", "app", "--tool", "gpg",
+                    "--passphrase-file", str(pp), "--delete-plaintext", "--json"]) == 0
+    capsys.readouterr()
+    _key_set(keys / "app", 0x33, "b")
+    (keys / "app" / "extra-live-file").write_bytes(b"live")
+    return pp
+
+
+def test_decrypt_key_refuses_to_overwrite_a_different_live_key(hf, keys, tmp_path,
+                                                                capsys):
+    """Reproduced before the fix: the live key was replaced by the archived one,
+    exit 0, no copy kept. The key IS the address, so that is a permanent loss."""
+    pp = _encrypted_then_replaced(hf, keys, tmp_path, capsys)
+    rc, doc = _run(hf, capsys, ["decrypt-key", "--keys", str(keys), "--name", "app",
+                                "--tool", "gpg", "--passphrase-file", str(pp), "--json"])
+    assert rc == hf.EXIT_FAIL and doc["ok"] is False
+    assert "--force" in doc["error"]
+    assert (keys / "app" / "hs_ed25519_secret_key").read_bytes() == b"\x33" * 96
+
+
+def test_decrypt_key_force_moves_the_live_key_aside_whole(hf, keys, tmp_path, capsys):
+    """--force archives, never deletes, and extracts into a FRESH directory: the
+    old per-file overwrite left a mixed key set when the live directory had a
+    file the archive lacked."""
+    pp = _encrypted_then_replaced(hf, keys, tmp_path, capsys)
+    rc, doc = _run(hf, capsys, ["decrypt-key", "--keys", str(keys), "--name", "app",
+                                "--tool", "gpg", "--passphrase-file", str(pp),
+                                "--force", "--json"])
+    assert rc == 0, doc
+    archived = Path(doc["archived"])
+    assert (archived / "hs_ed25519_secret_key").read_bytes() == b"\x33" * 96
+    assert (keys / "app" / "hs_ed25519_secret_key").read_bytes() == b"\x22" * 96
+    assert not (keys / "app" / "extra-live-file").exists(), "mixed key set"
+    assert stat.S_IMODE(os.stat(keys / "app").st_mode) == 0o700
+
+
+def test_decrypt_key_removes_a_published_address_that_may_be_stale(hf, keys, tmp_path,
+                                                                    capsys):
+    pp = _encrypted_then_replaced(hf, keys, tmp_path, capsys)
+    (keys / "app.onion").write_text("b" * 56 + ".onion\n")
+    rc, doc = _run(hf, capsys, ["decrypt-key", "--keys", str(keys), "--name", "app",
+                                "--tool", "gpg", "--passphrase-file", str(pp),
+                                "--force", "--json"])
+    assert rc == 0 and doc["stale_address_files"] == []
+    assert not (keys / "app.onion").exists()
+
+
+def test_decrypt_key_refuses_an_archive_with_no_key(hf, tmp_path, capsys):
+    """decrypt-key used to skip what restore refused, and accept a keyless archive."""
+    def build(tar, io):
+        info = tar.tarinfo("hostname")
+        info.size = 5
+        tar.addfile(info, io.BytesIO(b"x.oni"))
+
+    blob, pp = _sealed(hf, tmp_path, build)
+    keys = tmp_path / "k"
+    keys.mkdir()
+    blob.rename(keys / "app.keys.tar.gpg")
+    rc = hf.main(["decrypt-key", "--keys", str(keys), "--name", "app", "--tool", "gpg",
+                  "--passphrase-file", str(pp), "--json"])
+    assert rc != 0
+    assert "no hs_ed25519_secret_key" in capsys.readouterr().out
+    assert not (keys / "app").exists()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# restore: leave nothing behind when refusing; touch nothing it did not write
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_a_conflict_refusal_leaves_nothing_behind(hf, keys, tmp_path, capsys):
+    """The conflict scan used to CREATE each member's parent directory while it
+    looked, so a restore refused for a conflict still left new directories."""
+    def build(tar, io):
+        for name in ("app/hs_ed25519_secret_key", "other/hs_ed25519_secret_key"):
+            info = tar.tarinfo(name)
+            info.size = 96
+            tar.addfile(info, io.BytesIO(b"\x44" * 96))
+
+    blob, pp = _sealed(hf, tmp_path, build)
+    rc = hf.main(["restore", "--keys", str(keys), "--input", str(blob),
+                  "--tool", "gpg", "--passphrase-file", str(pp), "--json"])
+    capsys.readouterr()
+    assert rc == hf.EXIT_FAIL
+    assert not (keys / "other").exists()
+
+
+def test_restore_removes_a_stale_published_address(hf, keys, tmp_path, capsys):
+    """After a key is replaced, `<name>.onion` names the OLD key until the
+    container republishes, and `show` reads it from the host."""
+    out = tmp_path / "b.tar.gpg"
+    pp = tmp_path / "pp"
+    pp.write_text(TEST_PASSPHRASE + "\n")
+    assert hf.main(["backup", "--keys", str(keys), "--out", str(out), "--tool", "gpg",
+                    "--passphrase-file", str(pp), "--json"]) == 0
+    capsys.readouterr()
+    (keys / "app.onion").write_text("b" * 56 + ".onion\n")
+    rc, doc = _run(hf, capsys, ["restore", "--keys", str(keys), "--input", str(out),
+                                "--tool", "gpg", "--passphrase-file", str(pp),
+                                "--force", "--json"])
+    assert rc == 0 and doc["stale_address_files"] == []
+    assert not (keys / "app.onion").exists()
+
+
+def test_restore_leaves_files_it_did_not_write_alone(hf, keys, tmp_path, capsys):
+    """The old final pass chmod'ed EVERY entry in the volume by path, resetting an
+    unrelated service's published 0644 address file to 0600."""
+    out = tmp_path / "b.tar.gpg"
+    pp = tmp_path / "pp"
+    pp.write_text(TEST_PASSPHRASE + "\n")
+    assert hf.main(["backup", "--keys", str(keys), "--out", str(out), "--tool", "gpg",
+                    "--passphrase-file", str(pp), "--json"]) == 0
+    capsys.readouterr()
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    other = dest / "other.onion"
+    other.write_text("c" * 56 + ".onion\n")
+    os.chmod(other, 0o644)
+    assert hf.main(["restore", "--keys", str(dest), "--input", str(out), "--tool", "gpg",
+                    "--passphrase-file", str(pp), "--json"]) == 0
+    capsys.readouterr()
+    assert stat.S_IMODE(os.stat(other).st_mode) == 0o644
+    assert stat.S_IMODE(os.stat(dest / "app" / "hs_ed25519_secret_key").st_mode) == 0o600
+    assert stat.S_IMODE(os.stat(dest / "app").st_mode) == 0o700

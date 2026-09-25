@@ -349,6 +349,19 @@ def test_force_archives_the_old_key_set_rather_than_deleting_it(v, mkp224o, keys
     assert (keys / "app" / "hostname").read_text().strip() == VECTOR_ONION
 
 
+def test_force_removes_the_published_address_of_the_replaced_key(v, mkp224o, keys):
+    """<name>.onion is the container's copy of the OLD address. `show` reads it
+    from the host, so leaving it would report the replaced key's address with
+    ok: true until the container republished."""
+    (keys / "app").mkdir(parents=True)
+    (keys / "app" / "hs_ed25519_secret_key").write_bytes(b"the old key")
+    (keys / "app.onion").write_text("b" * 56 + ".onion\n")
+    (keys / "other.onion").write_text("c" * 56 + ".onion\n")
+    v.generate(PREFIX, "app", keys, threads=1, force=True)
+    assert not (keys / "app.onion").exists()
+    assert (keys / "other.onion").exists(), "only the replaced service's file goes"
+
+
 def test_two_forced_replacements_in_the_same_second_do_not_collide(v, mkp224o, keys):
     """The archive name carries a whole-second timestamp, so two runs a moment
     apart would otherwise rename the second key set onto the first -- destroying

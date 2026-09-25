@@ -32,9 +32,11 @@ leave unmeasured. The entrypoint.py mutations below are kept as a fast canary --
 they are also covered by the full run, and a disagreement between the two is
 itself a finding.
 
-Each mutation is applied to the real source, the named tests are run, and a
-non-zero pytest exit is a KILL. The source is restored from memory in a finally,
-so an interrupted run cannot leave a mutation behind.
+Each mutation is applied to a THROWAWAY COPY of the tree, the named tests are
+run there, and a non-zero pytest exit is a KILL. It used to rewrite the real
+source and restore it in a `finally`: anything that read the working tree during
+a run saw a mutant (a scratch image build did, 2026-09-25), and a SIGKILL would
+have left one behind. The real tree is now only ever read.
 
     python scripts/mutation_spotcheck.py
 
@@ -44,8 +46,11 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import shlex
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -79,14 +84,12 @@ MUTATIONS = [
     (
         "restore no longer forces 0600 on key files",
         "scripts/hiddenforge",
-        "                for path in sorted(keys.rglob(\"*\")):\n"
-        "                    if path.is_symlink():\n"
-        "                        continue\n"
-        "                    os.chmod(path, 0o700 if path.is_dir() else 0o600)",
-        "                for path in sorted(keys.rglob(\"*\")):\n"
-        "                    if path.is_symlink():\n"
-        "                        continue\n"
-        "                    os.chmod(path, 0o700 if path.is_dir() else 0o644)",
+        "        with os.fdopen(fd, \"wb\") as fh:\n"
+        "            os.fchmod(fh.fileno(), 0o600)\n"
+        "            fh.write(src_fh.read())",
+        "        with os.fdopen(fd, \"wb\") as fh:\n"
+        "            os.fchmod(fh.fileno(), 0o644)\n"
+        "            fh.write(src_fh.read())",
         "tests/test_backup.py",
     ),
     (
@@ -101,7 +104,7 @@ MUTATIONS = [
         "scripts/hiddenforge",
         'IMAGE_REF_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._/:@-]{0,254}$")',
         'IMAGE_REF_RE = re.compile(r"^[a-zA-Z0-9-][a-zA-Z0-9._/:@-]{0,254}$")',
-        "tests/test_cli.py -k image_ref or validate_image",
+        "tests/test_cli.py -k 'image_ref or validate_image'",
     ),
     (
         "_safe stops escaping control characters (log injection)",
@@ -143,18 +146,18 @@ MUTATIONS = [
     (
         "the key path goes into deploy.sh unquoted (arbitrary code execution)",
         "scripts/hiddenforge",
-        "    keys_q = shlex.quote(keys_dir)",
-        "    keys_q = keys_dir",
+        "    keys_q = shlex.quote(keys_dir)\n    # Inside an echo's",
+        "    keys_q = keys_dir\n    # Inside an echo's",
         "tests/test_cli.py -k inject_a_command",
     ),
     (
         "a stripped ML-DSA half is shrugged off instead of failing (downgrade)",
         "scripts/hiddenforge",
-        "    if pub.is_file() != sig.is_file():\n"
+        "    if trusted_pub is None and pub.is_file() != sig.is_file():\n"
         '        missing = "public key" if sig.is_file() else "signature"\n'
         '        return False, (f"the ML-DSA {missing} is missing while the other half is "\n'
         '                       "present; this signature set has been altered")',
-        "    if pub.is_file() != sig.is_file():\n"
+        "    if trusted_pub is None and pub.is_file() != sig.is_file():\n"
         '        return None, "ML-DSA public key or signature missing"',
         "tests/test_cli.py -k mldsa",
     ),
@@ -177,22 +180,24 @@ MUTATIONS = [
     (
         "restore accepts '..' path-traversal members again",
         "scripts/hiddenforge",
-        '                if name.is_absolute() or ".." in name.parts:',
-        "                if name.is_absolute():",
+        '        if name.is_absolute() or ".." in name.parts:',
+        "        if name.is_absolute():",
         "tests/test_backup.py",
     ),
     (
         "restore reports success over an archive holding no identity",
         "scripts/hiddenforge",
-        "                if not restores_a_key:",
-        "                if False:",
+        "    if not has_identity:",
+        "    if False:",
         "tests/test_backup.py -k no_identity",
     ),
     (
         "restore accepts a control character in an archive member name",
         "scripts/hiddenforge",
-        "                    if bad:",
-        "                    if False:",
+        "        if bad:\n            raise ValueError(\n"
+        "                f\"refusing archive member",
+        "        if False:\n            raise ValueError(\n"
+        "                f\"refusing archive member",
         "tests/test_backup.py -k control_character_in_a_member",
     ),
     (
@@ -201,6 +206,83 @@ MUTATIONS = [
         "        complete = ok and not unchecked",
         "        complete = ok",
         "tests/test_cli.py -k not_complete_without_pqsign",
+    ),
+    (
+        "verify-image trusts the signature directory's own allowed-signers again",
+        "scripts/hiddenforge",
+        '            allowed_signers = "\\n".join(PINNED_ALLOWED_SIGNERS) + "\\n"',
+        '            allowed_signers = (sigdir / "allowed-signers").read_text()',
+        "tests/test_verify_trust.py",
+    ),
+    (
+        "verify-image accepts an ML-DSA public key that is not the pinned one",
+        "scripts/hiddenforge",
+        "        if hashlib.sha256(pub_bytes).hexdigest() != PINNED_MLDSA_PUB_SHA256:",
+        "        if False:",
+        "tests/test_verify_trust.py",
+    ),
+    (
+        "verify-image exits 0 with the ML-DSA half unchecked, without being asked to",
+        "scripts/hiddenforge",
+        "            if not args.allow_classical_only:",
+        "            if False:",
+        "tests/test_verify_trust.py",
+    ),
+    (
+        "decrypt-key extracts over an existing key set again",
+        "scripts/hiddenforge",
+        "            if d.is_dir() and any(d.iterdir()):",
+        "            if False:",
+        "tests/test_backup.py -k decrypt",
+    ),
+    (
+        "a refused restore leaves directories behind (conflict scan creates them)",
+        "scripts/hiddenforge",
+        "_dir_fd_under(root_fd, parts[:-1], dir_fds, create=False)",
+        "_dir_fd_under(root_fd, parts[:-1], dir_fds)",
+        "tests/test_backup.py -k leaves_nothing_behind",
+    ),
+    (
+        "restore keeps a published address file that may name the replaced key",
+        "scripts/hiddenforge",
+        "        stale = _drop_stale_published(keys, restored)",
+        "        stale = []",
+        "tests/test_backup.py -k stale",
+    ),
+    (
+        "show reports the hostname file's address when the key disagrees",
+        "scripts/hiddenforge",
+        "    if derived_matches is False:\n        extra =",
+        "    if False:\n        extra =",
+        "tests/test_cli.py -k 'inconsistent or derived'",
+    ),
+    (
+        "setup's README prints the key path unquoted inside a command",
+        "scripts/hiddenforge",
+        "    keys_q = shlex.quote(keys_dir)\n    return f\"\"\"hiddenforge, your setup",
+        "    keys_q = keys_dir\n    return f\"\"\"hiddenforge, your setup",
+        "tests/test_cli.py -k 'readme or descriptor'",
+    ),
+    (
+        "setup's descriptor carries the output path unquoted in merge/bare_command",
+        "scripts/hiddenforge",
+        '        fragment_q = shlex.quote(f"{out}/compose.service.yml")',
+        '        fragment_q = f"{out}/compose.service.yml"',
+        "tests/test_cli.py -k 'readme or descriptor'",
+    ),
+    (
+        "setup stops validating --container (a YAML key in the fragment)",
+        "scripts/hiddenforge",
+        "        container = validate_container(args.container)",
+        "        container = args.container",
+        "tests/test_cli.py -k container",
+    ),
+    (
+        "doctor demands the rootful capability set under rootless Podman again",
+        "scripts/hiddenforge",
+        "    required = ROOTLESS_REQUIRED_CAP_ADD if _is_rootless() else REQUIRED_CAP_ADD",
+        "    required = REQUIRED_CAP_ADD",
+        "tests/test_cli.py -k doctor",
     ),
 ]
 
@@ -232,15 +314,27 @@ def _invalidate_bytecode_cache(path: Path, *, bump_mtime: bool = True) -> None:
     os.utime(path, (future, future))
 
 
-def run(cmd: list[str]) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, check=False)
+_COPY_IGNORE = shutil.ignore_patterns(".git", ".venv", "mutants", "__pycache__",
+                                      ".hypothesis", ".pytest_cache", "*.pyc",
+                                      "evidence", "security-reports")
+
+
+def run(cmd: list[str], cwd: Path) -> subprocess.CompletedProcess:
+    return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, check=False)
 
 
 def main() -> int:
+    with tempfile.TemporaryDirectory(prefix="hf-spotcheck-") as tmp:
+        work = Path(tmp) / "tree"
+        shutil.copytree(ROOT, work, ignore=_COPY_IGNORE)
+        return _check_all(work)
+
+
+def _check_all(work: Path) -> int:
     killed = 0
     survived: list[str] = []
     for label, rel, old, new, target in MUTATIONS:
-        path = ROOT / rel
+        path = work / rel
         original = path.read_text(encoding="utf-8")
         if original.count(old) != 1:
             print(f"SKIP  {label}: anchor found {original.count(old)} times in {rel} "
@@ -251,16 +345,26 @@ def main() -> int:
             path.write_text(original.replace(old, new), encoding="utf-8")
             _invalidate_bytecode_cache(path)
             proc = run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
-                        *target.split()])
+                        *shlex.split(target)], work)
         finally:
             path.write_text(original, encoding="utf-8")
             _invalidate_bytecode_cache(path, bump_mtime=False)
-        if proc.returncode != 0:
+        # Only exit 1 -- "tests ran and at least one failed" -- is a kill. Any
+        # other non-zero code means the tests did not run as intended (2: usage
+        # error, 4: a target that does not exist, 5: a -k filter that selected
+        # nothing), and counting those as kills is how an unparsed `-k a or b`
+        # target was reported KILLED here without running a single test.
+        if proc.returncode == 1:
             killed += 1
             print(f"KILLED  {label}")
-        else:
+        elif proc.returncode == 0:
             survived.append(label)
             print(f"SURVIVED  {label}  (run: python3 -m pytest {target})")
+        else:
+            survived.append(label)
+            tail = (proc.stdout + proc.stderr).strip().splitlines()[-1:]
+            print(f"ERROR  {label}: pytest exited {proc.returncode}, so no verdict "
+                  f"({' '.join(tail)})")
 
     total = len(MUTATIONS)
     print(f"\nkill-rate: {killed}/{total}")

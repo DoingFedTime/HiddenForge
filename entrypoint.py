@@ -965,6 +965,12 @@ def _uid_from_status(status_text):
     return int(match.group(1)) if match else None
 
 
+def _name_from_status(status_text):
+    """The process name (comm) from a /proc/<pid>/status body, or None."""
+    match = re.search(r'^Name:\s+(\S+)', status_text, re.M)
+    return match.group(1) if match else None
+
+
 def _assert_process_dropped(proc, name, timeout=5):
     """Confirm a child process is NOT running as root.
 
@@ -972,6 +978,14 @@ def _assert_process_dropped(proc, name, timeout=5):
     silently fails would leave Tor (and Vanguards) running as root, which is
     strictly worse than never attempting one. Read the child's real uid from
     /proc and refuse to continue if it is still 0.
+
+    The child is su-exec until it execs the target, and su-exec is root until it
+    calls setuid() -- which is its job. Uid 0 while the process is still named
+    `su-exec` is therefore "not yet", not "failed". Treating it as failed killed
+    the container on a race: measured in the image, a read straight after Popen
+    saw `su-exec` at uid 0 in 294 of 300 tries, and 4 of 16 concurrent rootless
+    starts died with a false "Tor is running as root". A su-exec that never gets
+    past setuid() exits, so waiting on it still ends in a refusal at the deadline.
     """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -981,6 +995,9 @@ def _assert_process_dropped(proc, name, timeout=5):
             time.sleep(0.1)
             continue
         uid = _uid_from_status(status)
+        if uid == 0 and _name_from_status(status) == 'su-exec':
+            time.sleep(0.01)
+            continue
         if uid is not None:
             if uid == 0:
                 print(f"FATAL: {name} (pid {proc.pid}) is running as root; the "
