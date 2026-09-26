@@ -161,7 +161,7 @@ MUTATIONS = [
         "scripts/hiddenforge",
         "    if not ready and not reason:",
         "    if False:",
-        "tests/test_cli.py -k missing_condition",
+        "tests/test_cli.py -k inconsistent_key_set_as_the_reason",
     ),
     (
         "the key path goes into the compose fragment unquoted (container escape)",

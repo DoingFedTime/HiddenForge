@@ -22,7 +22,7 @@ for svc in blog; do
     onion=""
     for _ in $(seq 1 180); do
         onion=$(docker compose -f "$BASE" -f compose.service.yml exec -T tor \
-            cat /var/lib/tor/hidden_service/$svc/hostname 2>/dev/null || true)
+            su-exec tor cat /var/lib/tor/hidden_service/$svc/hostname 2>/dev/null || true)
         if [ -n "$onion" ]; then break; fi
         sleep 1
     done

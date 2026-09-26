@@ -667,12 +667,13 @@ def test_status_not_ready_exits_4(hf, tmp_path, capsys, monkeypatch):
     assert json.loads(capsys.readouterr().out)["ready"] is False
 
 
-def test_status_names_the_missing_condition_when_the_healthcheck_is_ready(
+def test_a_starting_engine_does_not_hold_back_a_ready_service(
         hf, tmp_path, capsys, monkeypatch):
-    """Measured on the committed compose file: the address was published and the
-    in-container healthcheck said ready, while Docker's health status was still
-    "starting" (it re-runs every 60s). `status` answered not-ready with
-    reason null, which tells an integrator nothing."""
+    """Measured under Podman without a systemd user session: healthchecks run
+    from systemd timers there, so the engine said "starting" for good while the
+    service was ready, and `status` could never say ready. The probe `status`
+    runs is the identical script, so it stands in until the engine has a
+    result of its own."""
     os.chmod(tmp_path, 0o700)
     _write_service(tmp_path, "app", VECTOR_PUB_HEX, VECTOR_ONION)
     monkeypatch.setattr(hf, "_docker_inspect", lambda c: (
@@ -681,13 +682,29 @@ def test_status_names_the_missing_condition_when_the_healthcheck_is_ready(
     monkeypatch.setattr(hf, "_resolve_container", lambda c: "cid")
     monkeypatch.setattr(hf, "_docker_exec_json", lambda c, a: {
         "tor_bootstrapped": True, "hidden_service_published": True,
-        "vanguards": True, "reason": None,
+        "vanguards": True, "reason": None, "ready": True,
         "services": [{"name": "app", "address": VECTOR_ONION, "published": True}]})
     monkeypatch.setattr(hf, "_docker_exec_text", lambda c, a: None)
     rc = hf.main(["status", "--container", "tor", "--keys", str(tmp_path), "--json"])
     doc = json.loads(capsys.readouterr().out)
-    assert rc == hf.EXIT_NOT_READY and doc["ready"] is False
-    assert "'starting'" in doc["reason"]
+    assert rc == 0 and doc["ready"] is True, doc
+
+
+def test_a_starting_engine_and_a_failing_probe_is_not_ready_and_says_why(
+        hf, tmp_path, capsys, monkeypatch):
+    os.chmod(tmp_path, 0o700)
+    _write_service(tmp_path, "app", VECTOR_PUB_HEX, VECTOR_ONION)
+    monkeypatch.setattr(hf, "_docker_inspect", lambda c: (
+        {"State": {"Running": True, "Health": {"Status": "starting"}},
+         "RestartCount": 0}, None))
+    monkeypatch.setattr(hf, "_resolve_container", lambda c: "cid")
+    monkeypatch.setattr(hf, "_docker_exec_json", lambda c, a: {
+        "ready": False, "reason": "bootstrap not at 100%",
+        "services": [{"name": "app", "address": VECTOR_ONION, "published": True}]})
+    monkeypatch.setattr(hf, "_docker_exec_text", lambda c, a: None)
+    rc = hf.main(["status", "--container", "tor", "--keys", str(tmp_path), "--json"])
+    doc = json.loads(capsys.readouterr().out)
+    assert rc == hf.EXIT_NOT_READY and doc["reason"] == "bootstrap not at 100%"
 
 
 def test_status_names_an_inconsistent_key_set_as_the_reason(hf, tmp_path, capsys,

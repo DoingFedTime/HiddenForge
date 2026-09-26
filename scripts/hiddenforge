@@ -881,8 +881,16 @@ def cmd_status(args) -> int:
     # through systemd timers, and a host without a systemd user session never
     # does. The in-container healthcheck just run above IS that check, so its
     # verdict stands in; an engine that does report a status is still believed.
-    healthy = (health == "healthy" if health
-               else bool(hc is not None and hc.get("ready") is True))
+    # "starting" only means the engine has not recorded a result yet. Under
+    # Podman without a systemd user session it never will -- healthchecks run
+    # from systemd timers -- and it stayed "starting" for good, measured, while
+    # the service was ready. The probe run above is the identical script, so
+    # its verdict stands in until the engine has one of its own; an engine that
+    # says "unhealthy" is still believed.
+    if health in (None, "", "starting"):
+        healthy = bool(hc is not None and hc.get("ready") is True)
+    else:
+        healthy = health == "healthy"
     ready = bool(running and healthy and published and addresses
                  and all(a["onion"] for a in addresses))
     if not ready and not reason:
@@ -1451,7 +1459,7 @@ for svc in {names}; do
     onion=""
     for _ in $(seq 1 180); do
         onion=$({up} -f "$BASE" -f compose.service.yml exec -T {container_q} \\
-            cat /var/lib/tor/hidden_service/$svc/hostname 2>/dev/null || true)
+            su-exec tor cat /var/lib/tor/hidden_service/$svc/hostname 2>/dev/null || true)
         if [ -n "$onion" ]; then break; fi
         sleep 1
     done

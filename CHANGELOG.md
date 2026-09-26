@@ -81,6 +81,21 @@ the shipped `podman-compose.yml` and driven through the documented flow.
   `doctor` now measures capabilities, `pids.max` and `memory.swap.max` inside
   the container instead of trusting the engine's report -- which also removes
   its false "missing CHOWN/SETUID/SETGID" on every Podman container.
+- **A rootless Podman container could not survive its own restart.** The first
+  start worked; every restart exited 1 with "Permission denied" on the service
+  directory, a silent restart loop under `logging: driver: none`. Root there
+  has no `DAC_OVERRIDE`, so it cannot open a directory a previous start handed
+  to the tor user. That directory is already in the state startup produces, so
+  it is now accepted when -- and only when -- `lstat` shows a real directory,
+  owned by tor, closed to others. Proven: a fresh boot and two restarts, each
+  back to `ready` with the same address.
+- **`status` stayed not-ready while Podman's health said "starting" for good**
+  (its healthchecks run from systemd timers, which a host without a user
+  session never fires). The in-container probe is the same script, so its
+  verdict stands in until the engine has a result of its own; "unhealthy" from
+  the engine is still believed.
+- `setup`'s `deploy.sh` reads the address as the tor user on every runtime,
+  instead of relying on root's `DAC_OVERRIDE`.
 - **`rotate` could never work inside the container**: it renamed the key
   volume, which is a mount point there (`EBUSY`). On a mount point it now moves
   the contents into `.rotated-<epoch>/`; if any entry cannot be moved, nothing is.
