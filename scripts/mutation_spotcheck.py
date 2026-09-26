@@ -321,8 +321,15 @@ MUTATIONS = [
     (
         "doctor passes a tor-owned service the container reported nothing about",
         "scripts/hiddenforge",
-        "for n in closed if n not in covered)",
-        "for n in closed if False)",
+        "        if n in covered:\n            continue\n        if configured",
+        "        if True:\n            continue\n        if configured",
+        "tests/test_doctor_keys.py",
+    ),
+    (
+        "doctor downgrades a CONFIGURED service the container is silent about to a warning",
+        "scripts/hiddenforge",
+        "        if configured is not None and n not in configured:",
+        "        if True:",
         "tests/test_doctor_keys.py",
     ),
     (
