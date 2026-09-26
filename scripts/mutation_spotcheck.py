@@ -68,10 +68,10 @@ MUTATIONS = [
     (
         "service-directory chmod runs AFTER chown (symlink escape)",
         "entrypoint.py",
-        "    _chmod_dir_nofollow(hs_dir, 0o700, only_if_root_owned=True)\n"
-        "    _chown_r(hs_dir, tor_pw.pw_uid, tor_pw.pw_gid)",
-        "    _chown_r(hs_dir, tor_pw.pw_uid, tor_pw.pw_gid)\n"
-        "    _chmod_dir_nofollow(hs_dir, 0o700, only_if_root_owned=True)",
+        "        _chmod_dir_nofollow(hs_dir, 0o700, only_if_root_owned=True)\n"
+        "        _chown_r(hs_dir, tor_pw.pw_uid, tor_pw.pw_gid)",
+        "        _chown_r(hs_dir, tor_pw.pw_uid, tor_pw.pw_gid)\n"
+        "        _chmod_dir_nofollow(hs_dir, 0o700, only_if_root_owned=True)",
         "tests/test_privileged_fs.py",
     ),
     (
