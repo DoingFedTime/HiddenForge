@@ -195,8 +195,10 @@ def test_duplicate_service_dirs_are_collapsed_in_order(hc, torrc):
     assert hc._hidden_service_dirs() == ["/a", "/b"]
 
 
-def test_a_missing_torrc_is_no_services_not_a_crash(hc, torrc):
-    assert hc._hidden_service_dirs() == []
+def test_a_missing_torrc_is_unknown_not_no_services(hc, torrc):
+    """An unreadable config says nothing about the services; reading it as "none"
+    let every per-service check pass vacuously."""
+    assert hc._hidden_service_dirs() is None
 
 
 def test_a_directive_mentioned_in_a_comment_is_not_a_service(hc, torrc):
@@ -254,10 +256,11 @@ def test_one_unpublished_service_makes_the_whole_container_unpublished(hc, tmp_p
     assert [d["published"] for d in details] == [True, False]
 
 
-def test_no_services_configured_counts_as_published(hc):
-    """Vacuously true: there is nothing left to wait for. The container is still
-    a misconfiguration, which the entrypoint warns about at boot."""
-    assert hc._published_state([]) == (True, [])
+def test_no_services_configured_is_not_published(hc):
+    """Not vacuously true: a container with no onion service publishes nothing,
+    and a status document saying "published" there would mislead anyone reading
+    the field rather than the verdict."""
+    assert hc._published_state([]) == (False, [])
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -406,6 +409,30 @@ def world(monkeypatch, hc, tmp_path):
         return dirs
 
     return setup
+
+
+def test_no_configured_service_is_never_ready(hc, world):
+    """Measured: a backend that did not resolve at boot left Tor with no onion
+    service; bootstrap, circuits and Vanguards were all fine and the container
+    reported ready and healthy while serving nothing."""
+    world(_circuit_status(*[_intro_line(str(i), ONION) for i in range(3)]),
+          services=[])
+    rc, doc = hc.evaluate()
+    assert rc == 1
+    assert doc["ready"] is False
+    assert doc["hidden_service_published"] is False
+    assert doc["hidden_service_reachable"] is False
+    assert "no onion service is configured" in doc["reason"]
+
+
+def test_an_unreadable_torrc_cannot_be_evaluated(hc, world, monkeypatch):
+    world(_circuit_status(*[_intro_line(str(i), ONION) for i in range(3)]),
+          services=[("app", ONION + ".onion\n")])
+    monkeypatch.setattr(hc, "_hidden_service_dirs", lambda: None)
+    rc, doc = hc.evaluate()
+    assert rc == 2
+    assert doc["ready"] is False
+    assert "cannot read" in doc["reason"]
 
 
 def test_a_healthy_container_is_ready(hc, world):

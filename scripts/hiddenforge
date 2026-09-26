@@ -516,7 +516,9 @@ def build_manifest() -> dict:
             "note": "The entrypoint resolves backend hostnames to IPs at startup "
                     "and re-checks them every 30s; if a backend moves to a new IP "
                     "it exits so the restart policy restarts it with a fresh "
-                    "lookup. Keep a restart policy on the service.",
+                    "lookup; a backend that did not resolve at startup is "
+                    "configured the same way once it does. Keep a restart "
+                    "policy on the service.",
         },
         "ports": [],
         "networks": {

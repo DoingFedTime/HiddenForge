@@ -701,10 +701,11 @@ def test_sixty_one_seconds_alive_does_earn_a_reset(supervisor):
 
 class _MovedAfter:
     """A stand-in _BackendWatch whose verdict arrives after `ticks` loop turns."""
-    def __init__(self, ticks):
+    def __init__(self, ticks, old="172.20.0.3"):
         self.ticks = ticks
+        self.old = old
 
-    def __call__(self, recorded):
+    def __call__(self, recorded, pending=()):
         return self
 
     def start(self):
@@ -713,7 +714,7 @@ class _MovedAfter:
     @property
     def moved(self):
         self.ticks -= 1
-        return ("web", "172.20.0.3", ["172.20.0.9"]) if self.ticks <= 0 else None
+        return ("web", self.old, ["172.20.0.9"]) if self.ticks <= 0 else None
 
 
 def test_a_backend_that_moved_restarts_the_container(supervisor, monkeypatch, capsys):
@@ -725,6 +726,19 @@ def test_a_backend_that_moved_restarts_the_container(supervisor, monkeypatch, ca
     assert code == 1
     out = capsys.readouterr().out
     assert "now resolves to 172.20.0.9, but Tor is still forwarding to 172.20.0.3" in out
+    stopped = [name for _proc, name, _t in h.killed]
+    assert "Tor" in stopped and "Vanguards" in stopped
+
+
+def test_a_backend_that_appeared_restarts_the_container(supervisor, monkeypatch, capsys):
+    """A backend that did not resolve at boot was dropped from the torrc; once it
+    resolves, the restart is what configures its service."""
+    monkeypatch.setattr(e, "_BackendWatch", _MovedAfter(3, old=None))
+    code, h = supervisor(tor_polls=[None] * 20)
+    assert code == 1
+    out = capsys.readouterr().out
+    assert ("did not resolve at startup and now resolves to 172.20.0.9. "
+            "Restarting so the service it was dropped from is configured") in out
     stopped = [name for _proc, name, _t in h.killed]
     assert "Tor" in stopped and "Vanguards" in stopped
 

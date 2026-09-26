@@ -254,6 +254,16 @@ def validate_hostname(value, label):
     return v
 
 
+class BackendUnresolved(ValueError):
+    """A backend name that did not resolve: a state that can change, unlike a typo.
+
+    After a host reboot the runtime starts containers in no particular order
+    (depends_on is a compose-time ordering only), so the backend's name may not
+    exist yet when this container boots. Measured: the service was dropped, Tor
+    ran with no onion service at all, and nothing ever added it back.
+    """
+
+
 def resolve_to_ip(host, label):
     """
     Return an IPv4 address string for the given host.
@@ -277,7 +287,7 @@ def resolve_to_ip(host, label):
     try:
         resolved = socket.gethostbyname(stripped)
     except socket.gaierror as exc:
-        raise ValueError(
+        raise BackendUnresolved(
             f"Cannot resolve '{_safe(stripped)}' in {_safe(label)}: {_safe(exc)}. "
             "Is the backend container running and on the same network?"
         ) from exc
@@ -309,7 +319,7 @@ def resolve_to_ip(host, label):
 # Tor configuration generation
 # ---------------------------------------------------------------------------
 
-def build_torrc_string(dropped=None, resolved=None):
+def build_torrc_string(dropped=None, resolved=None, unresolved=None):
     """Validate env vars and assemble the torrc text — PURE, no filesystem side effects.
 
     Returns a tuple ``(torrc_content, hs_dirs)`` where ``hs_dirs`` is the list of
@@ -328,6 +338,9 @@ def build_torrc_string(dropped=None, resolved=None):
     If ``resolved`` is a dict, every backend given by NAME (not by IP literal)
     is recorded in it as ``name -> the IP written into the torrc``, so the
     supervisor can notice when that name later points somewhere else.
+
+    If ``unresolved`` is a set, every backend NAME that did not resolve is added
+    to it, so the supervisor can restart and configure it once it does.
     """
 
     # Tor's own seccomp sandbox can be disabled via env var for environments
@@ -513,6 +526,16 @@ VanguardsLiteEnabled 1
                     if dropped is not None:
                         dropped.append(
                             f"{safe_env}: malformed mapping '{_safe(host_mapping.strip())}'")
+            except BackendUnresolved as e:
+                print(f"Skipping mapping '{_safe(host_mapping)}' for now: {e}")
+                note = ""
+                if unresolved is not None:
+                    unresolved.add(backend_name)
+                    note = " It is added automatically once the name resolves."
+                if dropped is not None:
+                    dropped.append(
+                        f"{safe_env}: invalid mapping '{_safe(host_mapping.strip())}': "
+                        f"{e}{note}")
             except ValueError as e:
                 print(f"Skipping invalid mapping '{_safe(host_mapping)}': {e}")
                 if dropped is not None:
@@ -653,7 +676,9 @@ def generate_basic_torrc():
 
     dropped = []
     _backend_ips.clear()
-    torrc_content, hs_dirs = build_torrc_string(dropped=dropped, resolved=_backend_ips)
+    _backend_pending.clear()
+    torrc_content, hs_dirs = build_torrc_string(
+        dropped=dropped, resolved=_backend_ips, unresolved=_backend_pending)
 
     tor_pw = pwd.getpwnam('tor')
     for hs_dir in hs_dirs:
@@ -1224,6 +1249,8 @@ def start_vanguards():
 # name -> IP written into the torrc, for every backend given by name. Filled by
 # generate_basic_torrc; read by the supervisor's _BackendWatch.
 _backend_ips: dict[str, str] = {}
+# Backend names that did not resolve at start (see BackendUnresolved).
+_backend_pending: set[str] = set()
 
 BACKEND_RECHECK_SECONDS = 30
 BACKEND_MOVE_CONFIRMATIONS = 2
@@ -1246,15 +1273,21 @@ class _BackendWatch:
     evidence and resets the count, so this cannot restart the container over a
     blip. Resolution runs on its own thread so a slow resolver never stalls the
     supervision loop.
+
+    A name that did not resolve at start (``pending``) is watched the same way,
+    with no recorded IP: once it resolves on BACKEND_MOVE_CONFIRMATIONS lookups
+    in a row, the restart configures the service it was dropped from.
     """
 
-    def __init__(self, recorded, resolver=socket.gethostbyname_ex,
+    def __init__(self, recorded, pending=(), resolver=socket.gethostbyname_ex,
                  interval=BACKEND_RECHECK_SECONDS):
         self.recorded = dict(recorded)
+        for name in pending:
+            self.recorded.setdefault(name, None)
         self.resolver = resolver
         self.interval = interval
         self.misses = dict.fromkeys(self.recorded, 0)
-        self.moved = None           # (name, old_ip, [current ips]) once confirmed
+        self.moved = None           # (name, old_ip or None, [current ips]) once confirmed
         self._stop = threading.Event()
 
     def check_once(self):
@@ -1406,7 +1439,7 @@ def main():
         print(f"Warning: could not start Vanguards: {e}. Will keep retrying.")
 
     # Watch the backends' names from here on (see _BackendWatch).
-    backend_watch = _BackendWatch(_backend_ips).start()
+    backend_watch = _BackendWatch(_backend_ips, _backend_pending).start()
     publication_gate = _ThrottledGate(_service_reachable)
 
     # ── Process supervision loop ────────────────────────────────────────────
@@ -1443,9 +1476,14 @@ def main():
         # unaffected, it lives in the key volume.
         if backend_watch.moved:
             name, old, current = backend_watch.moved
-            print(f"Backend '{_safe(name)}' now resolves to {', '.join(current)}, "
-                  f"but Tor is still forwarding to {old}. Restarting so the onion "
-                  "follows it (the address itself does not change).")
+            if old is None:
+                print(f"Backend '{_safe(name)}' did not resolve at startup and now "
+                      f"resolves to {', '.join(current)}. Restarting so the service "
+                      "it was dropped from is configured (addresses do not change).")
+            else:
+                print(f"Backend '{_safe(name)}' now resolves to {', '.join(current)}, "
+                      f"but Tor is still forwarding to {old}. Restarting so the onion "
+                      "follows it (the address itself does not change).")
             _kill_proc(_vanguards_process, "Vanguards", timeout=5)
             _kill_proc(_tor_process, "Tor", timeout=10)
             sys.exit(1)

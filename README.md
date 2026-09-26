@@ -117,8 +117,14 @@ The only two lines you need to edit are flagged with `<-- EDIT`.
 > row no longer include the old IP) and exits, so the container's restart policy
 > starts it again with a fresh lookup; the `.onion` address does not change.
 > Measured: the onion followed a moved backend within about a minute, and a
-> backend that was simply down caused no restart at all. This relies on a restart
-> policy, which both shipped compose files set (`restart: unless-stopped`).
+> backend that was simply down caused no restart at all. A backend whose name does
+> not resolve yet when the container starts (after a host reboot the runtime starts
+> containers in no particular order) is watched the same way: its service is left
+> out, and once the name resolves the container restarts and configures it
+> (measured: restarted 39 seconds after the backend came up, then served it).
+> Until then `hiddenforge status` is not ready and lists the mapping as dropped.
+> This relies on a restart policy, which both shipped compose files set
+> (`restart: unless-stopped`).
 
 - `TOR_SANDBOX` set to `0` disables `Sandbox 1` (default: `1`)
 

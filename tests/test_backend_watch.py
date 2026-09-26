@@ -71,3 +71,60 @@ def test_nothing_to_watch_starts_no_thread():
     w = e._BackendWatch({})
     assert w.start() is w and w.moved is None
 
+
+
+# ── A backend that did not resolve at boot ──────────────────────────────────
+# After a host reboot the runtime starts containers in no particular order, so
+# the backend's name may not exist yet. Measured before this was handled: the
+# service was dropped, Tor ran with no onion service, and it stayed that way.
+
+def test_an_unresolvable_backend_is_recorded_as_pending_not_just_dropped(
+        monkeypatch, mock_dns):
+    monkeypatch.setenv("APP_TOR_SERVICE_HOSTS", "80:web:80")
+    monkeypatch.setenv("OTHER_TOR_SERVICE_HOSTS", "80:backend:8080")
+    resolved, pending, dropped = {}, set(), []
+    torrc, dirs = e.build_torrc_string(dropped=dropped, resolved=resolved,
+                                       unresolved=pending)
+    assert pending == {"web"}
+    assert resolved == {"backend": "192.0.2.1"}
+    assert [d.rsplit("/", 1)[1] for d in dirs] == ["other"]
+    assert "hidden_service/app" not in torrc
+    assert "added automatically once the name resolves" in dropped[0]
+
+
+def test_an_invalid_address_is_a_typo_not_a_pending_backend(monkeypatch, mock_dns):
+    """Only a failed lookup can change by itself; a malformed IP never will."""
+    monkeypatch.setenv("APP_TOR_SERVICE_HOSTS", "80:999.1.1.1:80")
+    pending = set()
+    e.build_torrc_string(unresolved=pending)
+    assert pending == set()
+
+
+def test_a_pending_backend_that_resolves_triggers_the_restart():
+    w = e._BackendWatch({}, pending={"web"}, resolver=_resolver(["172.20.0.4"]))
+    assert w.check_once() is None, "one observation is not confirmation"
+    assert w.check_once() == ("web", None, ["172.20.0.4"])
+
+
+def test_a_pending_backend_still_missing_never_restarts():
+    w = e._BackendWatch({}, pending={"web"},
+                        resolver=_resolver(socket.gaierror(-3, "Try again")))
+    assert all(w.check_once() is None for _ in range(10))
+
+
+def test_a_pending_backend_flapping_needs_consecutive_answers():
+    w = e._BackendWatch({}, pending={"web"},
+                        resolver=_resolver(["172.20.0.4"], socket.gaierror(-3, "x"),
+                                           ["172.20.0.4"], ["172.20.0.4"]))
+    assert w.check_once() is None
+    assert w.check_once() is None
+    assert w.check_once() is None
+    assert w.check_once() == ("web", None, ["172.20.0.4"])
+
+
+def test_a_pending_backend_alone_starts_the_watch(monkeypatch):
+    started = []
+    monkeypatch.setattr(e.threading, "Thread",
+                        lambda **kw: type("T", (), {"start": lambda s: started.append(kw)})())
+    e._BackendWatch({}, pending={"web"}).start()
+    assert [kw["name"] for kw in started] == ["backend-watch"]

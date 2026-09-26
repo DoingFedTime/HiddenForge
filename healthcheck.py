@@ -160,7 +160,7 @@ def _hidden_service_dirs():
     Read from the config rather than the environment: the container may have been
     started with the full <NAME>_TOR_SERVICE_HOSTS form, and the entrypoint is the
     only thing that turns those into directories. torrc is 0640 tor:tor, readable
-    by this process.
+    by this process. None when it cannot be read: that is not "no services".
     """
     dirs = []
     try:
@@ -170,7 +170,7 @@ def _hidden_service_dirs():
                 if m:
                     dirs.append(m.group(1))
     except OSError:
-        return []
+        return None
     # De-duplicate, order-stable.
     seen = set()
     out = []
@@ -210,9 +210,9 @@ def _read_address_file(path, max_bytes=256):
 
 
 def _published_state(dirs):
-    """(all_published, details). No services configured counts as published."""
+    """(all_published, details). No service configured is nothing published."""
     if not dirs:
-        return True, []
+        return False, []
     details = []
     all_ok = True
     for d in dirs:
@@ -351,6 +351,9 @@ def evaluate():
     doc["vanguards"] = _vanguards_running()
 
     dirs = _hidden_service_dirs()
+    if dirs is None:
+        doc["reason"] = f"cannot read {TORRC} - cannot tell which services to check"
+        return 2, doc
     published, details = _published_state(dirs)
     doc["hidden_service_published"] = published
     doc["services"] = details
@@ -366,9 +369,16 @@ def evaluate():
         svc["intro_points"] = intro.get(addr[:-len(".onion")], 0) if addr else 0
         if svc["published"] and svc["intro_points"] < 1:
             unreachable.append(svc["name"])
-    doc["hidden_service_reachable"] = not unreachable
+    doc["hidden_service_reachable"] = bool(details) and not unreachable
 
-    if not doc["tor_bootstrapped"]:
+    # Checked first: a Tor with no onion service bootstraps and builds circuits
+    # like a healthy one, and every per-service check below passes vacuously.
+    # Measured: a backend that did not resolve at boot left zero services and
+    # the container reported ready and healthy.
+    if not dirs:
+        doc["reason"] = ("no onion service is configured - every mapping was "
+                         "dropped at startup; `hiddenforge status` lists why")
+    elif not doc["tor_bootstrapped"]:
         doc["reason"] = "bootstrap not at 100%"
     elif not doc["circuit_established"]:
         doc["reason"] = "no circuit established yet"

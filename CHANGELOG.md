@@ -69,6 +69,18 @@ both injectable into the compose fragment and the 0755 deploy script.
   under Docker, `podman unshare` under rootless Podman -- both measured to
   produce a complete archive that restores to the same address), and a volume
   with no identity in it is refused.
+- **A backend that was not up at boot left the container serving nothing, and
+  reporting healthy.** After a host reboot the runtime starts containers in no
+  set order (`depends_on` applies only to `compose up`). Measured: with the
+  backend not yet running, its name did not resolve, the service was dropped,
+  Tor ran with no onion service at all -- and the healthcheck reported ready and
+  healthy, because with no service every per-service check passed vacuously. It
+  never recovered: 90s after the backend came up, still no service and no
+  restart. Now a name that fails to resolve is watched like a moved one, and
+  once it resolves on two lookups in a row the container restarts and configures
+  it (measured: restarted 39s after the backend came up, ready, and the onion
+  served HTTP 200 over Tor). A container with no configured service is never
+  ready, and an unreadable torrc is "cannot evaluate" rather than "no services".
 - **A recreated backend no longer blackholes the onion.** Names are resolved
   into the torrc at start; a backend recreated on a new IP left every request
   going to an address nobody listened on, with the healthcheck green. The
