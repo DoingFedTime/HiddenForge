@@ -123,6 +123,7 @@ IMAGE_REF_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._/:@-]{0,254}$")
 HSDIR_RE = re.compile(r"^\s*HiddenServiceDir\s+(\S+)\s*$")
 TORRC_PATH = "/etc/tor/torrc"
 HF_IN_IMAGE = "/usr/local/bin/hiddenforge"
+KEYS_IN_IMAGE = "/var/lib/tor/hidden_service"
 
 # Directives every generated torrc must contain. Kept here so the emitter, the
 # tests and `doctor` agree. The authoritative generator is entrypoint.py; this
@@ -557,7 +558,7 @@ def build_manifest() -> dict:
                     "`ready` is true. Read the address with `hiddenforge show --json`.",
         },
         "address": {
-            "command": "hiddenforge show --json [--name <service>]",
+            "command": "hiddenforge show --json [--name <service>] [--container <name>]",
             "file": "/var/lib/tor/hidden_service/<name>/hostname",
             "published_file": "/var/lib/tor/hidden_service/<name>.onion",
             "key_path": "/var/lib/tor/hidden_service/<name>/hs_ed25519_secret_key",
@@ -613,12 +614,37 @@ def cmd_version(args) -> int:
 # show
 # ---------------------------------------------------------------------------
 
+def _fill_from_container(entry: dict, container: str | None) -> dict:
+    """Ask the container for an address the host cannot read.
+
+    Under rootless Podman the key directory belongs to a subuid and the
+    published `<name>.onion` is never written, so from the host `show` could
+    never answer, and the documented flow -- poll `status` until ready, then
+    read the address with `show` -- dead-ended on the runtime recommended for
+    high-risk deployments. The container can read it as the tor user, which is
+    what `status` already does. Only an address the host could not read at all
+    is filled; a host-side inconsistency is never overruled.
+    """
+    if container is None or entry["onion"] is not None or entry["source"] is not None:
+        return entry
+    resolved = _resolve_container(container)
+    text = (_docker_exec_text(resolved, ["cat", f"{KEYS_IN_IMAGE}/{entry['name']}/hostname"])
+            if resolved else None)
+    onion = (text or "").strip()
+    if ONION_RE.fullmatch(onion):
+        entry = {**entry, "onion": onion, "source": "container"}
+    return entry
+
+
 def cmd_show(args) -> int:
     keys = Path(args.keys)
+    container = getattr(args, "container", None)
     try:
+        if container is not None:
+            validate_container(container)
         if args.name:
             validate_name(args.name)
-            entry = address_for(keys, args.name)
+            entry = _fill_from_container(address_for(keys, args.name), container)
             if entry["source"] == "inconsistent":
                 return emit_json(EXIT_FAIL, **entry, keys=str(keys),
                                  error=_inconsistent_error(entry))
@@ -630,7 +656,8 @@ def cmd_show(args) -> int:
                 return emit_json(EXIT_OK, **entry)
             print(f"{entry['name']} {entry['onion']}")
             return EXIT_OK
-        entries = [address_for(keys, n) for n in service_names(keys)]
+        entries = [_fill_from_container(address_for(keys, n), container)
+                   for n in service_names(keys)]
     except ValueError as exc:
         return emit_json(EXIT_USAGE, error=str(exc))
 
@@ -685,9 +712,8 @@ def _not_ready_error(keys: Path, name: str) -> str:
         return (f"address not published yet: {d} exists but is not readable by this "
                 f"user, and {keys / (name + '.onion')} does not exist. Under Docker it "
                 "appears once the service is reachable. Under rootless Podman it is "
-                "never written; read the address inside the container instead: "
-                f"`podman exec <container> su-exec tor cat "
-                f"/var/lib/tor/hidden_service/{name}/hostname`")
+                "never written; pass --container <name> to read the address from "
+                "inside the container.")
     return "address not generated yet (Tor has not written hostname)"
 
 
@@ -806,7 +832,12 @@ def cmd_status(args) -> int:
 
     # Granular readiness from the in-container healthcheck, if reachable.
     resolved = _resolve_container(container)
-    hc = (_docker_exec_json(resolved, ["python3", "/usr/local/bin/healthcheck.py", "--json"])
+    # As the tor user, exactly as the image's own HEALTHCHECK runs it. Run as
+    # root it cannot reach the control socket in the tor-owned 0700 DataDirectory
+    # wherever root lacks DAC_OVERRIDE (rootless Podman), and its "cannot reach
+    # control socket" answer was accepted as the state of a working service.
+    hc = (_docker_exec_json(resolved, ["su-exec", "tor", "python3",
+                                       "/usr/local/bin/healthcheck.py", "--json"])
           if resolved else None)
     if hc is not None:
         bootstrapped = hc.get("tor_bootstrapped")
@@ -823,13 +854,21 @@ def cmd_status(args) -> int:
     # healthcheck's list (it reads service names from the torrc, so it works even
     # when the 0751 key volume cannot be listed from the host).
     keys = Path(args.keys)
-    addresses = []
-    if keys.is_dir():
-        addresses = [{"name": e["name"], "onion": e["onion"]}
-                     for e in (address_for(keys, n) for n in service_names(keys))]
-    if not addresses and hc and hc.get("services"):
-        addresses = [{"name": s.get("name"), "onion": s.get("address")}
-                     for s in hc["services"]]
+    entries = ([address_for(keys, n) for n in service_names(keys)]
+               if keys.is_dir() else [])
+    addresses = [{"name": e["name"], "onion": e["onion"]} for e in entries]
+    hc_addr = {s.get("name"): s.get("address")
+               for s in ((hc or {}).get("services") or []) if isinstance(s, dict)}
+    if not addresses:
+        addresses = [{"name": n, "onion": a} for n, a in hc_addr.items()]
+    else:
+        # Fill in only what the host could not read at all (source None): under
+        # rootless Podman the key directory belongs to a subuid and <name>.onion
+        # is never written, so every host-side address is None and `ready` could
+        # never become true. A host-side INCONSISTENCY is never overruled.
+        for a, e in zip(addresses, entries, strict=True):
+            if a["onion"] is None and e["source"] is None:
+                a["onion"] = hc_addr.get(a["name"])
     if published is None:
         published = bool(addresses) and all(a["onion"] for a in addresses)
 
@@ -838,7 +877,12 @@ def cmd_status(args) -> int:
                    if resolved else None)
     dropped_mappings = [ln for ln in (dropped_raw or "").splitlines() if ln.strip()]
 
-    healthy = health == "healthy"
+    # No engine health status at all means no healthcheck ran -- Podman runs them
+    # through systemd timers, and a host without a systemd user session never
+    # does. The in-container healthcheck just run above IS that check, so its
+    # verdict stands in; an engine that does report a status is still believed.
+    healthy = (health == "healthy" if health
+               else bool(hc is not None and hc.get("ready") is True))
     ready = bool(running and healthy and published and addresses
                  and all(a["onion"] for a in addresses))
     if not ready and not reason:
@@ -869,7 +913,7 @@ def cmd_status(args) -> int:
         "container": container,
         "status": state.get("Status"),
         "running": running,
-        "healthy": healthy if health else None,
+        "healthy": healthy,
         "health_status": health,
         "tor_bootstrapped": bootstrapped,
         "vanguards": vanguards,
@@ -935,6 +979,53 @@ def _is_rootless() -> bool:
     if proc.returncode != 0:
         return False
     return proc.stdout.strip().lower() == "true"
+
+
+# Linux capability numbers, for reading a measured bounding set back as names.
+_LINUX_CAPS = (
+    "CHOWN", "DAC_OVERRIDE", "DAC_READ_SEARCH", "FOWNER", "FSETID", "KILL", "SETGID",
+    "SETUID", "SETPCAP", "LINUX_IMMUTABLE", "NET_BIND_SERVICE", "NET_BROADCAST",
+    "NET_ADMIN", "NET_RAW", "IPC_LOCK", "IPC_OWNER", "SYS_MODULE", "SYS_RAWIO",
+    "SYS_CHROOT", "SYS_PTRACE", "SYS_PACCT", "SYS_ADMIN", "SYS_BOOT", "SYS_NICE",
+    "SYS_RESOURCE", "SYS_TIME", "SYS_TTY_CONFIG", "MKNOD", "LEASE", "AUDIT_WRITE",
+    "AUDIT_CONTROL", "SETFCAP", "MAC_OVERRIDE", "MAC_ADMIN", "SYSLOG", "WAKE_ALARM",
+    "BLOCK_SUSPEND", "AUDIT_READ", "PERFMON", "BPF", "CHECKPOINT_RESTORE",
+)
+
+
+def _caps_from_mask(mask: int) -> set[str]:
+    return {(_LINUX_CAPS[b] if b < len(_LINUX_CAPS) else f"CAP_{b}")
+            for b in range(64) if (mask >> b) & 1}
+
+
+def _runtime_state(container: str | None) -> dict:
+    """What the running container actually has, read from inside it.
+
+    The engines describe the same configuration differently -- Podman reports
+    `cap_drop: ALL` + `cap_add` as the explicit list of dropped capabilities
+    with an empty CapAdd, so a doctor reading engine config reported a correct
+    Podman container as missing CHOWN/SETUID/SETGID -- and an engine's config
+    is not proof of what was applied: podman-compose silently drops
+    pids_limit (before 1.1) and memswap_limit (every version). The container's
+    own view is the same truth on every runtime: PID 1's capability bounding
+    set, and the cgroup's pids.max and memory.swap.max. Empty values mean the
+    file does not exist (a cgroup-v1 host) and the caller falls back.
+    """
+    script = ('echo "swap=$(cat /sys/fs/cgroup/memory.swap.max 2>/dev/null)"; '
+              'echo "pids=$(cat /sys/fs/cgroup/pids.max 2>/dev/null)"; '
+              'echo "capbnd=$(sed -n "s/^CapBnd:[[:space:]]*//p" /proc/1/status)"; '
+              'echo "hostswap=$(tail -n +2 /proc/swaps 2>/dev/null | wc -l)"')
+    text = _docker_exec_text(container, ["sh", "-c", script]) if container else None
+    state: dict = {}
+    for line in (text or "").splitlines():
+        key, _, value = line.partition("=")
+        state[key.strip()] = value.strip()
+    if "capbnd" in state:
+        try:
+            state["capbnd"] = int(state["capbnd"], 16)
+        except ValueError:
+            state["capbnd"] = None
+    return state
 
 
 def _caps_ok(caps) -> set[str]:
@@ -1079,17 +1170,25 @@ def cmd_doctor(args) -> int:
 
     hc = info.get("HostConfig", {}) or {}
     secopt = [str(s) for s in (hc.get("SecurityOpt") or [])]
+    resolved = _resolve_container(container)
+    runtime = _runtime_state(resolved)
 
-    drop = _caps_ok(hc.get("CapDrop"))
-    add = _caps_ok(hc.get("CapAdd"))
-    checks.append(_check("ALL" in drop, "cap_drop includes ALL",
-                         f"CapDrop={sorted(drop)}"))
-    extra = add - REQUIRED_CAP_ADD
-    checks.append(_check(not extra, "cap_add stays within the allowed set",
-                         f"CapAdd={sorted(add)}"
-                         + (f"; unexpected: {sorted(extra)}" if extra else "")))
     required = ROOTLESS_REQUIRED_CAP_ADD if _is_rootless() else REQUIRED_CAP_ADD
-    missing = required - add
+    if runtime.get("capbnd") is not None:
+        granted = _caps_from_mask(runtime["capbnd"])
+        source = f"measured in the container (CapBnd): {sorted(granted)}"
+        extra = granted - REQUIRED_CAP_ADD
+        missing = required - granted
+    else:
+        drop = _caps_ok(hc.get("CapDrop"))
+        add = _caps_ok(hc.get("CapAdd"))
+        checks.append(_check("ALL" in drop, "cap_drop includes ALL",
+                             f"CapDrop={sorted(drop)}"))
+        source = f"engine config CapAdd={sorted(add)}"
+        extra = add - REQUIRED_CAP_ADD
+        missing = required - add
+    checks.append(_check(not extra, "cap_add stays within the allowed set",
+                         source + (f"; unexpected: {sorted(extra)}" if extra else "")))
     checks.append(_check(not missing, "cap_add includes every required capability",
                          f"missing: {sorted(missing)}" if missing else "complete"))
     checks.append(_check(
@@ -1127,16 +1226,39 @@ def cmd_doctor(args) -> int:
         checks.append(_check(True, "AppArmor profile is applied",
                              "host has no AppArmor; skipped", severity="warn"))
 
-    pids = _as_int(hc.get("PidsLimit"))
+    if runtime.get("pids"):
+        pids = _as_int(runtime["pids"])     # "max" -> None: no limit applied
+        pids_detail = f"measured pids.max={runtime['pids']}"
+    else:
+        pids = _as_int(hc.get("PidsLimit"))
+        pids_detail = f"engine config PidsLimit={hc.get('PidsLimit')!r}"
     checks.append(_check(pids is not None and 0 < pids <= 512,
                          "process count is capped at 512 or fewer",
-                         f"PidsLimit={hc.get('PidsLimit')!r}"))
+                         pids_detail + ("" if pids is not None and 0 < pids <= 512 else
+                                        "; podman-compose applies pids_limit only from "
+                                        "version 1.1")))
 
-    mem = _as_int(hc.get("Memory")) or 0
-    memswap = _as_int(hc.get("MemorySwap")) or 0
-    checks.append(_check(mem > 0 and memswap == mem,
-                         "swap is disabled (key material cannot be paged to disk)",
-                         f"Memory={hc.get('Memory')!r} MemorySwap={hc.get('MemorySwap')!r}"))
+    name = "swap is disabled (process memory cannot be paged to disk)"
+    if runtime.get("swap"):
+        if runtime["swap"] == "0":
+            checks.append(_check(True, name, "measured memory.swap.max=0"))
+        elif _as_int(runtime.get("hostswap")) == 0:
+            checks.append(_check(False, name,
+                                 f"memory.swap.max={runtime['swap']}, but the host has "
+                                 "no active swap, so nothing can be paged today",
+                                 severity="warn"))
+        else:
+            checks.append(_check(False, name,
+                                 f"memory.swap.max={runtime['swap']} and the host has "
+                                 "swap. Set memswap_limit equal to mem_limit (Docker); "
+                                 "podman-compose cannot set it at all, so under Podman "
+                                 "disable swap on the host"))
+    else:
+        mem = _as_int(hc.get("Memory")) or 0
+        memswap = _as_int(hc.get("MemorySwap")) or 0
+        checks.append(_check(mem > 0 and memswap == mem, name,
+                             f"Memory={hc.get('Memory')!r} "
+                             f"MemorySwap={hc.get('MemorySwap')!r}"))
 
     ports = (info.get("NetworkSettings") or {}).get("Ports") or {}
     published = {p: b for p, b in ports.items() if b}
@@ -1150,7 +1272,6 @@ def cmd_doctor(args) -> int:
     # The generated torrc must still carry every hardening directive. Docker
     # flags do not prove the Tor config was not weakened, and a compromised or
     # reconstructed /etc/tor/torrc would otherwise pass doctor silently.
-    resolved = _resolve_container(container)
     torrc = _docker_exec_text(resolved, ["cat", "/etc/tor/torrc"]) if resolved else None
     if torrc is None:
         checks.append(_check(True, "generated torrc is readable",
@@ -2198,6 +2319,57 @@ def _unique_dir(base: Path, suffix: str) -> Path:
     return candidate
 
 
+ROTATED_PREFIX = ".rotated-"
+
+
+def _rotate_inside(keys: Path) -> tuple[Path, list[str]]:
+    """Archive the volume's CONTENTS into `<keys>/.rotated-<epoch>/`.
+
+    For a key volume that is a mount point -- always the case for the image's own
+    `rotate`, whose volume is the bind mount -- renaming the directory fails with
+    EBUSY, so the old code could never rotate from inside the container at all.
+    Moving the entries instead keeps the old identity recoverable in the same
+    volume; Tor never looks at it, because only configured service names are
+    HiddenServiceDirs and no service name can start with a dot.
+
+    Every entry is checked before any is moved: a directory can only be moved to
+    a new parent by a user who may write to it, so a volume half of which cannot
+    be moved is refused whole rather than left half-rotated.
+    """
+    root_fd = os.open(keys, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        entries = sorted(n for n in os.listdir(root_fd)
+                         if not n.startswith(ROTATED_PREFIX))
+        if not entries:
+            raise ValueError(f"{keys} holds no identity to rotate")
+        stuck = [n for n in entries
+                 if stat.S_ISDIR(os.stat(n, dir_fd=root_fd, follow_symlinks=False).st_mode)
+                 and not os.access(n, os.W_OK, dir_fd=root_fd, follow_symlinks=False)]
+        if stuck:
+            raise OSError(errno.EACCES,
+                          f"cannot move {', '.join(stuck)} (not writable by this user); "
+                          "nothing was rotated. Run rotate where the service "
+                          "directories are writable, e.g. inside the container")
+        base = f"{ROTATED_PREFIX}{int(time.time())}"
+        name, n = base, 1
+        while True:
+            try:
+                os.mkdir(name, 0o700, dir_fd=root_fd)
+                break
+            except FileExistsError:
+                name, n = f"{base}-{n}", n + 1
+        archive_fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                             dir_fd=root_fd)
+        try:
+            for entry in entries:
+                os.rename(entry, entry, src_dir_fd=root_fd, dst_dir_fd=archive_fd)
+        finally:
+            os.close(archive_fd)
+    finally:
+        os.close(root_fd)
+    return keys / name, entries
+
+
 def cmd_rotate(args) -> int:
     try:
         keys = Path(args.keys)
@@ -2207,16 +2379,26 @@ def cmd_rotate(args) -> int:
         if (args.confirm or "").strip() != "ROTATE":
             return emit_json(EXIT_USAGE, keys=str(keys),
                              error="refusing to destroy an identity without --confirm ROTATE")
-        if not os.access(keys, os.W_OK):
-            return emit_json(EXIT_FAIL, keys=str(keys), error="key directory is not writable")
-        archived = _unique_dir(keys, ".rotated")
-        os.rename(keys, archived)
-        keys.mkdir(mode=0o700)
+        if os.path.ismount(keys):
+            archived, moved = _rotate_inside(keys)
+        else:
+            if not os.access(keys, os.W_OK):
+                return emit_json(EXIT_FAIL, keys=str(keys),
+                                 error="key directory is not writable")
+            archived = _unique_dir(keys, ".rotated")
+            os.rename(keys, archived)
+            keys.mkdir(mode=0o700)
+            moved = None
+        note = ("A running container keeps serving the old address from memory "
+                "until it is restarted; restart it to generate the new one.")
         if args.json:
-            return emit_json(EXIT_OK, keys=str(keys), archived=str(archived))
+            return emit_json(EXIT_OK, keys=str(keys), archived=str(archived),
+                             moved=moved, note=note)
         print(f"Moved the old identity to {archived}")
-        print(f"Created a fresh empty {keys}. The next container start generates a new address.")
+        print(f"{keys} is empty of identities now. {note}")
         return EXIT_OK
+    except ValueError as exc:
+        return emit_json(EXIT_USAGE, keys=str(getattr(args, "keys", "")), error=str(exc))
     except OSError as exc:
         return emit_json(EXIT_FAIL, error=str(exc))
 
@@ -2633,6 +2815,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("show", help="print the .onion address(es)")
     sp.add_argument("--keys", default=str(_default_keys()))
     sp.add_argument("--name", default=None)
+    sp.add_argument("--container", default=None,
+                    help="ask this container (as the tor user) for an address the "
+                         "host cannot read, e.g. under rootless Podman")
     _add_json(sp)
     sp.set_defaults(func=cmd_show)
 

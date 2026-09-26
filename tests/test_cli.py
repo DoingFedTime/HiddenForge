@@ -481,6 +481,57 @@ def test_rotate_archives_identity(hf, tmp_path, capsys):
     assert tmp_path.is_dir() and not (tmp_path / "app").exists()
 
 
+def test_rotate_on_a_mount_point_archives_the_contents(hf, tmp_path, capsys,
+                                                       monkeypatch):
+    """The image's own `rotate` targets its bind mount, and renaming a mount
+    point fails with EBUSY -- measured: it could never rotate from inside the
+    container. On a mount point the entries move into .rotated-<epoch> instead."""
+    _write_service(tmp_path, "app", VECTOR_PUB_HEX, VECTOR_ONION)
+    (tmp_path / "app.onion").write_text(VECTOR_ONION + "\n")
+    monkeypatch.setattr(hf.os.path, "ismount", lambda p: Path(p) == tmp_path)
+    rc = hf.main(["rotate", "--keys", str(tmp_path), "--confirm", "ROTATE", "--json"])
+    doc = json.loads(capsys.readouterr().out)
+    assert rc == 0, doc
+    archived = Path(doc["archived"])
+    assert archived.parent == tmp_path and archived.name.startswith(".rotated-")
+    assert (archived / "app" / "hostname").exists() and (archived / "app.onion").exists()
+    assert sorted(p.name for p in tmp_path.iterdir()) == [archived.name]
+    assert sorted(doc["moved"]) == ["app", "app.onion"]
+
+
+def test_a_second_rotation_does_not_swallow_the_first_archive(hf, tmp_path, capsys,
+                                                             monkeypatch):
+    monkeypatch.setattr(hf.os.path, "ismount", lambda p: Path(p) == tmp_path)
+    _write_service(tmp_path, "app", VECTOR_PUB_HEX, VECTOR_ONION)
+    assert hf.main(["rotate", "--keys", str(tmp_path), "--confirm", "ROTATE", "--json"]) == 0
+    first = Path(json.loads(capsys.readouterr().out)["archived"])
+    _write_service(tmp_path, "app", VECTOR_PUB_HEX, VECTOR_ONION)
+    assert hf.main(["rotate", "--keys", str(tmp_path), "--confirm", "ROTATE", "--json"]) == 0
+    second = Path(json.loads(capsys.readouterr().out)["archived"])
+    assert first != second and first.is_dir() and (first / "app").is_dir()
+    assert not (second / first.name).exists()
+
+
+def test_rotate_refuses_whole_when_a_directory_cannot_be_moved(hf, tmp_path, capsys,
+                                                               monkeypatch):
+    """Moving a directory to a new parent needs write permission on it; a
+    tor-owned service directory seen from the host has none. Checked for every
+    entry first, so nothing is left half-rotated."""
+    if os.geteuid() == 0:
+        pytest.skip("root bypasses directory permissions")
+    monkeypatch.setattr(hf.os.path, "ismount", lambda p: Path(p) == tmp_path)
+    _write_service(tmp_path, "aaa", VECTOR_PUB_HEX, VECTOR_ONION)
+    _write_service(tmp_path, "zzz", VECTOR_PUB_HEX, VECTOR_ONION)
+    os.chmod(tmp_path / "zzz", 0o555)  # noqa: S103 - a directory its owner cannot write
+    try:
+        rc = hf.main(["rotate", "--keys", str(tmp_path), "--confirm", "ROTATE", "--json"])
+    finally:
+        os.chmod(tmp_path / "zzz", 0o700)
+    doc = json.loads(capsys.readouterr().out)
+    assert rc == hf.EXIT_FAIL and "nothing was rotated" in doc["error"]
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["aaa", "zzz"]
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # doctor: torrc hardening directives
 # ─────────────────────────────────────────────────────────────────────────────
@@ -654,6 +705,60 @@ def test_status_names_an_inconsistent_key_set_as_the_reason(hf, tmp_path, capsys
     doc = json.loads(capsys.readouterr().out)
     assert rc == hf.EXIT_NOT_READY
     assert "restore the whole directory" in doc["reason"]
+
+
+def test_status_is_ready_under_rootless_podman(hf, tmp_path, capsys, monkeypatch):
+    """Measured live with podman-compose.yml: the service was up with 11
+    established introduction points, and `status` could never say ready.
+    Three causes, all reproduced here: the healthcheck was run as root (who
+    cannot reach the socket without DAC_OVERRIDE), the host cannot read the
+    subuid-owned key directory so every address was None, and Podman had no
+    health status because no healthcheck had run."""
+    keys = tmp_path / "tor-keys"
+    (keys / "app").mkdir(parents=True)
+    os.chmod(keys / "app", 0o000)              # the subuid-owned directory
+    asked = []
+
+    def exec_json(container, argv):
+        asked.append(argv)
+        if argv[:2] != ["su-exec", "tor"]:
+            return {"ready": False, "reason": "cannot reach control socket: [Errno 13]"}
+        return {"ready": True, "reason": None, "tor_bootstrapped": True,
+                "hidden_service_published": True, "vanguards": True,
+                "services": [{"name": "app", "address": VECTOR_ONION,
+                              "published": True}]}
+
+    monkeypatch.setattr(hf, "_docker_inspect", lambda c: (
+        {"State": {"Running": True}, "RestartCount": 0}, None))    # no Health at all
+    monkeypatch.setattr(hf, "_resolve_container", lambda c: "cid")
+    monkeypatch.setattr(hf, "_docker_exec_json", exec_json)
+    monkeypatch.setattr(hf, "_docker_exec_text", lambda c, a: None)
+    try:
+        rc = hf.main(["status", "--container", "tor", "--keys", str(keys), "--json"])
+    finally:
+        os.chmod(keys / "app", 0o700)
+    doc = json.loads(capsys.readouterr().out)
+    assert asked[0][:2] == ["su-exec", "tor"]
+    assert doc["address"] == VECTOR_ONION
+    assert rc == 0 and doc["ready"] is True, doc
+
+
+def test_an_engine_health_status_is_still_believed_over_the_probe(hf, tmp_path,
+                                                                  capsys, monkeypatch):
+    """The fallback is for NO status. An engine that says unhealthy is not
+    overruled by a single probe that happened to pass."""
+    _write_service(tmp_path, "app", VECTOR_PUB_HEX, VECTOR_ONION)
+    monkeypatch.setattr(hf, "_docker_inspect", lambda c: (
+        {"State": {"Running": True, "Health": {"Status": "unhealthy"}},
+         "RestartCount": 0}, None))
+    monkeypatch.setattr(hf, "_resolve_container", lambda c: "cid")
+    monkeypatch.setattr(hf, "_docker_exec_json", lambda c, a: {
+        "ready": True, "reason": None, "hidden_service_published": True,
+        "services": [{"name": "app", "address": VECTOR_ONION, "published": True}]})
+    monkeypatch.setattr(hf, "_docker_exec_text", lambda c, a: None)
+    rc = hf.main(["status", "--container", "tor", "--keys", str(tmp_path), "--json"])
+    doc = json.loads(capsys.readouterr().out)
+    assert rc == hf.EXIT_NOT_READY and doc["ready"] is False
 
 
 def test_status_surfaces_dropped_mappings(hf, tmp_path, capsys, monkeypatch):

@@ -125,7 +125,7 @@ def test_show_says_why_there_is_no_address(hf, capsys, closed_keys):
     doc = json.loads(capsys.readouterr().out)
     assert rc == hf.EXIT_NOT_READY
     assert "not readable by this user" in doc["error"]
-    assert "su-exec tor cat" in doc["error"]
+    assert "--container" in doc["error"]
 
 
 def test_show_still_says_not_generated_when_nothing_is_there(hf, capsys, tmp_path):
@@ -155,3 +155,121 @@ def test_a_service_the_container_says_nothing_about_is_not_a_pass(hf, monkeypatc
     rc, _doc, checks, _ = _doctor(hf, monkeypatch, capsys, closed_keys, inner)
     assert rc == hf.EXIT_FAIL
     assert "reported nothing" in checks["key modes for app"]["detail"]
+
+
+def test_show_with_container_reads_what_the_host_cannot(hf, monkeypatch, capsys,
+                                                        closed_keys):
+    """The documented flow -- poll status until ready, then `show` -- dead-ended
+    under rootless Podman: the host can never read the address there."""
+    onion = "atdorl67o6q7anir2qm3sly4expi3ywvs2ltw3wl53zezgycohzi2zqd.onion"
+    asked = []
+
+    def exec_text(container, argv):
+        asked.append((container, argv))
+        return onion + "\n"
+
+    monkeypatch.setattr(hf, "_resolve_container", lambda c: "cid")
+    monkeypatch.setattr(hf, "_docker_exec_text", exec_text)
+    rc = hf.main(["show", "--keys", str(closed_keys), "--name", "app",
+                  "--container", "tor", "--json"])
+    doc = json.loads(capsys.readouterr().out)
+    assert rc == 0 and doc["onion"] == onion and doc["source"] == "container"
+    assert asked == [("cid", ["cat", "/var/lib/tor/hidden_service/app/hostname"])]
+
+
+def test_show_container_output_is_validated_not_trusted(hf, monkeypatch, capsys,
+                                                        closed_keys):
+    monkeypatch.setattr(hf, "_resolve_container", lambda c: "cid")
+    monkeypatch.setattr(hf, "_docker_exec_text", lambda c, a: "not-an-onion\n")
+    rc = hf.main(["show", "--keys", str(closed_keys), "--name", "app",
+                  "--container", "tor", "--json"])
+    doc = json.loads(capsys.readouterr().out)
+    assert rc == hf.EXIT_NOT_READY and doc["onion"] is None
+
+
+def test_show_container_never_overrules_an_inconsistent_key_set(hf, monkeypatch,
+                                                                capsys, tmp_path):
+    """Only an address the host could not read at all is filled from inside."""
+    keys = tmp_path / "k"
+    (keys / "app").mkdir(parents=True)
+    (keys / "app" / "hs_ed25519_public_key").write_bytes(
+        b"== ed25519v1-public: type0 ==\x00\x00\x00"
+        + bytes.fromhex("8f4f9d3cd2d8163dffbc2437bd62e15e75fbd279c12a33c3dafd4ef75a00b05f"))
+    (keys / "app" / "hostname").write_text("b" * 56 + ".onion\n")
+    called = []
+    monkeypatch.setattr(hf, "_resolve_container", lambda c: "cid")
+    monkeypatch.setattr(hf, "_docker_exec_text", lambda c, a: called.append(a))
+    rc = hf.main(["show", "--keys", str(keys), "--name", "app", "--container", "tor",
+                  "--json"])
+    assert rc == hf.EXIT_FAIL and not called
+    capsys.readouterr()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# doctor measures the running container, not the engine's description of it
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _runtime_doctor(hf, monkeypatch, capsys, keys, runtime_text, cap_add, cap_drop):
+    info = {"HostConfig": {"CapDrop": cap_drop, "CapAdd": cap_add,
+                           "SecurityOpt": ["no-new-privileges:true"],
+                           "ReadonlyRootfs": True, "PidsLimit": 99999,
+                           "Memory": 1, "MemorySwap": 2, "LogConfig": {"Type": "none"}},
+            "NetworkSettings": {"Ports": {}}, "State": {"Running": True}}
+
+    def exec_text(container, argv):
+        return runtime_text if argv[:2] == ["sh", "-c"] else None
+
+    monkeypatch.setattr(hf, "_docker_inspect", lambda c: (info, None))
+    monkeypatch.setattr(hf, "_resolve_container", lambda c: "cid")
+    monkeypatch.setattr(hf, "_engine", lambda: "podman")
+    monkeypatch.setattr(hf, "_is_rootless", lambda: True)
+    monkeypatch.setattr(hf, "_docker_exec_json", lambda c, a: None)
+    monkeypatch.setattr(hf, "_docker_exec_text", exec_text)
+    monkeypatch.setattr(hf, "_run", lambda cmd, **kw: subprocess.CompletedProcess(
+        cmd, 1, "", ""))
+    hf.main(["doctor", "--container", "tor", "--keys", str(keys), "--json"])
+    doc = json.loads(capsys.readouterr().out)
+    return {c["check"]: c for c in doc["checks"]}
+
+
+def test_podmans_way_of_reporting_caps_is_not_a_failure(hf, monkeypatch, capsys,
+                                                        tmp_path):
+    """Measured on a rootless Podman container from the shipped compose file:
+    Podman lists every DROPPED capability and an empty CapAdd, so reading engine
+    config reported CHOWN/SETUID/SETGID as missing on a correct container.
+    CapBnd 0xc1 is CHOWN|SETGID|SETUID, what the container really holds."""
+    checks = _runtime_doctor(hf, monkeypatch, capsys, tmp_path,
+                             "swap=0\npids=256\ncapbnd=00000000000000c1\nhostswap=0\n",
+                             cap_add=[], cap_drop=["DAC_OVERRIDE", "FOWNER", "KILL"])
+    assert checks["cap_add includes every required capability"]["ok"] is True
+    assert checks["cap_add stays within the allowed set"]["ok"] is True
+    assert "cap_drop includes ALL" not in checks
+
+
+def test_a_capability_beyond_the_allowed_set_is_caught_from_inside(hf, monkeypatch,
+                                                                   capsys, tmp_path):
+    # 0x2000c1: CHOWN|SETGID|SETUID plus SYS_ADMIN (bit 21)
+    checks = _runtime_doctor(hf, monkeypatch, capsys, tmp_path,
+                             "swap=0\npids=256\ncapbnd=00000000002000c1\nhostswap=0\n",
+                             cap_add=["CHOWN"], cap_drop=["ALL"])
+    check = checks["cap_add stays within the allowed set"]
+    assert check["ok"] is False and "SYS_ADMIN" in check["detail"]
+
+
+def test_an_unapplied_pids_limit_is_caught_even_when_config_claims_one(
+        hf, monkeypatch, capsys, tmp_path):
+    """podman-compose before 1.1 drops pids_limit silently; the cgroup says so."""
+    checks = _runtime_doctor(hf, monkeypatch, capsys, tmp_path,
+                             "swap=0\npids=max\ncapbnd=00000000000000c1\nhostswap=0\n",
+                             cap_add=[], cap_drop=["ALL"])
+    assert checks["process count is capped at 512 or fewer"]["ok"] is False
+
+
+@pytest.mark.parametrize("hostswap,severity", [("0", "warn"), ("1", "fail")])
+def test_unlimited_swap_is_judged_by_whether_the_host_can_swap(
+        hf, monkeypatch, capsys, tmp_path, hostswap, severity):
+    checks = _runtime_doctor(hf, monkeypatch, capsys, tmp_path,
+                             f"swap=max\npids=256\ncapbnd=00000000000000c1\n"
+                             f"hostswap={hostswap}\n", cap_add=[], cap_drop=["ALL"])
+    swap = checks["swap is disabled (process memory cannot be paged to disk)"]
+    assert swap["ok"] is False and swap["severity"] == severity

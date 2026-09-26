@@ -59,6 +59,32 @@ without verifying the archive, a `verify-image` that printed VERIFIED for a
 stripped post-quantum signature, and `--keys` and `--container` values that were
 both injectable into the compose fragment and the 0755 deploy script.
 
+### Fixed (rootless Podman, measured live, 2026-09-25)
+The runtime this project recommends for high-risk deployments, brought up from
+the shipped `podman-compose.yml` and driven through the documented flow.
+- **`status` could never report `ready` under rootless Podman.** It ran the
+  in-container healthcheck as root, who cannot reach the control socket there
+  (no `DAC_OVERRIDE`), and took that "Permission denied" as the service's state;
+  every address was unreadable from the host; and with no engine health status
+  `ready` could not be true. The service meanwhile had 11 established
+  introduction points. Now: the healthcheck runs as `tor`, addresses the host
+  cannot read are filled from the container, and with no engine health status
+  the same healthcheck's verdict stands in. Proven on the live stack.
+- **`show` could never give the address under rootless Podman**, so the
+  documented flow (poll `status`, then `show`) dead-ended. `show --container`
+  reads it from inside, as `tor`.
+- **Podman had no healthcheck at all** -- including for the published image:
+  the image's `HEALTHCHECK` is a Docker extension the OCI format does not carry,
+  and Podman ignores it. Both compose files now declare it.
+- **podman-compose silently leaves limits unapplied**: `pids_limit` before 1.1
+  and `memswap_limit` in every version (read from its source, measured live).
+  `doctor` now measures capabilities, `pids.max` and `memory.swap.max` inside
+  the container instead of trusting the engine's report -- which also removes
+  its false "missing CHOWN/SETUID/SETGID" on every Podman container.
+- **`rotate` could never work inside the container**: it renamed the key
+  volume, which is a mount point there (`EBUSY`). On a mount point it now moves
+  the contents into `.rotated-<epoch>/`; if any entry cannot be moved, nothing is.
+
 ### Fixed (pre-publication pass, 2026-09-25)
 Found by running the shipped configurations live, reading every public document
 against the code, and scanning the whole history before anything is published.

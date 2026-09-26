@@ -73,6 +73,19 @@ services:
       # `pids_limit` instead, which is a per-container cgroup and does not
       # depend on what else is on the host.
 
+    # ── Health ───────────────────────────────────────────────────────────
+    # Declared here, not only in the image. The image's HEALTHCHECK is a Docker
+    # extension to the image config; the OCI image format has no such field, and
+    # Podman ignores it on OCI images -- measured: `podman inspect` showed no
+    # healthcheck at all for the published image, so a wedged Tor or a dead
+    # Vanguards was never reported. Compose-level healthchecks work on both.
+    healthcheck:
+      test: ["CMD", "su-exec", "tor", "python3", "/usr/local/bin/healthcheck.py"]
+      interval: 60s
+      timeout: 10s
+      start_period: 120s
+      retries: 3
+
     # ── Suppress host-side log file ───────────────────────────────────────
     # Docker writes container stdout to a JSON file on the host by default.
     # Setting driver: none prevents that log file from being written, which

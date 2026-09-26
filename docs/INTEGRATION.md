@@ -225,8 +225,13 @@ hiddenforge rotate  --keys ./tor-keys --confirm ROTATE --json     # DESTRUCTIVE
   local gpg supports it.
 - `restore` refuses to overwrite existing files unless `--force`; with `--force`
   the replaced files are archived, not deleted.
-- `rotate` refuses without the literal `--confirm ROTATE` and archives the old
-  identity to `tor-keys.rotated-<epoch>`.
+- `rotate` refuses without the literal `--confirm ROTATE` and archives, never
+  deletes, the old identity: a plain host directory is renamed to
+  `tor-keys.rotated-<epoch>` and recreated empty; a key volume that is a mount
+  point (always the case for `docker run <image> rotate`) keeps its place and its
+  contents move into `tor-keys/.rotated-<epoch>/`. If any entry cannot be moved,
+  nothing is. A running container keeps serving the old address until it is
+  restarted.
 - `encrypt-key` / `decrypt-key` wrap a single service key directory using the
   same tools. `decrypt-key` refuses to write into a directory that already holds
   a key set; with `--force` it moves that directory aside whole
@@ -257,6 +262,13 @@ hiddenforge doctor --container tor --keys ./tor-keys --json
 {"ok":true,"failures":[],"warnings":[],
  "checks":[{"check":"cap_drop includes ALL","ok":true,"detail":"CapDrop=['ALL']","severity":"fail"}, ...]}
 ```
+
+The capability, process-count and swap checks are MEASURED inside the running
+container (PID 1's capability bounding set, the cgroup's `pids.max` and
+`memory.swap.max`), not read from the engine's configuration: engines describe
+the same setup differently, and podman-compose silently leaves some limits
+unapplied. Where those files do not exist (cgroup v1) the engine's configuration
+is used instead.
 
 FAIL-level checks: `cap_drop` includes `ALL`; `cap_add` stays within
 `{CHOWN,DAC_OVERRIDE,FOWNER,SETUID,SETGID}` and includes every capability the

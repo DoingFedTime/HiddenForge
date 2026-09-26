@@ -1,6 +1,6 @@
 {
   "address": {
-    "command": "hiddenforge show --json [--name <service>]",
+    "command": "hiddenforge show --json [--name <service>] [--container <name>]",
     "file": "/var/lib/tor/hidden_service/<name>/hostname",
     "format": "base32(PUBKEY || SHA3-256('.onion checksum' || PUBKEY || 0x03)[:2] || 0x03).lower() + '.onion'",
     "key_path": "/var/lib/tor/hidden_service/<name>/hs_ed25519_secret_key",

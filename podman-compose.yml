@@ -68,6 +68,13 @@ services:
       # Note: the bind mount below overlays /var/lib/tor/hidden_service so keys persist.
 
     # ── Resource limits (DoS / fork-bomb / fd-exhaustion containment) ──────
+    # podman-compose does NOT apply all of these, measured and read from its
+    # source: `pids_limit` only from podman-compose 1.1 (Ubuntu 24.04 ships
+    # 1.0.6, which leaves Podman's default of 2048), and `memswap_limit` in no
+    # version at all. For the pids cap on an older podman-compose, add
+    #     --podman-run-args="--pids-limit=256"
+    # to the up command. Swap cannot be limited through podman-compose; run the
+    # host without swap. `hiddenforge doctor` measures what was really applied.
     mem_limit: 512m
     memswap_limit: 512m
     cpus: 1.0
@@ -81,6 +88,19 @@ services:
       # (i2pforge's i2pd is also uid 100). On a host already running >= the
       # limit as uid 100, su-exec's setuid() fails with EAGAIN and Tor never
       # starts. `pids_limit` is the per-container cap that actually works.
+
+    # ── Health ───────────────────────────────────────────────────────────
+    # Declared here, not only in the image. The image's HEALTHCHECK is a Docker
+    # extension to the image config; the OCI image format has no such field, and
+    # Podman ignores it on OCI images -- measured: `podman inspect` showed no
+    # healthcheck at all for the published image, so a wedged Tor or a dead
+    # Vanguards was never reported. Compose-level healthchecks work on both.
+    healthcheck:
+      test: ["CMD", "su-exec", "tor", "python3", "/usr/local/bin/healthcheck.py"]
+      interval: 60s
+      timeout: 10s
+      start_period: 120s
+      retries: 3
 
     # ── Suppress host-side log file ───────────────────────────────────────
     logging:

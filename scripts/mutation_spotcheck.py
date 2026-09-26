@@ -382,6 +382,41 @@ MUTATIONS = [
         "        fd = os.open(parts[-1], os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW,",
         "tests/test_backup.py -k planted_after_the_scan",
     ),
+    (
+        "status runs the in-container healthcheck as root again (rootless: never ready)",
+        "scripts/hiddenforge",
+        '    hc = (_docker_exec_json(resolved, ["su-exec", "tor", "python3",',
+        '    hc = (_docker_exec_json(resolved, ["python3",',
+        "tests/test_cli.py -k rootless_podman",
+    ),
+    (
+        "status stops filling host-unreadable addresses from the container",
+        "scripts/hiddenforge",
+        '            if a["onion"] is None and e["source"] is None:',
+        "            if False:",
+        "tests/test_cli.py -k rootless_podman",
+    ),
+    (
+        "doctor trusts the engine's capability report over the measured bounding set",
+        "scripts/hiddenforge",
+        '    if runtime.get("capbnd") is not None:',
+        "    if False:",
+        "tests/test_doctor_keys.py -k caps",
+    ),
+    (
+        "rotate renames a mount point again (EBUSY inside the container)",
+        "scripts/hiddenforge",
+        "        if os.path.ismount(keys):",
+        "        if False:",
+        "tests/test_cli.py -k mount_point",
+    ),
+    (
+        "show ignores --container when the host cannot read the address",
+        "scripts/hiddenforge",
+        "    if container is None or entry[\"onion\"] is not None or entry[\"source\"] is not None:",
+        "    if True:",
+        "tests/test_doctor_keys.py -k with_container",
+    ),
 ]
 
 

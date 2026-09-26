@@ -397,6 +397,19 @@ and the `podman-compose ... exec tor su-exec tor cat ...` command above is the
 right way to read it. Docker publishes `<name>.onion` normally, and
 `hiddenforge show` works there.
 
+**What podman-compose silently does not apply.** Read from its source and
+measured on a running container: `pids_limit` is honoured only from
+podman-compose 1.1 (Ubuntu 24.04 ships 1.0.6, which leaves Podman's default of
+2048 processes), and `memswap_limit` is honoured by no version, so the
+container may use swap. On an older podman-compose, bring the stack up with
+`--podman-run-args="--pids-limit=256"`; for swap, run the host with none.
+`hiddenforge doctor` reads the limits the container really has (its cgroup and
+its capability set), so it tells you whether either one applies to you:
+
+```bash
+hiddenforge doctor --container tor --keys ./tor-keys --json
+```
+
 **Verify your setup is actually rootless:**
 
 ```bash
