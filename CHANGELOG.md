@@ -69,6 +69,17 @@ both injectable into the compose fragment and the 0755 deploy script.
   under Docker, `podman unshare` under rootless Podman -- both measured to
   produce a complete archive that restores to the same address), and a volume
   with no identity in it is refused.
+- **`backup` and `encrypt-key` wrote through whatever was at the output
+  path.** Both opened an existing file with O_TRUNC, and O_NOFOLLOW does not
+  stop a hardlink: the ciphertext went into the file the link shared an inode
+  with. `encrypt-key` writes into the key volume, which the threat model treats
+  as possibly restored from untrusted media. Both now write a fresh file and
+  rename it into place (fsynced), the pattern the rest of the CLI already used.
+  And a backup made with the documented `sudo hiddenforge backup` was owned by
+  root, so the operator could not move it off the box without sudo again; it
+  now belongs to the invoking user. Measured on the soak's live tor-owned
+  volume: the sudo backup was the user's, moved without sudo, and restored to
+  the address the running service serves.
 - **After a reboot, a rootless Podman onion stayed down.** Podman's boot
   service (`podman-restart.service`) starts only containers whose restart
   policy is `always`; `podman-compose.yml` and the Podman `setup` fragment used

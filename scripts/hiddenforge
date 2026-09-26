@@ -290,6 +290,28 @@ def _read_nofollow(path: Path, max_bytes: int = 8192) -> bytes:
 
 
 def _write_text_nofollow(path: Path, text: str, mode: int = 0o644) -> None:
+    """Text form of _write_bytes_nofollow (UTF-8)."""
+    _write_bytes_nofollow(path, text.encode("utf-8"), mode)
+
+
+def _sudo_owner() -> tuple[int, int] | None:
+    """The invoking user's uid/gid when running as root under sudo, else None.
+
+    `backup` is documented as `sudo hiddenforge backup ...` under Docker (the
+    service directories belong to the container's tor user). A root-owned 0600
+    backup in the operator's own directory could then not be moved, copied off
+    the box or deleted without sudo again. It is handed to the user who asked.
+    """
+    if os.geteuid() != 0:
+        return None
+    try:
+        return int(os.environ["SUDO_UID"]), int(os.environ["SUDO_GID"])
+    except (KeyError, ValueError):
+        return None
+
+
+def _write_bytes_nofollow(path: Path, data: bytes, mode: int = 0o644,
+                          owner: tuple[int, int] | None = None) -> None:
     """Write a file without ever opening an inode that already exists.
 
     The file is written to a fresh temp created with O_EXCL beside it and renamed
@@ -313,10 +335,13 @@ def _write_text_nofollow(path: Path, text: str, mode: int = 0o644) -> None:
     tmp = path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(text)
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
             fh.flush()
             os.fchmod(fh.fileno(), mode)
+            if owner is not None:
+                os.fchown(fh.fileno(), *owner)
+            os.fsync(fh.fileno())
         os.replace(tmp, path)
     except BaseException:
         with contextlib.suppress(OSError):
@@ -2141,9 +2166,9 @@ def cmd_backup(args) -> int:
         ciphertext, cipher_mode = _encrypt_bytes(
             tool, plaintext, passphrase, require_aead=getattr(args, "require_aead", False))
         out = Path(args.out)
-        fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
-        with os.fdopen(fd, "wb") as fh:
-            fh.write(ciphertext)
+        # A fresh file renamed into place, never a write through whatever sits
+        # at the path: O_TRUNC wrote straight into a hardlink planted there.
+        _write_bytes_nofollow(out, ciphertext, 0o600, owner=_sudo_owner())
         if args.json:
             return emit_json(EXIT_OK, out=str(out), tool=tool, cipher_mode=cipher_mode,
                              bytes=len(ciphertext), sha256=src_sha)
@@ -2613,12 +2638,10 @@ def _encrypt_or_decrypt_dir(args, encrypt: bool) -> int:
             ciphertext, cipher_mode = _encrypt_bytes(
                 tool, plaintext, passphrase,
                 require_aead=getattr(args, "require_aead", False))
-            fd = os.open(blob, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
-            with os.fdopen(fd, "wb") as fh:
-                os.fchmod(fh.fileno(), 0o600)
-                fh.write(ciphertext)
-                fh.flush()
-                os.fsync(fh.fileno())
+            # Inside the key volume, which the threat model treats as possibly
+            # restored from untrusted media: a hardlink planted at this name had
+            # the ciphertext written into its target by O_TRUNC under --force.
+            _write_bytes_nofollow(blob, ciphertext, 0o600, owner=_sudo_owner())
             if args.delete_plaintext:
                 # Read the file back and decrypt it BEFORE destroying the only
                 # copy. The key IS the .onion address: losing it loses the

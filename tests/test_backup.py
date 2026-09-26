@@ -1046,3 +1046,51 @@ def test_a_volume_with_no_identity_is_not_backed_up(hf, tmp_path, capsys):
     doc = json.loads(capsys.readouterr().out)
     assert rc != 0 and "no identity to back up" in doc["error"]
     assert not out.exists()
+
+
+# ── Writing through what is already at the output path ─────────────────────
+# Both writers used O_TRUNC on an existing file, and O_NOFOLLOW does not stop a
+# HARDLINK: the ciphertext went into whatever the link shared an inode with.
+
+def test_backup_does_not_write_through_a_hardlink_at_the_output(hf, keys, tmp_path, capsys):
+    pp = tmp_path / "pp"
+    pp.write_text("correct horse battery staple\n")
+    victim = tmp_path / "unrelated.txt"
+    victim.write_text("keep me\n")
+    out = tmp_path / "keys.tar.gpg"
+    os.link(victim, out)
+    rc, doc = _run(hf, capsys, ["backup", "--keys", str(keys), "--out", str(out),
+                                "--tool", "gpg", "--passphrase-file", str(pp), "--json"])
+    assert rc == 0 and doc["ok"]
+    assert victim.read_text() == "keep me\n"
+    assert os.stat(out).st_ino != os.stat(victim).st_ino
+    assert (os.stat(out).st_mode & 0o777) == 0o600
+
+
+def test_encrypt_key_does_not_write_through_a_hardlink_in_the_volume(hf, keys, tmp_path,
+                                                                     capsys):
+    """The blob lives in the key volume, which may have been restored from
+    untrusted media; with --force a planted link used to receive the ciphertext."""
+    pp = tmp_path / "pp"
+    pp.write_text("a strong passphrase\n")
+    victim = tmp_path / "victim"
+    victim.write_bytes(b"outside the volume\n")
+    os.link(victim, keys / "app.keys.tar.gpg")
+    rc, doc = _run(hf, capsys, ["encrypt-key", "--keys", str(keys), "--name", "app",
+                                "--tool", "gpg", "--passphrase-file", str(pp), "--force",
+                                "--json"])
+    assert rc == 0 and doc["ok"] is True
+    assert victim.read_bytes() == b"outside the volume\n"
+    assert b"hs_ed25519_secret_key" not in (keys / "app.keys.tar.gpg").read_bytes()
+
+
+def test_a_backup_made_under_sudo_belongs_to_the_invoking_user(hf, monkeypatch):
+    monkeypatch.setattr(hf.os, "geteuid", lambda: 0)
+    monkeypatch.setenv("SUDO_UID", "1000")
+    monkeypatch.setenv("SUDO_GID", "1000")
+    assert hf._sudo_owner() == (1000, 1000)
+    monkeypatch.delenv("SUDO_UID")
+    assert hf._sudo_owner() is None
+    monkeypatch.setattr(hf.os, "geteuid", lambda: 1000)
+    monkeypatch.setenv("SUDO_UID", "1000")
+    assert hf._sudo_owner() is None, "only root hands a file to someone else"
