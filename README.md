@@ -21,7 +21,7 @@ whichever you prefer.
 
 **Documentation:** the full guide lives in the [wiki](https://sambent.dev/sam/HiddenForge/wiki).
 
-![HiddenForge](docs/img/hiddenforge.png)
+![HiddenForge](docs/img/hiddenforge.webp)
 
 ## Quick Start (3 steps)
 
