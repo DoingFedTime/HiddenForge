@@ -69,6 +69,28 @@ both injectable into the compose fragment and the 0755 deploy script.
   under Docker, `podman unshare` under rootless Podman -- both measured to
   produce a complete archive that restores to the same address), and a volume
   with no identity in it is refused.
+- **Vanguards could be switched off for the life of the container.** After six
+  quick failures the supervisor disabled the addon for good: bandguards and
+  rendguard stayed off until someone restarted the container by hand, and
+  nothing does that for an unhealthy container. It now pauses for ten minutes
+  and tries again with a fresh budget. Measured by killing the addon six times
+  in a running container: paused, back 600s later, ready again, no container
+  restart. The healthcheck's reason no longer says a restart is the only fix.
+- **Nobody but the maintainer could check the post-quantum signature.**
+  `verify-image` needed `pqsign`, the signer's own tool, which is published
+  nowhere, and refuses a hybrid signature with one half unchecked -- so for
+  everyone else it failed, or passed only with `--allow-classical-only`. pqsign's
+  files are a 16-byte header over the standard FIPS 204 encoding, so the CLI now
+  verifies with stock OpenSSL 3.5 or later (an independent, widely reviewed
+  implementation), falling back to pqsign where OpenSSL is older. Measured on
+  Alpine 3.23 with no pqsign: `verify-image sambent.dev/sam/hiddenforge:2.0.4`
+  compared the registry digest, verified both signatures, `VERIFIED`, exit 0; a
+  digest with one byte appended fails. The docs give the same check as a
+  four-line OpenSSL recipe, tested under busybox sh and bash.
+- **The CLI said nothing about which Python it needs.** It uses 3.10 features,
+  so on 3.9 it would start and then crash part-way through a command. It now
+  refuses to start below 3.10 and says why; the host CLI tests pass on 3.10. The
+  README says how to install it (where `sudo` finds it, for `backup`).
 - **A backend that was not up at boot left the container serving nothing, and
   reporting healthy.** After a host reboot the runtime starts containers in no
   set order (`depends_on` applies only to `compose up`). Measured: with the

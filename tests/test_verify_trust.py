@@ -115,7 +115,99 @@ def test_the_real_set_without_pqsign_is_refused_by_default(hf, tmp_path, capsys,
     real_which = shutil.which
     monkeypatch.setattr(hf.shutil, "which",
                         lambda n: None if n == "pqsign" else real_which(n))
+    monkeypatch.setattr(hf, "_openssl_mldsa", lambda level: (False, "OpenSSL 3.0.13"))
     rc, doc = _verify(hf, capsys, d)
     assert rc == hf.EXIT_FAIL
     assert doc["mldsa"] is None
     assert any("--allow-classical-only" in f for f in doc["failures"])
+
+
+# ── The ML-DSA half with stock OpenSSL ──────────────────────────────────────
+# pqsign, the signer's own tool, is not published, so a verifier that needed it
+# left the post-quantum half uncheckable for everyone else. OpenSSL 3.5+
+# implements FIPS 204. The encoding below is the one measured to verify the
+# release signature with OpenSSL 3.5.8.
+
+def test_the_release_key_becomes_the_spki_openssl_accepted(hf):
+    pub = (SIGNATURES / "sambent-mldsa.pub").read_bytes()
+    sig = (SIGNATURES / "hiddenforge.digest.mldsa").read_bytes()
+    level, spki, raw = hf._pqsign_to_openssl(pub, sig)
+    assert level == "ML-DSA-65"
+    assert spki == bytes.fromhex(
+        "308207b2300b0609608648016503040312038207a100") + pub[16:]
+    assert raw == sig[16:] and len(raw) == 3309
+
+
+def test_the_ml_dsa_87_oid_is_encoded_per_rfc_9881(hf):
+    assert hf._der_oid("2.16.840.1.101.3.4.3.19") == bytes.fromhex(
+        "0609608648016503040313")
+
+
+@pytest.mark.parametrize("pub, sig, message", [
+    (b"PQSIGN_MLDSA65_P" + b"\x00" * 1952, b"PQSIGN_MLDSA87_G" + b"\x00" * 4627,
+     "not a pqsign ML-DSA-65 signature"),
+    (b"PQSIGN_MLDSA65_P" + b"\x00" * 1951, b"PQSIGN_MLDSA65_G" + b"\x00" * 3309,
+     "is 1951 bytes, not 1952"),
+    (b"-----BEGIN PUBLIC KEY-----\n", b"PQSIGN_MLDSA65_G",
+     "not in pqsign's format"),
+])
+def test_a_malformed_key_or_signature_is_refused_by_name(hf, pub, sig, message):
+    with pytest.raises(ValueError, match=message):
+        hf._pqsign_to_openssl(pub, sig)
+
+
+def test_openssl_is_preferred_over_pqsign(hf, tmp_path, monkeypatch):
+    d = tmp_path / "sig"
+    shutil.copytree(SIGNATURES, d)
+    ran = []
+    monkeypatch.setattr(hf, "_openssl_mldsa", lambda level: (True, "OpenSSL 3.5.8"))
+    ok = "Signature Verified Successfully\n"
+    monkeypatch.setattr(hf, "_run", lambda cmd, **kw: ran.append(cmd) or
+                        subprocess.CompletedProcess(cmd, 0, ok, ""))
+    verdict, detail = hf._verify_mldsa_signature(d, (d / "hiddenforge.digest").read_bytes())
+    assert verdict is True
+    assert [c[:2] for c in ran] == [["openssl", "pkeyutl"]]
+    assert detail == "ML-DSA-65 via OpenSSL 3.5.8: Signature Verified Successfully"
+
+
+def test_pqsign_is_the_fallback_when_openssl_cannot(hf, tmp_path, monkeypatch):
+    d = tmp_path / "sig"
+    shutil.copytree(SIGNATURES, d)
+    ran = []
+    monkeypatch.setattr(hf, "_openssl_mldsa", lambda level: (False, "OpenSSL 3.0.13"))
+    real_which = shutil.which
+    monkeypatch.setattr(hf.shutil, "which",
+                        lambda n: "/usr/bin/pqsign" if n == "pqsign" else real_which(n))
+    monkeypatch.setattr(hf, "_run", lambda cmd, **kw: ran.append(cmd) or
+                        subprocess.CompletedProcess(cmd, 2, "", "INVALID signature\n"))
+    verdict, detail = hf._verify_mldsa_signature(d, (d / "hiddenforge.digest").read_bytes())
+    assert verdict is False
+    assert [c[:2] for c in ran] == [["pqsign", "verify"]]
+    assert detail == "ML-DSA-65 via pqsign: INVALID signature"
+
+
+def _openssl_can_mldsa():
+    if shutil.which("openssl") is None:
+        return False
+    out = subprocess.run(["openssl", "list", "-signature-algorithms"],
+                         capture_output=True, text=True, check=False).stdout
+    return "ML-DSA-65" in out
+
+
+needs_openssl_mldsa = pytest.mark.skipif(
+    not _openssl_can_mldsa(), reason="this host's OpenSSL has no ML-DSA (needs 3.5+)")
+
+
+@needs_openssl_mldsa
+def test_the_genuine_release_signature_verifies_with_openssl(hf):
+    verdict, detail = hf._verify_mldsa_signature(
+        SIGNATURES, (SIGNATURES / "hiddenforge.digest").read_bytes())
+    assert verdict is True, detail
+    assert "via OpenSSL" in detail
+
+
+@needs_openssl_mldsa
+def test_a_digest_changed_by_one_byte_fails_with_openssl(hf):
+    verdict, detail = hf._verify_mldsa_signature(
+        SIGNATURES, (SIGNATURES / "hiddenforge.digest").read_bytes() + b" ")
+    assert verdict is False, detail

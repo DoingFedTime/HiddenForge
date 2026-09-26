@@ -28,8 +28,13 @@ _vanguards_process = None
 VANGUARDS_BIN    = '/opt/vanguards-venv/bin/vanguards'
 CONTROL_SOCKET   = '/var/lib/tor/control.sock'
 VANGUARDS_STATE  = '/var/lib/tor/vanguards.state'
-VANGUARDS_MAX_RESTARTS = 5     # failed starts/exits in quick succession before giving up
+VANGUARDS_MAX_RESTARTS = 5     # failed starts/exits in quick succession before a pause
 VANGUARDS_RETRY_DELAY  = 10    # seconds between (re)start attempts
+# After the quick budget is spent, wait this long and try again with a fresh
+# budget. Giving up for good left an unattended container without bandguards and
+# rendguard until someone restarted it by hand, and nothing restarts an
+# "unhealthy" container. Six attempts per ~11 minutes is not a busy loop.
+VANGUARDS_COOLDOWN_SECONDS = 600
 HF_CLI           = '/usr/local/bin/hiddenforge'
 DATA_DIR         = '/var/lib/tor'
 # The key volume's mount point inside the container, and the parent of every
@@ -1422,12 +1427,11 @@ def main():
 
     # ── Start Vanguards once the control socket exists ──────────────────────
     # If it cannot start yet (socket slow, transient failure) the supervision
-    # loop below keeps retrying with a bounded budget instead of leaving the
-    # addon permanently absent after a single unlucky start.
+    # loop below keeps retrying: a bounded quick budget, then a cooldown, then
+    # a fresh budget -- never permanently absent.
     vanguards_restarts    = 0
     vanguards_last_start  = 0.0
     vanguards_next_attempt = 0.0
-    vanguards_given_up    = False
     try:
         wait_for_socket(timeout=120, tor=_tor_process)
         _vanguards_process   = start_vanguards()
@@ -1502,9 +1506,11 @@ def main():
                 if vanguards_restarts > VANGUARDS_MAX_RESTARTS:
                     print(
                         f"Vanguards exited (code {vg_rc}) too many times "
-                        "in quick succession — disabling addon."
+                        "in quick succession — pausing it for "
+                        f"{VANGUARDS_COOLDOWN_SECONDS}s, then trying again."
                     )
-                    vanguards_given_up = True
+                    vanguards_restarts = 0
+                    vanguards_next_attempt = now + VANGUARDS_COOLDOWN_SECONDS
                 else:
                     print(
                         f"Vanguards exited (code {vg_rc}), retrying in "
@@ -1516,8 +1522,7 @@ def main():
         # (Re)start Vanguards when it is missing, if the socket is up and we
         # have budget left. A missing control socket is Tor still bootstrapping,
         # so it does not consume the restart budget.
-        if (not vanguards_given_up and _vanguards_process is None
-                and now >= vanguards_next_attempt):
+        if _vanguards_process is None and now >= vanguards_next_attempt:
             if not _control_socket_ready():
                 vanguards_next_attempt = now + VANGUARDS_RETRY_DELAY
             else:
@@ -1530,8 +1535,10 @@ def main():
                     vanguards_restarts += 1
                     print(f"Could not start Vanguards: {e}")
                     if vanguards_restarts > VANGUARDS_MAX_RESTARTS:
-                        print("Vanguards could not be started — disabling addon.")
-                        vanguards_given_up = True
+                        print("Vanguards could not be started — pausing it for "
+                              f"{VANGUARDS_COOLDOWN_SECONDS}s, then trying again.")
+                        vanguards_restarts = 0
+                        vanguards_next_attempt = now + VANGUARDS_COOLDOWN_SECONDS
                     else:
                         vanguards_next_attempt = now + VANGUARDS_RETRY_DELAY
 

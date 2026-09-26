@@ -393,7 +393,8 @@ def evaluate():
         )
     elif not doc["vanguards"]:
         doc["reason"] = ("Tor is serving but the Vanguards addon is NOT running - "
-                         "bandguards and rendguard are gone. Restart the container.")
+                         "bandguards and rendguard are gone. It is retried "
+                         "automatically; restarting the container retries at once.")
     else:
         doc["ready"] = True
         return 0, doc

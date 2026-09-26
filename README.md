@@ -66,6 +66,11 @@ docker compose -f compose.yml -f ./deploy/compose.service.yml up -d
 hiddenforge show --keys ./tor-keys --name myapp --json
 ```
 
+The CLI is a single file, `scripts/hiddenforge` in this repository: Python 3.10
+or later, standard library only, nothing to `pip install`. Install it where
+`sudo` also finds it (`backup` needs root under Docker):
+`sudo install -m 0755 scripts/hiddenforge /usr/local/bin/hiddenforge`.
+
 Subcommands: `setup`, `info`, `version`, `show`, `status`, `doctor`, `vanity`,
 `backup`, `restore`, `rotate`, `encrypt-key`, `decrypt-key`, `verify-image`,
 `sbom`. Every one supports
@@ -212,8 +217,15 @@ signature. The verification files live in `signatures/`. The build is also
 byte-for-byte identical image.
 
 ```bash
-# both verify with stock tools, offline
-pqsign verify --pub sambent-mldsa.pub --sig hiddenforge.digest.mldsa --in hiddenforge.digest
+# both verify with stock tools, offline (run inside signatures/)
+# ML-DSA-65 with stock OpenSSL 3.5 or later (strip pqsign's 16-byte headers,
+# wrap the raw key as a SubjectPublicKeyInfo, verify)
+tail -c +17 sambent-mldsa.pub > /tmp/mldsa.key
+tail -c +17 hiddenforge.digest.mldsa > /tmp/mldsa.sig
+{ printf '\060\202\007\262\060\013\006\011\140\206\110\001\145\003\004\003\022\003\202\007\241\000'
+  cat /tmp/mldsa.key; } > /tmp/mldsa.der
+openssl pkeyutl -verify -pubin -keyform DER -inkey /tmp/mldsa.der \
+  -in hiddenforge.digest -sigfile /tmp/mldsa.sig
 ssh-keygen -Y verify -f allowed-signers -I sam@sambent.com -n file \
   -s hiddenforge.digest.sig < hiddenforge.digest
 
@@ -239,7 +251,8 @@ tooling, and the ML-DSA + hardware pair is the attestation.
 The CLI wraps the digest check and both signature checks in one command. It
 verifies against the pinned keys, never against keys found in the signature
 directory, and it refuses (exit 1) when the ML-DSA half cannot be checked unless
-you pass `--allow-classical-only`:
+you pass `--allow-classical-only`. It reads the signatures from `./signatures`,
+so run it from the root of this repository or pass `--sigdir`:
 
 ```bash
 hiddenforge verify-image sambent.dev/sam/hiddenforge:latest --json

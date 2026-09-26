@@ -2,7 +2,9 @@
 
 hiddenforge is a sidecar. You keep your application exactly as it is, attach it to
 one network, and hiddenforge gives it a Tor v3 address. There is no wizard and no
-`.onion` toolchain to install: the address generator ships in the image.
+`.onion` toolchain to install: the address generator ships in the image. The
+`hiddenforge` CLI used below is one file, `scripts/hiddenforge` (Python 3.10 or
+later, standard library only); put it on your PATH.
 
 This document is the integration contract. Every command here is tested
 (`tests/test_cli.py`, `tests/test_e2e_live.py`, `examples/demo`).
@@ -146,8 +148,9 @@ hiddenforge status --container tor --keys ./tor-keys --json
 ```
 
 `dropped_mappings` lists any service or port mapping that was rejected and left
-out of the torrc (a bad port, a malformed mapping, a name collision). It is empty
-when everything was accepted. Check it after any config change: a typo that
+out of the torrc (a bad port, a malformed mapping, a name collision, or a backend
+name that did not resolve yet -- that one is added automatically once it
+resolves). It is empty when everything was accepted. Check it after any config change: a typo that
 silently removed a service shows up here instead of disappearing.
 
 Publish nothing until **`ready` is true**. It is the AND of:
@@ -323,8 +326,9 @@ hiddenforge verify-image sambent.dev/sam/hiddenforge:latest --json
 
 Resolves the registry digest with `skopeo` (no pull), compares it to
 `signatures/hiddenforge.digest`, and verifies both halves of the hybrid
-signature over that digest: SSH-FIDO2 (YubiKey) and ML-DSA-65 (post-quantum, via
-`pqsign`). The digest file is read once and the same bytes feed every check.
+signature over that digest: SSH-FIDO2 (YubiKey, via `ssh-keygen`) and ML-DSA-65
+(post-quantum, via OpenSSL 3.5 or later, falling back to `pqsign` if OpenSSL is
+older). The digest file is read once and the same bytes feed every check.
 
 **The trust anchor is pinned in the CLI**, not read from the signature
 directory: the release signer keys (`PINNED_ALLOWED_SIGNERS`) and the SHA-256 of
@@ -335,7 +339,8 @@ verify an image signed by someone else, name their keys explicitly with
 `"trust_anchor": "operator-supplied"`.
 
 A hybrid signature with one half unexamined is **not verified**: if the ML-DSA
-signature is missing from the set, or `pqsign` is not installed, the command
+signature is missing from the set, or neither OpenSSL 3.5+ nor `pqsign` is
+available to check it, the command
 fails (exit 1). `--allow-classical-only` accepts the SSH-FIDO2 signature alone,
 and the result then reports `complete: false`. `--skip-registry` verifies the
 signatures without comparing the registry, and is likewise reported as

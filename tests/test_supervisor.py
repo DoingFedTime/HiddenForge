@@ -506,16 +506,17 @@ def test_a_dying_tor_takes_vanguards_with_it(supervisor, capsys):
     assert "Tor exited with code 3, shutting down." in capsys.readouterr().out
 
 
-def test_vanguards_crashes_are_restarted_then_disabled(supervisor, capsys):
-    """initial start + up to VANGUARDS_MAX_RESTARTS restarts, then it is disabled
-    and the loop carries on with Tor alone. Unbounded restarting of a component
-    that is failing for a structural reason is a busy loop, not resilience."""
+def test_vanguards_crashes_are_restarted_then_paused(supervisor, capsys):
+    """initial start + up to VANGUARDS_MAX_RESTARTS restarts, then a cooldown
+    while the loop carries on with Tor alone. Unbounded quick restarting of a
+    component failing for a structural reason is a busy loop, not resilience."""
     code, h = supervisor(tor_polls=[None] * 200 + [0], vanguards_polls=(1,))
     assert code == 1
     assert h.vanguards_started == 1 + e.VANGUARDS_MAX_RESTARTS
     out = capsys.readouterr().out
     assert "Vanguards exited (code 1), retrying in 10s (attempt 1/5)..." in out
-    assert "Vanguards exited (code 1) too many times in quick succession — disabling addon." in out
+    assert ("Vanguards exited (code 1) too many times in quick succession — "
+            "pausing it for 600s, then trying again.") in out
 
 
 def test_the_retry_budget_is_spaced_out_not_spun(supervisor):
@@ -546,7 +547,7 @@ def test_a_missing_control_socket_does_not_consume_the_restart_budget(supervisor
                          wait_raises=TimeoutError("not yet"))
     assert code == 1
     assert h.vanguards_started == 0
-    assert "disabling addon" not in capsys.readouterr().out
+    assert "pausing it" not in capsys.readouterr().out
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -619,15 +620,40 @@ def test_a_generator_that_keeps_failing_is_disabled_after_its_budget(supervisor,
     assert h.vanguards_started == 2 + e.VANGUARDS_MAX_RESTARTS
     out = capsys.readouterr().out
     assert out.count("Could not start Vanguards: no such binary") == e.VANGUARDS_MAX_RESTARTS + 1
-    assert "Vanguards could not be started — disabling addon." in out
+    assert ("Vanguards could not be started — pausing it for 600s, "
+            "then trying again.") in out
 
 
-def test_a_disabled_addon_is_never_retried_again(supervisor):
-    """`vanguards_given_up` is final. A falsy value there would make the
-    "disabling addon" line a lie and put the loop straight back into retrying."""
-    _code, h = supervisor(tor_polls=[None] * 900 + [0],
+def test_a_paused_addon_is_not_retried_during_the_cooldown(supervisor):
+    """The pause is real: nothing is attempted until the cooldown is over. A
+    next-attempt time in the past would put the loop straight back into quick
+    retrying."""
+    _code, h = supervisor(tor_polls=[None] * 600 + [0],
                           start_vanguards_raises=OSError("gone"))
     assert h.vanguards_started == 2 + e.VANGUARDS_MAX_RESTARTS
+
+
+def test_a_paused_addon_gets_a_fresh_budget_after_the_cooldown(supervisor, capsys):
+    """Giving up for good left an unattended container without bandguards and
+    rendguard until someone restarted it by hand; nothing restarts an unhealthy
+    container. After the cooldown it is tried again, with the full budget."""
+    _code, h = supervisor(tor_polls=[None] * 1400 + [0],
+                          start_vanguards_raises=OSError("gone"))
+    last_quick = h.vanguards_start_times[1 + e.VANGUARDS_MAX_RESTARTS]
+    after = h.vanguards_start_times[2 + e.VANGUARDS_MAX_RESTARTS]
+    assert after - last_quick == e.VANGUARDS_COOLDOWN_SECONDS
+    assert h.vanguards_started >= 2 * (1 + e.VANGUARDS_MAX_RESTARTS)
+
+
+def test_an_addon_that_recovers_after_the_cooldown_stays_up(supervisor, capsys):
+    """Crashing quickly five times, then fine: it is running again after the
+    pause, and the container never gave up on it."""
+    quick = [1]
+    lives = [quick] * (1 + e.VANGUARDS_MAX_RESTARTS) + [[None] * 5000]
+    _code, h = supervisor(tor_polls=[None] * 900 + [0], vanguards_lives=lives)
+    assert h.vanguards_started == 2 + e.VANGUARDS_MAX_RESTARTS
+    assert h.vanguards_start_times[-1] - h.vanguards_start_times[-2] \
+        >= e.VANGUARDS_COOLDOWN_SECONDS
 
 
 def test_a_healthy_spell_refunds_the_whole_budget_not_all_but_one(supervisor):
@@ -645,7 +671,10 @@ def test_a_healthy_spell_refunds_the_whole_budget_not_all_but_one(supervisor):
     long_lived = [None] * 61 + [1]
     lives = [quick, quick, quick, long_lived] + [quick] * 20
     _code, h = supervisor(tor_polls=[None] * 900 + [0], vanguards_lives=lives)
-    assert h.vanguards_started == 4 + e.VANGUARDS_MAX_RESTARTS
+    times = h.vanguards_start_times
+    before_pause = next(i + 1 for i, (a, b) in enumerate(pairwise(times))
+                        if b - a >= e.VANGUARDS_COOLDOWN_SECONDS)
+    assert before_pause == 4 + e.VANGUARDS_MAX_RESTARTS
 
 
 def test_a_failing_start_also_waits_the_full_delay_before_retrying(supervisor):
@@ -661,15 +690,16 @@ def test_a_failing_start_also_waits_the_full_delay_before_retrying(supervisor):
     assert set(gaps[1:]) == {e.VANGUARDS_RETRY_DELAY}
 
 
-def test_the_disabling_lines_are_exact(supervisor, capsys):
+def test_the_pausing_lines_are_exact(supervisor, capsys):
     """Two different ways to lose the addon, two different messages; both mean
-    bandguards and rendguard are gone for the life of the container, and the
-    health status is the only other place that is visible."""
+    bandguards and rendguard are gone until the cooldown ends, and the health
+    status is the only other place that is visible."""
     supervisor(tor_polls=[None] * 300 + [0], start_vanguards_raises=OSError("gone"))
-    assert "Vanguards could not be started — disabling addon.\n" in capsys.readouterr().out
+    assert ("Vanguards could not be started — pausing it for 600s, then trying "
+            "again.\n") in capsys.readouterr().out
     supervisor(tor_polls=[None] * 300 + [0], vanguards_polls=(9,))
     assert ("Vanguards exited (code 9) too many times in quick succession — "
-            "disabling addon.\n") in capsys.readouterr().out
+            "pausing it for 600s, then trying again.\n") in capsys.readouterr().out
 
 
 def test_a_down_socket_is_re_probed_on_the_retry_delay_not_every_second(supervisor):

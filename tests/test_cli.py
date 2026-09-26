@@ -1014,7 +1014,9 @@ def _signature_set(tmp_path, *, pub=True, sig=True):
         # The real, pinned key: a stand-in would now be refused for not being it.
         shutil.copy(REPO / "signatures" / "sambent-mldsa.pub", d / "sambent-mldsa.pub")
     if sig:
-        (d / "hiddenforge.digest.mldsa").write_bytes(b"\x00" * 3325)
+        # Well-formed (pqsign's magic, the FIPS 204 length) but not a valid
+        # signature over anything.
+        (d / "hiddenforge.digest.mldsa").write_bytes(b"PQSIGN_MLDSA65_G" + b"\x00" * 3309)
     return d
 
 
@@ -1048,9 +1050,11 @@ def test_a_missing_verifier_is_reported_as_not_checked(hf, tmp_path, monkeypatch
     sigdir = _signature_set(tmp_path)
     monkeypatch.setattr(hf.shutil, "which",
                         lambda name: None if name == "pqsign" else "/usr/bin/" + name)
+    monkeypatch.setattr(hf, "_openssl_mldsa", lambda level: (False, "OpenSSL 3.0.13"))
     verdict, detail = hf._verify_mldsa_signature(sigdir, DIGEST)
     assert verdict is None
     assert "NOT checked" in detail
+    assert "OpenSSL 3.0.13 cannot do ML-DSA-65" in detail
 
 
 def test_an_unchecked_half_never_prints_a_bare_verified(hf, tmp_path, monkeypatch,

@@ -31,10 +31,22 @@ unverified.
 Two independent signatures over that digest. No transparency log, no external
 service, nothing to phone home to:
 
-1. **ML-DSA-65** (FIPS 204, post-quantum) — `hiddenforge.digest.mldsa`
+1. **ML-DSA-65** (FIPS 204, post-quantum) — `hiddenforge.digest.mldsa`, made
+   with `pqsign`. Its files are a 16-byte header followed by the raw FIPS 204
+   key or signature, so stock OpenSSL 3.5 or later verifies them (older OpenSSL
+   has no ML-DSA):
    ```
-   pqsign verify --pub sambent-mldsa.pub --sig hiddenforge.digest.mldsa --in hiddenforge.digest
+   # ML-DSA-65 with stock OpenSSL 3.5 or later (strip pqsign's 16-byte headers,
+   # wrap the raw key as a SubjectPublicKeyInfo, verify)
+   tail -c +17 sambent-mldsa.pub > /tmp/mldsa.key
+   tail -c +17 hiddenforge.digest.mldsa > /tmp/mldsa.sig
+   { printf '\060\202\007\262\060\013\006\011\140\206\110\001\145\003\004\003\022\003\202\007\241\000'
+     cat /tmp/mldsa.key; } > /tmp/mldsa.der
+   openssl pkeyutl -verify -pubin -keyform DER -inkey /tmp/mldsa.der \
+     -in hiddenforge.digest -sigfile /tmp/mldsa.sig
    ```
+   With `pqsign` installed, the equivalent is
+   `pqsign verify --pub sambent-mldsa.pub --sig hiddenforge.digest.mldsa --in hiddenforge.digest`.
 2. **SSH-FIDO2** (YubiKey hardware key) — `hiddenforge.digest.sig`
    ```
    ssh-keygen -Y verify -f allowed-signers -I sam@sambent.com -n file \

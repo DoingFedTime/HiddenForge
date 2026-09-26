@@ -45,6 +45,12 @@ import time
 from pathlib import Path
 import contextlib
 
+# 3.10 is the oldest version the test suite passes on (zip(strict=) is 3.10+).
+# Say so up front rather than crash half-way through a status or a restore.
+if sys.version_info < (3, 10):
+    sys.exit("hiddenforge needs Python 3.10 or later; this is Python "
+             f"{sys.version_info[0]}.{sys.version_info[1]}.")
+
 # ---------------------------------------------------------------------------
 # Constants (single source of truth for the CLI; manifest.json mirrors this and
 # tests/test_manifest.py asserts they agree).
@@ -2630,6 +2636,67 @@ def _verify_ssh_signature(sigdir: Path, identity: str, digest_bytes: bytes,
     return proc.returncode == 0, detail
 
 
+# pqsign's file format: a 16-byte magic, then the raw FIPS 204 encoding.
+# level -> (public-key magic, signature magic, SPKI algorithm OID, key length)
+_PQSIGN_LEVELS = {
+    "ML-DSA-65": (b"PQSIGN_MLDSA65_P", b"PQSIGN_MLDSA65_G",
+                  "2.16.840.1.101.3.4.3.18", 1952),
+    "ML-DSA-87": (b"PQSIGN_MLDSA87_P", b"PQSIGN_MLDSA87_G",
+                  "2.16.840.1.101.3.4.3.19", 2592),
+}
+
+
+def _der(tag: int, body: bytes) -> bytes:
+    n = len(body)
+    if n < 0x80:
+        return bytes([tag, n]) + body
+    size = n.to_bytes((n.bit_length() + 7) // 8, "big")
+    return bytes([tag, 0x80 | len(size)]) + size + body
+
+
+def _der_oid(dotted: str) -> bytes:
+    arcs = [int(a) for a in dotted.split(".")]
+    out = bytearray([40 * arcs[0] + arcs[1]])
+    for arc in arcs[2:]:
+        chunk = [arc & 0x7F]
+        arc >>= 7
+        while arc:
+            chunk.append(0x80 | (arc & 0x7F))
+            arc >>= 7
+        out += bytes(reversed(chunk))
+    return _der(0x06, bytes(out))
+
+
+def _pqsign_to_openssl(pub_bytes: bytes, sig_bytes: bytes
+                       ) -> tuple[str, bytes, bytes]:
+    """(level, SubjectPublicKeyInfo DER, raw signature) from pqsign's files.
+
+    SPKI per RFC 9881: the algorithm identifier is the bare OID (no parameters)
+    and the key is the raw FIPS 204 encoding as the BIT STRING.
+    """
+    for level, (pub_magic, sig_magic, oid, key_len) in _PQSIGN_LEVELS.items():
+        if pub_bytes[:16] != pub_magic:
+            continue
+        if sig_bytes[:16] != sig_magic:
+            raise ValueError(f"the signature is not a pqsign {level} signature")
+        key = pub_bytes[16:]
+        if len(key) != key_len:
+            raise ValueError(f"the {level} public key is {len(key)} bytes, "
+                             f"not {key_len}")
+        spki = _der(0x30, _der(0x30, _der_oid(oid)) + _der(0x03, b"\x00" + key))
+        return level, spki, sig_bytes[16:]
+    raise ValueError("the ML-DSA public key is not in pqsign's format")
+
+
+def _openssl_mldsa(level: str) -> tuple[bool, str]:
+    """(usable, version): OpenSSL 3.5 and later implement ML-DSA natively."""
+    if shutil.which("openssl") is None:
+        return False, "openssl not found"
+    version = _run(["openssl", "version"]).stdout.strip()
+    listed = _run(["openssl", "list", "-signature-algorithms"]).stdout
+    return (level in listed), version
+
+
 def _verify_mldsa_signature(sigdir: Path, digest_bytes: bytes,
                             trusted_pub: bytes | None = None
                             ) -> tuple[bool | None, str]:
@@ -2646,9 +2713,15 @@ def _verify_mldsa_signature(sigdir: Path, digest_bytes: bytes,
 
     The public key is the trust anchor, so it is not taken on the signature
     set's word: either the operator supplies it (`trusted_pub`), or the set's copy
-    must hash to PINNED_MLDSA_PUB_SHA256. Both the key and the digest are handed
-    to pqsign from bytes read once, so nothing can be swapped between the check
-    and the use.
+    must hash to PINNED_MLDSA_PUB_SHA256. The key, the signature and the digest
+    are each read once and the verifier is handed those bytes, so nothing can be
+    swapped between the check and the use.
+
+    The verifier is OpenSSL (3.5 or later, which implements FIPS 204) when it can
+    do ML-DSA, else `pqsign`. OpenSSL is preferred because it is an independent,
+    widely reviewed implementation that most systems already have; `pqsign` is
+    the signer's own tool. Measured: OpenSSL 3.5.8 verifies the release
+    signature and rejects the digest with one byte appended.
     """
     pub = sigdir / "sambent-mldsa.pub"
     sig = sigdir / "hiddenforge.digest.mldsa"
@@ -2668,17 +2741,41 @@ def _verify_mldsa_signature(sigdir: Path, digest_bytes: bytes,
                            "pinned release key; this signature set has been altered")
     else:
         pub_bytes = trusted_pub
-    if shutil.which("pqsign") is None:
-        return None, "pqsign not installed, so the ML-DSA signature was NOT checked"
+    try:
+        sig_bytes = _read_nofollow(sig, 16384)
+    except OSError as exc:
+        return False, f"cannot read the ML-DSA signature: {exc}"
+    try:
+        level, spki, raw_sig = _pqsign_to_openssl(pub_bytes, sig_bytes)
+    except ValueError as exc:
+        return False, str(exc)
+
+    usable, openssl_version = _openssl_mldsa(level)
+    if not usable and shutil.which("pqsign") is None:
+        return None, (f"neither OpenSSL 3.5+ ({openssl_version} cannot do {level}) "
+                      "nor pqsign is installed, so the ML-DSA signature was NOT "
+                      "checked")
     with tempfile.TemporaryDirectory(prefix="hf-verify-") as tmp:
-        pub_tmp, dig_tmp = Path(tmp) / "mldsa.pub", Path(tmp) / "digest"
-        for path, data in ((pub_tmp, pub_bytes), (dig_tmp, digest_bytes)):
-            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        files = {name: Path(tmp) / name for name in
+                 ("mldsa.pub", "mldsa.sig", "spki.der", "sig.raw", "digest")}
+        for name, data in (("mldsa.pub", pub_bytes), ("mldsa.sig", sig_bytes),
+                           ("spki.der", spki), ("sig.raw", raw_sig),
+                           ("digest", digest_bytes)):
+            fd = os.open(files[name], os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                         0o600)
             with os.fdopen(fd, "wb") as fh:
                 fh.write(data)
-        proc = _run(["pqsign", "verify", "--pub", str(pub_tmp), "--sig", str(sig),
-                     "--in", str(dig_tmp)])
-    return proc.returncode == 0, (proc.stderr.strip() or proc.stdout.strip())
+        if usable:
+            proc = _run(["openssl", "pkeyutl", "-verify", "-pubin", "-keyform", "DER",
+                         "-inkey", str(files["spki.der"]), "-in", str(files["digest"]),
+                         "-sigfile", str(files["sig.raw"])])
+            verifier = f"{level} via {openssl_version}"
+        else:
+            proc = _run(["pqsign", "verify", "--pub", str(files["mldsa.pub"]),
+                         "--sig", str(files["mldsa.sig"]), "--in", str(files["digest"])])
+            verifier = f"{level} via pqsign"
+    detail = (proc.stdout.strip() or proc.stderr.strip()).splitlines()
+    return proc.returncode == 0, f"{verifier}: {detail[0] if detail else 'no output'}"
 
 
 def cmd_verify_image(args) -> int:
@@ -2738,7 +2835,7 @@ def cmd_verify_image(args) -> int:
             # used to exit 0 with a qualifier on the human line, so any caller
             # testing the exit status accepted an image whose post-quantum half
             # was never looked at: deleting both ML-DSA files, or running on a
-            # host without pqsign, reduced the scheme to one classical signature.
+            # host with no ML-DSA verifier, reduced the scheme to one classical signature.
             # Accepting that is now an explicit, visible decision.
             if not args.allow_classical_only:
                 failures.append(

@@ -864,7 +864,8 @@ def test_the_missing_vanguards_reason_names_what_was_lost(hc, world):
           services=[("app", ONION + ".onion\n")], vanguards=False)
     _rc, doc = hc.evaluate()
     assert doc["reason"] == ("Tor is serving but the Vanguards addon is NOT running - "
-                             "bandguards and rendguard are gone. Restart the container.")
+                             "bandguards and rendguard are gone. It is retried "
+                             "automatically; restarting the container retries at once.")
 
 
 def test_several_unpublished_services_are_listed_comma_separated(hc, world):
