@@ -1159,7 +1159,8 @@ def _append_key_checks(checks: list[dict], keys: Path) -> list[str]:
 
 
 def _append_in_container_key_checks(checks: list[dict], container: str | None,
-                                    closed: list[str]) -> None:
+                                    closed: list[str],
+                                    configured: set[str] | None = None) -> None:
     """Check the service directories the host may not enter, from inside.
 
     The container's own `doctor --keys-only` runs as the tor user, which owns
@@ -1190,11 +1191,25 @@ def _append_in_container_key_checks(checks: list[dict], container: str | None,
                                      str(c.get("detail", "")),
                                      str(c.get("severity", "fail"))))
     # A service the container said nothing about was not checked by anyone.
-    # Silence there used to read as a pass.
-    checks.extend(_check(
-        False, f"key modes for {n}",
-        "the container's own check reported nothing for this service, so its "
-        "key modes were not verified") for n in closed if n not in covered)
+    # Silence there used to read as a pass. If the running torrc does not
+    # configure it at all, it is a retired service whose keys were kept (the
+    # container's check sees only configured services): still flagged, as a
+    # warning that says so -- failing `doctor` for ever over a key directory an
+    # operator kept on purpose teaches them to ignore it.
+    for n in closed:
+        if n in covered:
+            continue
+        if configured is not None and n not in configured:
+            checks.append(_check(
+                False, f"key modes for {n}",
+                "not configured in the running container (a retired service whose "
+                "keys were kept?), so its key modes were not verified",
+                severity="warn"))
+        else:
+            checks.append(_check(
+                False, f"key modes for {n}",
+                "the container's own check reported nothing for this service, so its "
+                "key modes were not verified"))
 
 
 def _append_restart_checks(checks: list[dict], hc: dict) -> None:
@@ -1412,7 +1427,11 @@ def cmd_doctor(args) -> int:
     # container for the service directories only the tor user may enter.
     closed = _append_key_checks(checks, Path(args.keys))
     if closed:
-        _append_in_container_key_checks(checks, resolved, closed)
+        configured = None
+        if torrc is not None:
+            configured = {Path(m.group(1)).name for line in torrc.splitlines()
+                          if (m := HSDIR_RE.match(line))}
+        _append_in_container_key_checks(checks, resolved, closed, configured)
     failures = [c for c in checks if not c["ok"] and c["severity"] == "fail"]
     warnings = [c for c in checks if not c["ok"] and c["severity"] == "warn"]
     ok = not failures

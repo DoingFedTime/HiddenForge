@@ -69,6 +69,12 @@ both injectable into the compose fragment and the 0755 deploy script.
   under Docker, `podman unshare` under rootless Podman -- both measured to
   produce a complete archive that restores to the same address), and a volume
   with no identity in it is refused.
+- **`doctor` failed for ever over a retired service's kept keys.** The
+  container's own key check sees only configured services, so a service
+  directory an operator kept after removing the service was reported as an
+  unverified FAIL on every run. Found by the readiness pass (a service removed
+  from the configuration, its keys left in the volume). It is now a warning
+  that says so; a CONFIGURED service the container is silent about still fails.
 - **`backup` and `encrypt-key` wrote through whatever was at the output
   path.** Both opened an existing file with O_TRUNC, and O_NOFOLLOW does not
   stop a hardlink: the ciphertext went into the file the link shared an inode

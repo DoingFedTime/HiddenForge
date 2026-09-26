@@ -38,7 +38,7 @@ def closed_keys(tmp_path):
     os.chmod(keys / "app", 0o700)
 
 
-def _doctor(hf, monkeypatch, capsys, keys, in_container):
+def _doctor(hf, monkeypatch, capsys, keys, in_container, torrc_services=("app",)):
     info = {"HostConfig": {"CapDrop": ["ALL"],
                            "CapAdd": ["CHOWN", "DAC_OVERRIDE", "FOWNER", "SETUID", "SETGID"],
                            "SecurityOpt": ["no-new-privileges:true"],
@@ -62,7 +62,9 @@ def _doctor(hf, monkeypatch, capsys, keys, in_container):
                         "AvoidDiskWrites 1\nDisableDebuggerAttachment 1\n"
                         "FetchUselessDescriptors 0\nVanguardsLiteEnabled 1\n"
                         "HiddenServicePoWDefensesEnabled 1\n"
-                        "HiddenServiceEnableIntroDoSDefense 1\nHiddenServiceVersion 3\n")
+                        "HiddenServiceEnableIntroDoSDefense 1\nHiddenServiceVersion 3\n"
+                        + "".join(f"HiddenServiceDir /var/lib/tor/hidden_service/{n}\n"
+                                  for n in torrc_services))
     monkeypatch.setattr(hf, "_run", lambda cmd, **kw: subprocess.CompletedProcess(
         cmd, 1, "", ""))
     rc = hf.main(["doctor", "--container", "tor", "--keys", str(keys), "--json"])
@@ -274,3 +276,26 @@ def test_unlimited_swap_is_judged_by_whether_the_host_can_swap(
                              f"hostswap={hostswap}\n", cap_add=[], cap_drop=["ALL"])
     swap = checks["swap is disabled (process memory cannot be paged to disk)"]
     assert swap["ok"] is False and swap["severity"] == severity
+
+
+def test_a_retired_service_is_a_warning_not_a_failure(hf, monkeypatch, capsys,
+                                                      closed_keys):
+    """Its keys kept in the volume, but no longer configured: the container's own
+    check sees only configured services, so it cannot vouch for it. Flagged, not
+    passed -- but failing `doctor` for ever over it teaches people to ignore it."""
+    inner = {"checks": [{"check": "key dir other is 0700", "ok": True,
+                         "detail": "mode=0o700", "severity": "fail"}]}
+    _rc, _doc, checks, _ = _doctor(hf, monkeypatch, capsys, closed_keys, inner,
+                                  torrc_services=("other",))
+    c = checks["key modes for app"]
+    assert c["ok"] is False and c["severity"] == "warn"
+    assert "not configured in the running container" in c["detail"]
+
+
+def test_a_configured_service_the_container_is_silent_about_still_fails(
+        hf, monkeypatch, capsys, closed_keys):
+    inner = {"checks": [{"check": "key dir other is 0700", "ok": True,
+                         "detail": "mode=0o700", "severity": "fail"}]}
+    rc, _doc, checks, _ = _doctor(hf, monkeypatch, capsys, closed_keys, inner)
+    assert rc == hf.EXIT_FAIL
+    assert checks["key modes for app"]["severity"] == "fail"
