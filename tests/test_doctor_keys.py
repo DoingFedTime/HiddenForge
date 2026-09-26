@@ -43,7 +43,8 @@ def _doctor(hf, monkeypatch, capsys, keys, in_container):
                            "CapAdd": ["CHOWN", "DAC_OVERRIDE", "FOWNER", "SETUID", "SETGID"],
                            "SecurityOpt": ["no-new-privileges:true"],
                            "ReadonlyRootfs": True, "PidsLimit": 256,
-                           "Memory": 1, "MemorySwap": 1, "LogConfig": {"Type": "none"}},
+                           "Memory": 1, "MemorySwap": 1, "LogConfig": {"Type": "none"},
+                           "RestartPolicy": {"Name": "unless-stopped"}},
             "NetworkSettings": {"Ports": {}}, "State": {"Running": True}}
     asked = []
 

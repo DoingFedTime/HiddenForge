@@ -1253,6 +1253,8 @@ def start_upload_watcher():
     seen an upload for it. Runs as the tor user, which owns the control socket
     and the DataDirectory the record is kept in.
     """
+    # Long-lived by design (it records uploads for as long as Tor runs), so it
+    # deliberately has no timeout; the supervisor watches it via poll().
     return subprocess.Popen(['su-exec', 'tor', 'python3', HEALTHCHECK_BIN,
                              '--watch-uploads'])
 
