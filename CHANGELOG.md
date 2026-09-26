@@ -69,6 +69,15 @@ both injectable into the compose fragment and the 0755 deploy script.
   under Docker, `podman unshare` under rootless Podman -- both measured to
   produce a complete archive that restores to the same address), and a volume
   with no identity in it is refused.
+- **A backend that was down announced itself to the host's DNS.** The
+  engine's resolver answers backend names on the internal network, but forwards
+  a name it cannot answer to the host's upstream DNS -- and the supervisor
+  re-resolves backend names every 30s, so a backend outage became a query to
+  the upstream every 30s, starting exactly when the onion lost it. Measured on
+  Docker and rootless Podman. The compose files and the `setup` fragment now set
+  `dns: 127.0.0.1` (nothing listens there): measured, internal names still
+  resolve, zero queries left over 72s of backend downtime, Tor bootstrapped and
+  served HTTP 200 on both engines. `doctor` warns when a container lacks it.
 - **The vanity generator ran with networking on.** `hiddenforge vanity` makes a
   secret key inside a container that had the default network. It now runs with
   `--network none` and `no-new-privileges` (measured: key generated, prefix

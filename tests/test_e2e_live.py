@@ -121,12 +121,20 @@ def _write_override(tmp: Path) -> Path:
     test_emitted_fragment_validates still validates the fragment as shipped.
     """
     path = tmp / "e2e-override.yml"
-    path.write_text(
-        "services:\n"
-        "  tor:\n"
-        f"    image: {IMAGE}\n"
-        "    logging:\n"
-        "      driver: json-file\n")
+    text = ("services:\n"
+            "  tor:\n"
+            f"    image: {IMAGE}\n"
+            "    logging:\n"
+            "      driver: json-file\n")
+    # On a host whose default address pools are used up, name two free subnets:
+    # HIDDENFORGE_E2E_SUBNETS=10.251.0.0/24,10.252.0.0/24 (internal, external).
+    subnets = os.environ.get("HIDDENFORGE_E2E_SUBNETS")
+    if subnets:
+        internal, external = (n.strip() for n in subnets.split(","))
+        text += ("networks:\n"
+                 f"  tor-internal:\n    ipam: {{config: [{{subnet: {internal}}}]}}\n"
+                 f"  tor-external:\n    ipam: {{config: [{{subnet: {external}}}]}}\n")
+    path.write_text(text)
     return path
 
 
@@ -177,7 +185,8 @@ def _assert_stack_up(proc):
         raise AssertionError(
             "docker has no free subnets left on this host, so the stack could "
             "not be created. This is the machine, not the code: free a network "
-            "(`docker network ls`) and re-run.\n" + proc.stderr)
+            "(`docker network ls`), or name two free subnets in "
+            "HIDDENFORGE_E2E_SUBNETS, and re-run.\n" + proc.stderr)
     raise AssertionError(f"the stack did not come up:\n{proc.stderr}")
 
 

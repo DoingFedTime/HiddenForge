@@ -48,6 +48,10 @@ services:
     networks:
       - tor-internal
       - tor-external
+    # No DNS leaves the container: backend names still resolve on the internal
+    # network, but a name that does not (a backend down or not up yet) is never
+    # forwarded upstream. Tor itself needs no DNS.
+    dns: 127.0.0.1
     healthcheck:
       test: ["CMD", "su-exec", "tor", "python3", "/usr/local/bin/healthcheck.py"]
       interval: 60s

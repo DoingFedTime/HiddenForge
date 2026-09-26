@@ -1286,6 +1286,24 @@ def cmd_doctor(args) -> int:
     checks.append(_check(logdriver == "none", "logging driver is 'none' (no host log)",
                          f"LogConfig.Type={logdriver!r}", severity="warn"))
 
+    # Without a loopback DNS server the engine's resolver forwards any name it
+    # cannot answer -- a backend that is down or not up yet -- to the host's
+    # upstream DNS, every 30s while the supervisor re-checks it. Measured on
+    # Docker and on Podman; `dns: 127.0.0.1` stops it and internal names still
+    # resolve.
+    dns = [str(d) for d in (hc.get("Dns") or [])]
+
+    def _loopback(addr: str) -> bool:
+        try:
+            return ipaddress.ip_address(addr).is_loopback
+        except ValueError:
+            return False
+    checks.append(_check(bool(dns) and all(_loopback(d) for d in dns),
+                         "no DNS query leaves the container",
+                         f"Dns={dns!r}" + ("" if dns and all(_loopback(d) for d in dns)
+                                           else "; set `dns: 127.0.0.1` on the service"),
+                         severity="warn"))
+
     # The generated torrc must still carry every hardening directive. Docker
     # flags do not prove the Tor config was not weakened, and a compromised or
     # reconstructed /etc/tor/torrc would otherwise pass doctor silently.
@@ -1417,6 +1435,10 @@ services:
     networks:
       - tor-internal
       - tor-external
+    # No DNS leaves the container: backend names still resolve on the internal
+    # network, but a name that does not (a backend down or not up yet) is never
+    # forwarded upstream. Tor itself needs no DNS.
+    dns: 127.0.0.1
     healthcheck:
       test: ["CMD", "su-exec", "tor", "python3", "/usr/local/bin/healthcheck.py"]
       interval: 60s

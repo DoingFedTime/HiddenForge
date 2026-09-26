@@ -122,6 +122,13 @@ services:
       - tor-internal   # to reach the backend
       - tor-external   # to reach the Tor network
 
+    # No DNS leaves this container. aardvark-dns still answers backend names on
+    # the internal network, but forwards any name it cannot answer upstream --
+    # so a backend that is down or not up yet would be announced there, in step
+    # with the onion's outages. Tor needs no DNS (it bootstraps from relay IPs);
+    # a loopback server nothing listens on ends it.
+    dns: 127.0.0.1
+
     depends_on:
       - web
 

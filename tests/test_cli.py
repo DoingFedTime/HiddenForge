@@ -547,6 +547,7 @@ def _fake_inspect():
             "Memory": 536870912,
             "MemorySwap": 536870912,
             "LogConfig": {"Type": "none"},
+            "Dns": ["127.0.0.1"],
         },
         "NetworkSettings": {"Ports": {}},
         "AppArmorProfile": "docker-default",
@@ -579,6 +580,29 @@ def test_doctor_tolerates_bad_engine_values(hf, tmp_path, capsys, monkeypatch, p
     doc = json.loads(capsys.readouterr().out)
     check = next(c for c in doc["checks"] if c["check"].startswith("process count"))
     assert check["ok"] is (pids_limit in (256, "512"))
+
+
+@pytest.mark.parametrize("dns, ok", [
+    (["127.0.0.1"], True), (["::1"], True), (["127.0.0.53", "127.0.0.1"], True),
+    ([], False), (None, False), (["1.1.1.1"], False), (["127.0.0.1", "9.9.9.9"], False),
+    (["not-an-address"], False),
+])
+def test_doctor_warns_when_dns_can_leave_the_container(hf, tmp_path, capsys,
+                                                       monkeypatch, dns, ok):
+    """Measured on Docker and Podman: without a loopback DNS server, a name the
+    engine cannot answer -- a backend that is down -- goes to the host's upstream
+    DNS every 30 seconds, in step with the onion's outage."""
+    os.chmod(tmp_path, 0o700)
+    info = _fake_inspect()
+    info["HostConfig"]["Dns"] = dns
+    monkeypatch.setattr(hf, "_docker_inspect", lambda c: (info, None))
+    monkeypatch.setattr(hf, "_resolve_container", lambda c: "cid")
+    monkeypatch.setattr(hf, "_docker_exec_text", lambda c, a: None)
+    hf.main(["doctor", "--container", "tor", "--keys", str(tmp_path), "--json"])
+    doc = json.loads(capsys.readouterr().out)
+    check = next(c for c in doc["checks"] if c["check"] == "no DNS query leaves the container")
+    assert check["ok"] is ok
+    assert check["severity"] == "warn"
 
 
 def test_doctor_flags_missing_torrc_directive(hf, tmp_path, capsys, monkeypatch):

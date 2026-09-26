@@ -42,6 +42,20 @@ follow symlinks (`O_NOFOLLOW`, `fstat`+`fchmod` on one fd, `lchown`,
 pinned by a regression test because the ordering is what makes the rejection
 effective.
 
+**DNS (the container to the host's resolver).** Backend names are resolved by
+the engine's resolver (Docker's embedded DNS, Podman's aardvark-dns), which
+answers names on the internal network itself and forwards anything else to the
+host's upstream DNS. The supervisor re-resolves backend names every 30 seconds,
+so a backend that is down or not up yet would be announced to that upstream
+every 30 seconds, starting exactly when the onion loses it: a timing signal that
+links the server's network identity to the onion's outages. Measured on Docker
+and on rootless Podman: a name the engine could not answer reached the host
+resolver (Podman: 78 packets for one dotted name). The shipped compose files and
+the `setup` fragment set `dns: 127.0.0.1`, a server nothing listens on, and
+measured with it: internal names resolve, no query leaves (0 packets over 72s of
+backend downtime), Tor bootstraps and serves (Tor needs no DNS; it bootstraps
+from relay IPs). `doctor` warns when a running container lacks it.
+
 **Key files on disk.** Service directories are `0700`, the secret key `0600`, and
 the parent volume `0751` (traverse, not list). `doctor` verifies the modes.
 

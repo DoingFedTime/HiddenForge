@@ -100,6 +100,7 @@ The included `docker-compose.yml` is ready to use as-is. It handles everything:
 | Read-only container filesystem | `read_only: true` |
 | No host-side log file | `logging: driver: none` |
 | Network-isolated backend | `internal: true` network, no `ports:` on backend |
+| No DNS query leaves the tor container | `dns: 127.0.0.1` (backend names still resolve internally) |
 | Key persistence | `./tor-keys` volume mount |
 
 The only two lines you need to edit are flagged with `<-- EDIT`.
