@@ -372,22 +372,51 @@ In rootless mode, container uid 0 maps to your regular host user via Linux
 user namespaces. A container escape gives an attacker only your user account,
 not real root on the host.
 
-```bash
-# Prerequisites: Podman 4.0+ and podman-compose
-podman --version
-pip install podman-compose   # or: pipx install podman-compose
+**Recommended: Docker Compose v2 on the rootless Podman socket.** It is the
+only way measured to apply every limit in `podman-compose.yml` (podman-compose
+drops some, below). It needs only the Compose binary, not the Docker engine:
 
-# Same three steps as Docker, just use podman-compose.yml
+```bash
+# Prerequisites (Ubuntu 24.04 shown). --no-install-recommends matters: without
+# it apt also installs and starts the Docker engine, a root daemon.
+sudo apt install podman
+sudo apt install --no-install-recommends docker-compose-v2
+systemctl --user enable --now podman.socket
+export DOCKER_HOST=unix://$XDG_RUNTIME_DIR/podman/podman.sock
+COMPOSE=/usr/libexec/docker/cli-plugins/docker-compose
+
 mkdir -p ./tor-keys
-podman-compose -f podman-compose.yml up -d
+$COMPOSE -p hiddenforge -f podman-compose.yml up -d
 
 # Read the .onion address once Tor bootstraps (first boot: a few minutes, up to ~6)
 # NOTE the `su-exec tor`: unlike the Docker file, this one drops DAC_OVERRIDE, so
 # the exec'd root user cannot traverse the 0700 tor-owned DataDirectory. Reading
 # it as the tor user is the correct way — do NOT "fix" a permission error here by
 # adding DAC_OVERRIDE back or loosening the key directory.
+$COMPOSE -p hiddenforge -f podman-compose.yml exec tor su-exec tor cat /var/lib/tor/hidden_service/myapp/hostname
+```
+
+Measured on a stock Ubuntu 24.04 host (Podman 4.9.3, `docker-compose-v2`
+2.40.3, Docker engine not installed): ready, `pids.max` 256, `memory.swap.max`
+0, DNS isolated; Tor killed, the container restarted with the same address and
+served HTTP 200 over Tor.
+
+**Alternatively, podman-compose** (`pip install podman-compose`), with the
+limits it does not apply (below):
+
+```bash
+podman-compose -f podman-compose.yml up -d
 podman-compose -f podman-compose.yml exec tor su-exec tor cat /var/lib/tor/hidden_service/myapp/hostname
 ```
+
+**Why there is no healthcheck under Podman.** Rootless Podman 4.9 runs
+healthchecks through systemd user timers, and when no systemd user manager is
+reachable (a service account nobody logs into, `sudo -iu`, cron) it never
+restarts a container that has one. Measured on Ubuntu 24.04: with a healthcheck
+the container stayed stopped after it exited; without one it restarted every
+time. This container heals itself by exiting and being restarted (after Tor
+dies, when a backend moves, when a late backend comes up), so the Podman file
+declares no healthcheck. `hiddenforge status` runs the same check itself.
 
 **Why the Podman compose file drops two capabilities:**
 
@@ -424,8 +453,10 @@ right way to read it. Docker publishes `<name>.onion` normally, and
 measured on a running container: `pids_limit` is honoured only from
 podman-compose 1.1 (Ubuntu 24.04 ships 1.0.6, which leaves Podman's default of
 2048 processes), and `memswap_limit` is honoured by no version, so the
-container may use swap. On an older podman-compose, bring the stack up with
-`--podman-run-args="--pids-limit=256"`; for swap, run the host with none.
+container may use swap. Docker Compose on the Podman socket (above) applies
+both. With podman-compose, bring the stack up with
+`--podman-run-args="--pids-limit=256"` (it applies to every service in the
+file, your backend included); for swap, run the host with none.
 `hiddenforge doctor` reads the limits the container really has (its cgroup and
 its capability set), so it tells you whether either one applies to you:
 

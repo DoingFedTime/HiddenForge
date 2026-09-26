@@ -3,8 +3,16 @@
 # USAGE:
 #   1. Copy this file and edit the two lines marked with <-- EDIT
 #   2. mkdir -p ./tor-keys
-#   3. podman-compose -f podman-compose.yml up -d
-#   4. podman-compose -f podman-compose.yml exec tor su-exec tor cat /var/lib/tor/hidden_service/myapp/hostname
+#   3. Bring it up. Recommended -- Docker Compose v2 on the rootless Podman
+#      socket, the only way measured to apply every limit below (the Compose
+#      binary only; `apt install --no-install-recommends docker-compose-v2`,
+#      no Docker engine):
+#        systemctl --user enable --now podman.socket
+#        export DOCKER_HOST=unix://$XDG_RUNTIME_DIR/podman/podman.sock
+#        /usr/libexec/docker/cli-plugins/docker-compose -p hiddenforge -f podman-compose.yml up -d
+#      or podman-compose (skips pids_limit before 1.1 and memswap_limit always):
+#        podman-compose -f podman-compose.yml up -d
+#   4. <compose command> exec tor su-exec tor cat /var/lib/tor/hidden_service/myapp/hostname
 #      (replace "myapp" with whatever you used in step 1)
 #      The `su-exec tor` is REQUIRED here and is not a typo: this file drops
 #      DAC_OVERRIDE, so the exec'd root cannot traverse the 0700 tor-owned
@@ -71,10 +79,12 @@ services:
     # podman-compose does NOT apply all of these, measured and read from its
     # source: `pids_limit` only from podman-compose 1.1 (Ubuntu 24.04 ships
     # 1.0.6, which leaves Podman's default of 2048), and `memswap_limit` in no
-    # version at all. For the pids cap on an older podman-compose, add
-    #     --podman-run-args="--pids-limit=256"
-    # to the up command. Swap cannot be limited through podman-compose; run the
-    # host without swap. `hiddenforge doctor` measures what was really applied.
+    # version at all. Docker Compose on the Podman socket (USAGE, step 3)
+    # applies both -- measured: pids.max 256, memory.swap.max 0. With an older
+    # podman-compose, add --podman-run-args="--pids-limit=256" to the up command
+    # (it applies to every service); swap cannot be limited through
+    # podman-compose, so run the host without swap. `hiddenforge doctor`
+    # measures what was really applied.
     mem_limit: 512m
     memswap_limit: 512m
     cpus: 1.0

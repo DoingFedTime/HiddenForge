@@ -69,6 +69,15 @@ both injectable into the compose fragment and the 0755 deploy script.
   under Docker, `podman unshare` under rootless Podman -- both measured to
   produce a complete archive that restores to the same address), and a volume
   with no identity in it is refused.
+- **Podman users can now get every limit the compose file declares.** Docker
+  Compose v2 on the rootless Podman socket applies `pids_limit` and
+  `memswap_limit`, which podman-compose drops; it needs only the Compose binary
+  (`apt install --no-install-recommends docker-compose-v2`), not the Docker
+  engine. Measured on stock Ubuntu 24.04 with no Docker engine installed:
+  pids.max 256, memory.swap.max 0, DNS isolated, ready, Tor killed and the
+  container restarted with the same address, HTTP 200 over Tor. The README and
+  `podman-compose.yml` now lead with it; podman-compose stays documented with
+  its gaps.
 - **Under rootless Podman the container could stay down instead of healing.**
   Rootless Podman 4.9 (Ubuntu 24.04's version) runs healthchecks through
   systemd user timers, and when no systemd user manager is reachable -- a
