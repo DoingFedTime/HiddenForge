@@ -100,9 +100,12 @@ Two ways, both stable:
 <keys>/<name>.onion          # e.g. ./tor-keys/myapp.onion, one line, mode 0644
 ```
 
-hiddenforge publishes this once the service is actually reachable (Tor holds
-established introduction circuits for it), not merely once Tor has written the
-key, so the file never names an address no client can reach yet. Any process
+hiddenforge publishes this once the service is actually reachable -- Tor holds
+established introduction circuits for it AND has uploaded its descriptor to the
+network -- not merely once Tor has written the key. Measured: without the upload
+check the file appeared about 45 seconds before any client could reach the
+address; with it, a fetch made the moment the service reported ready succeeded,
+on a fresh key and after a restart. Any process
 that can read the mount can read it. (The service directory itself is `0700`
 owned by the container's `tor` user, so other files inside it are not readable by
 your host user — `<name>.onion` is the readable copy.)
@@ -161,7 +164,7 @@ Publish nothing until **`ready` is true**. It is the AND of:
 | field | meaning |
 |---|---|
 | `running` | the container is up |
-| `healthy` | the healthcheck passes: bootstrapped, a circuit established, every service holding established introduction points, and Vanguards alive. Under Podman no engine healthcheck is set (rootless Podman 4.9 does not restart a container that has one when no systemd user session is reachable), so `health_status` is empty and `status` runs the same check itself |
+| `healthy` | the healthcheck passes: bootstrapped, a circuit established, every service holding established introduction points with its descriptor uploaded to the network by this Tor, and Vanguards alive. Under Podman no engine healthcheck is set (rootless Podman 4.9 does not restart a container that has one when no systemd user session is reachable), so `health_status` is empty and `status` runs the same check itself |
 | `tor_bootstrapped` | Tor reports `PROGRESS=100` |
 | `hidden_service_published` | the address file exists |
 | `vanguards` | the guard-protection addon is alive |

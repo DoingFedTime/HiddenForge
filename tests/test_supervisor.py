@@ -76,6 +76,8 @@ class Harness:
         self.wait_kwargs = None
         self.vanguards_started = 0
         self.vanguards_start_times = []
+        self.watchers_started = 0
+        self.watcher_start_times = []
         self.pwnam_asked = []
         self.socket_probes = 0
         self.dispatch_argv = None
@@ -102,7 +104,8 @@ def supervisor(monkeypatch, tmp_path):
             hs_dirs=("/keys/app",),
             dropped=(), dropped_ok=True, start_vanguards_raises=None,
             wait_raises=None, generate_raises=None, can_drop_raises=None,
-            data_dir_exists=True, argv=("entrypoint.py",), socket_ready=True):
+            data_dir_exists=True, argv=("entrypoint.py",), socket_ready=True,
+            watcher_polls=(None,), watcher_raises=None):
         h = Harness()
         data_dir = tmp_path / "var-lib-tor"
         if data_dir_exists:
@@ -114,6 +117,7 @@ def supervisor(monkeypatch, tmp_path):
         # believe a child is already alive.
         monkeypatch.setattr(e, "_tor_process", None)
         monkeypatch.setattr(e, "_vanguards_process", None)
+        monkeypatch.setattr(e, "_upload_watcher", None)
         monkeypatch.setattr(sys, "argv", list(argv))
         monkeypatch.setattr(e, "DATA_DIR", str(data_dir))
         monkeypatch.setattr(
@@ -229,6 +233,17 @@ def supervisor(monkeypatch, tmp_path):
             return FakeProc(list(vanguards_polls))
 
         monkeypatch.setattr(e, "start_vanguards", start_vg)
+
+        def start_watcher():
+            h.note("start_upload_watcher")
+            h.watchers_started += 1
+            if len(h.watcher_start_times) < Harness.LIMIT:
+                h.watcher_start_times.append(h.time)
+            if watcher_raises:
+                raise watcher_raises
+            return FakeProc(list(watcher_polls), pid=5151)
+
+        monkeypatch.setattr(e, "start_upload_watcher", start_watcher)
         def socket_probe():
             h.socket_probes += 1
             return socket_ready
@@ -781,3 +796,70 @@ def test_no_move_changes_nothing(supervisor, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert code == 1 and "Tor exited with code 0" in out
     assert "now resolves to" not in out
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# The upload watcher: nothing is reachable until it has seen the upload
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_the_upload_watcher_starts_as_soon_as_the_socket_exists(supervisor):
+    """Before Vanguards, before anything else: the HS_DESC UPLOADED event it
+    waits for is gone if it fires before the subscription."""
+    _code, h = supervisor(tor_polls=[None] * 3 + [0])
+    i = h.events.index("wait_for_socket")
+    assert h.events[i + 1] == "start_upload_watcher"
+    assert h.watchers_started == 1
+
+
+def test_a_dead_watcher_is_restarted_not_budgeted(supervisor, capsys):
+    """Without it no service ever becomes reachable, so unlike Vanguards it has
+    no give-up path: it is restarted on the retry delay for as long as needed."""
+    _code, h = supervisor(tor_polls=[None] * 100 + [0], watcher_polls=(1,))
+    assert h.watchers_started >= 8
+    gaps = {b - a for a, b in pairwise(h.watcher_start_times[1:])}
+    assert gaps == {float(e.UPLOAD_WATCHER_RETRY_SECONDS)}
+    assert "Upload watcher exited; restarting it." in capsys.readouterr().out
+
+
+def test_a_socket_that_came_late_still_gets_a_watcher(supervisor):
+    _code, h = supervisor(tor_polls=[None] * 5 + [0], wait_raises=TimeoutError("slow"))
+    assert h.watchers_started == 1
+
+
+def test_no_socket_no_watcher_and_no_busy_probing(supervisor):
+    _code, h = supervisor(tor_polls=[None] * 100 + [0], socket_ready=False,
+                          wait_raises=TimeoutError("not yet"))
+    assert h.watchers_started == 0
+    assert h.socket_probes <= 100 // e.VANGUARDS_RETRY_DELAY + 2
+
+
+def test_a_watcher_that_cannot_start_does_not_stop_the_loop(supervisor, capsys):
+    code, h = supervisor(tor_polls=[None] * 30 + [0], watcher_raises=OSError("no python"))
+    assert code == 1 and h.watchers_started >= 2
+    assert "Could not start the upload watcher: no python" in capsys.readouterr().out
+
+
+def test_the_watcher_is_stopped_when_tor_exits(supervisor):
+    _code, h = supervisor(tor_polls=[None] * 3 + [0])
+    assert "upload watcher" in [name for _p, name, _t in h.killed]
+
+
+def test_the_watcher_is_stopped_on_a_backend_move(supervisor, monkeypatch):
+    monkeypatch.setattr(e, "_BackendWatch", _MovedAfter(3))
+    _code, h = supervisor(tor_polls=[None] * 20)
+    assert "upload watcher" in [name for _p, name, _t in h.killed]
+
+
+def test_the_signal_handler_stops_the_watcher(monkeypatch):
+    killed = []
+    monkeypatch.setattr(e, "_kill_proc", lambda p, name, timeout=10: killed.append(name))
+    with pytest.raises(SystemExit):
+        e.signal_handler(15, None)
+    assert killed == ["upload watcher", "Vanguards", "Tor"]
+
+
+def test_the_watcher_runs_the_healthcheck_as_tor(monkeypatch):
+    seen = []
+    monkeypatch.setattr(e.subprocess, "Popen", lambda argv, **kw: seen.append(argv))
+    e.start_upload_watcher()
+    assert seen == [["su-exec", "tor", "python3", e.HEALTHCHECK_BIN, "--watch-uploads"]]

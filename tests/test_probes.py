@@ -308,8 +308,9 @@ def test_shutdown_stops_vanguards_first_with_the_shorter_grace(monkeypatch, caps
     with pytest.raises(SystemExit) as exc:
         e.signal_handler(15, None)
     assert exc.value.code == 0
-    assert order == ["Vanguards", "Tor"]
-    assert grants == {"Vanguards": 5, "Tor": 10}
+    # The upload watcher is a control-socket client too, so it goes before Tor.
+    assert order == ["upload watcher", "Vanguards", "Tor"]
+    assert grants == {"upload watcher": 5, "Vanguards": 5, "Tor": 10}
     assert "Received signal 15" in capsys.readouterr().out
 
 

@@ -399,13 +399,22 @@ def test_a_missing_control_socket_raises_for_the_caller_to_report(hc, tmp_path, 
 @pytest.fixture
 def world(monkeypatch, hc, tmp_path):
     """Drive evaluate() with a scripted control reply and on-disk services."""
-    def setup(reply, services=(), vanguards=True):
+    def setup(reply, services=(), vanguards=True, uploaded=None):
+        """`uploaded` defaults to every service's address: a healthy service's
+        descriptor is on the network. Pass a set to say otherwise."""
         dirs = []
         for name, hostname in services:
             dirs.append(_hs(tmp_path, name, hostname))
+        if uploaded is None:
+            uploaded = set()
+            for _name, hostname in services:
+                text = hostname.decode("ascii", "replace") if isinstance(hostname, bytes) \
+                    else (hostname or "")
+                uploaded.add(text.strip().removesuffix(".onion"))
         monkeypatch.setattr(hc, "_query", lambda: reply)
         monkeypatch.setattr(hc, "_hidden_service_dirs", lambda: dirs)
         monkeypatch.setattr(hc, "_vanguards_running", lambda: vanguards)
+        monkeypatch.setattr(hc, "_uploaded_addresses", lambda path=None: set(uploaded))
         return dirs
 
     return setup
@@ -772,7 +781,8 @@ def test_the_status_document_keys_are_the_contract(hc, world):
         "circuit_established", "hidden_service_published", "hidden_service_reachable",
         "process_up", "ready", "reason", "services", "tor_bootstrapped", "vanguards",
     ]
-    assert sorted(doc["services"][0]) == ["address", "intro_points", "name", "published"]
+    assert sorted(doc["services"][0]) == ["address", "descriptor_uploaded", "intro_points",
+                                          "name", "published"]
 
 
 def test_every_flag_starts_false_and_none_is_self_evident(hc, monkeypatch, procfs):
@@ -1063,3 +1073,110 @@ def test_a_hostname_linked_to_an_endless_file_is_not_read(hc, tmp_path):
     (d / "hostname").symlink_to("/dev/zero")
     ok, _details = _hc_returns_promptly(lambda: hc._published_state([str(d)]))
     assert ok is False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# The descriptor has to be ON THE NETWORK before the service is reachable
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Measured on a fresh service: ready and the address file at 11:17:58, the
+# descriptor uploaded at 11:18:40-42, every client fetch in between failed.
+
+def test_intro_points_without_an_uploaded_descriptor_are_not_reachable(hc, world):
+    world(_circuit_status(*[_intro_line(str(i), ONION) for i in range(3)]),
+          services=[("app", ONION + ".onion\n")], uploaded=set())
+    rc, doc = hc.evaluate()
+    assert rc == 1 and doc["ready"] is False
+    assert doc["hidden_service_reachable"] is False
+    assert doc["services"][0]["descriptor_uploaded"] is False
+    assert doc["reason"].startswith("no descriptor uploaded to the network yet for: app")
+
+
+def test_an_upload_for_one_service_does_not_vouch_for_another(hc, world):
+    world(_circuit_status(*[_intro_line(str(i), a) for i, a in enumerate([ONION, OTHER] * 2)]),
+          services=[("good", ONION + ".onion\n"), ("late", OTHER + ".onion\n")],
+          uploaded={ONION})
+    rc, doc = hc.evaluate()
+    assert rc == 1
+    assert [s["descriptor_uploaded"] for s in doc["services"]] == [True, False]
+    assert "late" in doc["reason"] and "good" not in doc["reason"]
+
+
+def test_missing_intro_points_are_reported_before_a_missing_upload(hc, world):
+    """No introduction circuits is the deeper failure; say that one."""
+    world(_circuit_status(), services=[("app", ONION + ".onion\n")], uploaded=set())
+    _rc, doc = hc.evaluate()
+    assert "NOT reachable" in doc["reason"]
+
+
+def test_the_uploads_file_keeps_only_well_formed_addresses(hc, tmp_path):
+    path = tmp_path / "hs-uploaded"
+    path.write_text(f"{ONION}\nnot-an-address\n{OTHER}\n{ONION}.onion\n\n")
+    assert hc._uploaded_addresses(str(path)) == {ONION, OTHER}
+
+
+def test_a_missing_or_hostile_uploads_file_is_nothing_uploaded(hc, tmp_path):
+    assert hc._uploaded_addresses(str(tmp_path / "absent")) == set()
+    fifo = tmp_path / "fifo"
+    os.mkfifo(fifo)
+    assert hc._uploaded_addresses(str(fifo)) == set()
+    (tmp_path / "link").symlink_to(tmp_path / "absent")
+    assert hc._uploaded_addresses(str(tmp_path / "link")) == set()
+
+
+def _fake_tor(tmp_path, chunks, received):
+    """A control socket that answers with `chunks`, then closes (Tor exiting)."""
+    import threading
+    sock_path = str(tmp_path / "control.sock")
+    srv = socket.socket(socket.AF_UNIX)
+    srv.bind(sock_path)
+    srv.listen(1)
+
+    def serve():
+        conn, _ = srv.accept()
+        received.append(conn.recv(4096))
+        for c in chunks:
+            conn.sendall(c)
+        conn.close()
+        srv.close()
+
+    threading.Thread(target=serve, daemon=True).start()
+    return sock_path
+
+
+def test_the_watcher_records_only_our_upload_confirmations(hc, tmp_path):
+    received = []
+    good = f"650 HS_DESC UPLOADED {ONION} UNKNOWN $AAAA~relay\r\n".encode()
+    chunks = [
+        b"250 OK\r\n250 OK\r\n",
+        f"650 HS_DESC CREATED {OTHER} UNKNOWN UNKNOWN x\r\n".encode(),
+        f"650 HS_DESC UPLOAD {OTHER} UNKNOWN $BBBB HSDIR_INDEX=1\r\n".encode(),
+        good[:20], good[20:],                       # an event split across reads
+        good,                                       # a second HSDir: no change
+        b"650 HS_DESC UPLOADED notanaddress UNKNOWN $CCCC\r\n",
+        b"650 HS_DESC FAILED " + OTHER.encode() + b" UNKNOWN $DDDD REASON=X\r\n",
+    ]
+    sock_path = _fake_tor(tmp_path, chunks, received)
+    out = tmp_path / "hs-uploaded"
+    assert hc.watch_uploads(str(out), sock_path, connect_timeout=5) == 0
+    assert received[0] == b"AUTHENTICATE\r\nSETEVENTS HS_DESC\r\n"
+    assert out.read_text() == f"{ONION}\n"
+    assert (out.stat().st_mode & 0o777) == 0o600
+
+
+def test_a_restarted_watcher_keeps_what_was_recorded(hc, tmp_path):
+    out = tmp_path / "hs-uploaded"
+    out.write_text(f"{OTHER}\n")
+    sock_path = _fake_tor(tmp_path, [
+        f"650 HS_DESC UPLOADED {ONION} UNKNOWN $AAAA\r\n".encode()], [])
+    assert hc.watch_uploads(str(out), sock_path, connect_timeout=5) == 0
+    assert out.read_text() == f"{ONION}\n{OTHER}\n"
+
+
+def test_no_control_socket_is_a_bounded_wait_not_a_hang(hc, tmp_path, monkeypatch):
+    clock = [0.0]
+    monkeypatch.setattr(hc.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(hc.time, "sleep", lambda s: clock.__setitem__(0, clock[0] + s))
+    assert hc.watch_uploads(str(tmp_path / "out"), str(tmp_path / "none.sock"),
+                            connect_timeout=3) == 2
+    assert not (tmp_path / "out").exists()

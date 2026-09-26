@@ -24,6 +24,7 @@ from pathlib import Path
 # Module-level process references so the signal handler can terminate both.
 _tor_process = None
 _vanguards_process = None
+_upload_watcher = None
 
 VANGUARDS_BIN    = '/opt/vanguards-venv/bin/vanguards'
 CONTROL_SOCKET   = '/var/lib/tor/control.sock'
@@ -216,6 +217,7 @@ def _kill_proc(proc, name, timeout=10):
 def signal_handler(signum, frame):
     """Graceful shutdown: stop Vanguards first, then Tor."""
     print(f"Received signal {signum}, shutting down...")
+    _kill_proc(_upload_watcher, "upload watcher", timeout=5)
     _kill_proc(_vanguards_process, "Vanguards", timeout=5)
     _kill_proc(_tor_process,       "Tor",       timeout=10)
     sys.exit(0)
@@ -1225,6 +1227,36 @@ def _assert_process_dropped(proc, name, timeout=5):
     return False
 
 
+UPLOAD_WATCHER_RETRY_SECONDS = VANGUARDS_RETRY_DELAY
+
+
+class _ProbeOnce:
+    """Call `probe` at most once; later calls return the first answer."""
+
+    def __init__(self, probe):
+        self.probe = probe
+        self.answer = None
+
+    def __call__(self):
+        if self.answer is None:
+            self.answer = bool(self.probe())
+        return self.answer
+
+
+def start_upload_watcher():
+    """Record descriptor uploads for the life of Tor (healthcheck.watch_uploads).
+
+    Started the moment the control socket exists, before anything else: the
+    HS_DESC UPLOADED event is the only way to learn that a descriptor reached
+    the network, and an event that fired before the subscription is gone. The
+    service is not "reachable" -- the address file is withheld -- until this has
+    seen an upload for it. Runs as the tor user, which owns the control socket
+    and the DataDirectory the record is kept in.
+    """
+    return subprocess.Popen(['su-exec', 'tor', 'python3', HEALTHCHECK_BIN,
+                             '--watch-uploads'])
+
+
 def start_vanguards():
     """Launch the Vanguards addon as the tor user via the control socket.
 
@@ -1334,7 +1366,7 @@ class _BackendWatch:
 # ---------------------------------------------------------------------------
 
 def main():
-    global _tor_process, _vanguards_process
+    global _tor_process, _vanguards_process, _upload_watcher
 
     # A lone surrogate (from a non-UTF-8 environment value or path) makes the
     # default UTF-8 stdout raise UnicodeEncodeError and would abort startup. The
@@ -1432,8 +1464,10 @@ def main():
     vanguards_restarts    = 0
     vanguards_last_start  = 0.0
     vanguards_next_attempt = 0.0
+    upload_watcher_next = 0.0
     try:
         wait_for_socket(timeout=120, tor=_tor_process)
+        _upload_watcher = start_upload_watcher()
         _vanguards_process   = start_vanguards()
         vanguards_last_start = time.monotonic()
         print("Vanguards addon started.")
@@ -1460,6 +1494,7 @@ def main():
         tor_rc = _tor_process.poll()
         if tor_rc is not None:
             print(f"Tor exited with code {tor_rc}, shutting down.")
+            _kill_proc(_upload_watcher, "upload watcher", timeout=5)
             _kill_proc(_vanguards_process, "Vanguards", timeout=5)
             # A Tor that exits ON ITS OWN is a failure even when its exit code is
             # 0, so report non-zero. Reaching this loop at all means nobody asked
@@ -1488,11 +1523,32 @@ def main():
                 print(f"Backend '{_safe(name)}' now resolves to {', '.join(current)}, "
                       f"but Tor is still forwarding to {old}. Restarting so the onion "
                       "follows it (the address itself does not change).")
+            _kill_proc(_upload_watcher, "upload watcher", timeout=5)
             _kill_proc(_vanguards_process, "Vanguards", timeout=5)
             _kill_proc(_tor_process, "Tor", timeout=10)
             sys.exit(1)
 
         now = time.monotonic()
+
+        # One control-socket probe per iteration at most, shared by the upload
+        # watcher and Vanguards (both retry on the same delay, so while Tor is
+        # still bootstrapping this is one `su-exec tor test -S` per delay).
+        socket_ready = _ProbeOnce(_control_socket_ready)
+
+        # Keep the upload watcher running. Without it no service ever becomes
+        # reachable, so it is restarted rather than budgeted like Vanguards; a
+        # missing control socket just means "not yet".
+        if (_upload_watcher is None or _upload_watcher.poll() is not None) \
+                and now >= upload_watcher_next:
+            upload_watcher_next = now + UPLOAD_WATCHER_RETRY_SECONDS
+            if socket_ready():
+                if _upload_watcher is not None:
+                    print("Upload watcher exited; restarting it.")
+                try:
+                    _upload_watcher = start_upload_watcher()
+                except Exception as e:
+                    _upload_watcher = None
+                    print(f"Could not start the upload watcher: {e}")
 
         # Detect a Vanguards exit and decide whether to retry.
         if _vanguards_process is not None:
@@ -1523,7 +1579,7 @@ def main():
         # have budget left. A missing control socket is Tor still bootstrapping,
         # so it does not consume the restart budget.
         if _vanguards_process is None and now >= vanguards_next_attempt:
-            if not _control_socket_ready():
+            if not socket_ready():
                 vanguards_next_attempt = now + VANGUARDS_RETRY_DELAY
             else:
                 try:

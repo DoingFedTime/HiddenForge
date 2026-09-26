@@ -69,6 +69,20 @@ both injectable into the compose fragment and the 0755 deploy script.
   under Docker, `podman unshare` under rootless Podman -- both measured to
   produce a complete archive that restores to the same address), and a volume
   with no identity in it is refused.
+- **"Ready" and the address file came about 45 seconds before the address
+  worked.** Readiness required introduction circuits, but a client finds a
+  service through its descriptor on the HSDirs, and Tor uploads that after the
+  circuits. Measured on a fresh service: ready and `<name>.onion` at 11:17:58,
+  descriptor uploaded at 11:18:40-42, every client fetch in between failed;
+  after a restart the network still held the previous run's descriptor, naming
+  introduction points that no longer existed. No control-port query reports an
+  upload, so the entrypoint now runs a watcher (as the tor user, started the
+  moment the control socket exists) that records Tor's HS_DESC UPLOADED events,
+  and a service is reachable only once this Tor has uploaded its descriptor. It
+  gates the address file, `ready`, `status` and the health status alike.
+  Measured on the new image: ready one second after the first upload on a fresh
+  key and in the same second after a restart, and a fetch made at that moment
+  returned HTTP 200 both times.
 - **Podman users can now get every limit the compose file declares.** Docker
   Compose v2 on the rootless Podman socket applies `pids_limit` and
   `memswap_limit`, which podman-compose drops; it needs only the Compose binary

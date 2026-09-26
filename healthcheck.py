@@ -8,6 +8,8 @@ exist yet:
     tor_bootstrapped        the control socket reports bootstrap PROGRESS=100
     hidden_service_published every configured HiddenServiceDir has a valid hostname
     hidden_service_reachable Tor holds BUILT introduction circuits for the service
+                            AND this Tor process has uploaded its descriptor to
+                            the network (see watch_uploads)
     ready                   all of the above AND the Vanguards addon is alive
 
 `pidof tor` only proved the process existed. This probe queries Tor's control
@@ -37,12 +39,14 @@ are the boundary), so AUTHENTICATE takes no argument.
 Exit codes: 0 ready, 1 not ready, 2 cannot evaluate (control socket unreachable).
 """
 import argparse
+import contextlib
 import json
 import os
 import re
 import socket
 import stat
 import sys
+import time
 
 CONTROL_SOCKET = "/var/lib/tor/control.sock"
 TORRC = "/etc/tor/torrc"
@@ -58,6 +62,14 @@ TOR_ARGV0 = "tor"
 # one that made _vanguards_running untestable outside a container.
 PROC_ROOT = "/proc"
 
+# Addresses whose descriptor THIS Tor process has uploaded to at least one HSDir,
+# one 56-character base32 label per line. Written by `--watch-uploads` (run by
+# the entrypoint as the tor user), inside the tor-owned DataDirectory, which is a
+# tmpfs: it starts empty with every container start, as it must -- a descriptor
+# uploaded by the previous run names introduction points that no longer exist.
+UPLOADS_FILE = "/var/lib/tor/hs-uploaded"
+UPLOADS_MAX_BYTES = 65536           # 1,100+ services; far beyond any real torrc
+ADDR_RE = re.compile(r"^[a-z2-7]{56}$")
 ONION_RE = re.compile(r"^[a-z2-7]{56}\.onion$")
 HSDIR_RE = re.compile(r"^\s*HiddenServiceDir\s+(\S+)\s*$")
 
@@ -207,6 +219,75 @@ def _read_address_file(path, max_bytes=256):
         return data.decode("ascii").strip()
     except UnicodeDecodeError:
         return None
+
+
+def _uploaded_addresses(path=None):
+    """The addresses this Tor has uploaded a descriptor for (see UPLOADS_FILE)."""
+    text = _read_address_file(path or UPLOADS_FILE, UPLOADS_MAX_BYTES)
+    if not text:
+        return set()
+    return {line for line in text.split("\n") if ADDR_RE.fullmatch(line)}
+
+
+def _write_uploaded(path, addresses):
+    """Replace `path` atomically with the sorted address list, 0600, no-follow."""
+    tmp = f"{path}.{os.getpid()}.tmp"
+    with contextlib.suppress(FileNotFoundError):
+        os.unlink(tmp)
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "w", encoding="ascii") as fh:
+        fh.write("".join(f"{a}\n" for a in sorted(addresses)))
+    os.replace(tmp, path)
+
+
+def watch_uploads(path=UPLOADS_FILE, sock_path=CONTROL_SOCKET, connect_timeout=60):
+    """Record every address this Tor uploads a descriptor for; return when Tor goes.
+
+    Why this exists, measured on a fresh service: the healthcheck said ready and
+    the address file was published at 11:17:58, Tor uploaded the descriptor to
+    the HSDirs at 11:18:40-42, and every client fetch in between failed. Nothing
+    Tor can be ASKED reports an upload -- `GETINFO hs/service/desc/id` returns
+    the locally generated descriptor either way -- so the only signal is the
+    HS_DESC UPLOADED event, which has to be subscribed to before it happens. The
+    entrypoint starts this the moment the control socket exists, well before Tor
+    can have bootstrapped, built introduction circuits and uploaded anything.
+
+    Entries are only ever added: a restarted watcher keeps what an earlier one
+    recorded for the same Tor process.
+    """
+    uploaded = _uploaded_addresses(path)
+    deadline = time.monotonic() + connect_timeout
+    while True:
+        s = socket.socket(socket.AF_UNIX)
+        try:
+            s.connect(sock_path)
+            break
+        except OSError:
+            s.close()
+            if time.monotonic() > deadline:
+                return 2
+            time.sleep(0.5)
+    with s:
+        s.sendall(b"AUTHENTICATE\r\nSETEVENTS HS_DESC\r\n")
+        buf = b""
+        while True:
+            try:
+                chunk = s.recv(65536)
+            except OSError:
+                return 1
+            if not chunk:
+                return 0            # Tor closed the connection: it is gone
+            buf += chunk
+            if len(buf) > 1 << 20 and b"\r\n" not in buf:
+                buf = b""           # a line that long is not an event we want
+            while b"\r\n" in buf:
+                line, buf = buf.split(b"\r\n", 1)
+                fields = line.decode("ascii", "replace").split()
+                # 650 HS_DESC UPLOADED <address> <auth> <hsdir> ...
+                if (len(fields) >= 4 and fields[:3] == ["650", "HS_DESC", "UPLOADED"]
+                        and ADDR_RE.fullmatch(fields[3]) and fields[3] not in uploaded):
+                    uploaded.add(fields[3])
+                    _write_uploaded(path, uploaded)
 
 
 def _published_state(dirs):
@@ -363,13 +444,19 @@ def evaluate():
     # at Tor's internal target while still catching a service with none, which is
     # the failure this check exists for.
     intro = _intro_points(resp)
+    uploaded = _uploaded_addresses()
     unreachable = []
+    not_uploaded = []
     for svc in details:
         addr = svc["address"]
-        svc["intro_points"] = intro.get(addr[:-len(".onion")], 0) if addr else 0
+        label = addr[:-len(".onion")] if addr else None
+        svc["intro_points"] = intro.get(label, 0) if label else 0
+        svc["descriptor_uploaded"] = label in uploaded if label else False
         if svc["published"] and svc["intro_points"] < 1:
             unreachable.append(svc["name"])
-    doc["hidden_service_reachable"] = bool(details) and not unreachable
+        elif svc["published"] and not svc["descriptor_uploaded"]:
+            not_uploaded.append(svc["name"])
+    doc["hidden_service_reachable"] = bool(details) and not unreachable and not not_uploaded
 
     # Checked first: a Tor with no onion service bootstraps and builds circuits
     # like a healthy one, and every per-service check below passes vacuously.
@@ -385,6 +472,11 @@ def evaluate():
     elif not published:
         missing = [d["name"] for d in details if not d["published"]]
         doc["reason"] = f"hidden service(s) not published yet: {', '.join(missing)}"
+    elif not doc["hidden_service_reachable"] and not unreachable:
+        doc["reason"] = (
+            f"no descriptor uploaded to the network yet for: {', '.join(not_uploaded)}"
+            f" - clients cannot find it. Tor uploads within about a minute of its "
+            f"introduction points.")
     elif not doc["hidden_service_reachable"]:
         doc["reason"] = (
             f"hostname exists but Tor has no established introduction points for: "
@@ -404,7 +496,11 @@ def evaluate():
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="healthcheck.py")
     ap.add_argument("--json", action="store_true", help="emit a JSON status document")
+    ap.add_argument("--watch-uploads", action="store_true",
+                    help="record descriptor uploads until Tor exits (run by the entrypoint)")
     args = ap.parse_args(argv)
+    if args.watch_uploads:
+        return watch_uploads()
 
     rc, doc = evaluate()
     if args.json:
