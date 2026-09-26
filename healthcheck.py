@@ -105,8 +105,8 @@ def _tor_running():
 def _vanguards_running():
     """True if the Vanguards addon process is alive.
 
-    The entrypoint restarts Vanguards up to five times and then gives up,
-    printing a warning and continuing with Tor alone. That warning goes to
+    The entrypoint restarts Vanguards up to five times in quick succession, then
+    pauses it for ten minutes, continuing with Tor alone meanwhile. Its warning goes to
     stdout - which the shipped compose file discards (`logging: driver: none`,
     to avoid a host-side log of onion activity). The result is that losing
     bandguards and rendguard, both of which exist to detect an attack in
