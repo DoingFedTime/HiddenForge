@@ -47,6 +47,7 @@ vanity = None
 ALLOWED_DIRECTIVES = frozenset()
 
 SERVICES = {"fuzz": ["80:127.0.0.1:8080"]}
+RUNTIMES = ("docker", "podman")
 BENIGN: dict = {}
 
 
@@ -77,10 +78,14 @@ def _load() -> None:
     # The benign side of every shape invariant is a constant. Rendering and
     # parsing it per input cost 40x the exec rate, which is coverage the fuzzer
     # never gets to spend.
-    BENIGN["doc"] = yaml.safe_load(
-        _hf.render_compose_fragment(SERVICES, "img:1", "/keys", "tor"))
-    BENIGN["tokens"] = shlex.split(
-        _hf.render_deploy_sh(SERVICES, "/keys", "tor"), comments=True)
+    # Both runtimes: their fragments and scripts differ (restart policy,
+    # healthcheck, the address hint), and the Podman variants were once never
+    # fuzzed at all.
+    for runtime in RUNTIMES:
+        BENIGN[runtime, "doc"] = yaml.safe_load(
+            _hf.render_compose_fragment(SERVICES, "img:1", "/keys", "tor", runtime))
+        BENIGN[runtime, "tokens"] = shlex.split(
+            _hf.render_deploy_sh(SERVICES, "/keys", "tor", runtime), comments=True)
 
 
 def TestOneInput(data: bytes) -> None:
@@ -132,8 +137,13 @@ def TestOneInput(data: bytes) -> None:
     # `privileged: true` and `; curl ... | sh` do, so the invariant is that the
     # rendered output has the same STRUCTURE whatever the path contains: the
     # same YAML keys, and the same shell words.
+    for runtime in RUNTIMES:
+        _check_setup_outputs(text, runtime)
+
+
+def _check_setup_outputs(text: str, runtime: str) -> None:
     services = SERVICES
-    fuzz_yaml = hf.render_compose_fragment(services, "img:1", text, "tor")
+    fuzz_yaml = hf.render_compose_fragment(services, "img:1", text, "tor", runtime)
     # Structure, not line count. A line count was the first attempt and it was
     # wrong in the unsafe direction and the safe one at once: json.dumps writes a
     # newline as the two characters \n inside one double-quoted scalar, which
@@ -141,7 +151,7 @@ def TestOneInput(data: bytes) -> None:
     # principle replace one line with one line. Parsing asks the question the
     # invariant is actually about.
     fuzz_doc = yaml.safe_load(fuzz_yaml)
-    benign_doc = BENIGN["doc"]
+    benign_doc = BENIGN[runtime, "doc"]
     assert set(fuzz_doc) == set(benign_doc), (
         f"the key path changed the fragment's top level: {text!r}")
     assert sorted(fuzz_doc["services"]) == sorted(benign_doc["services"]), (
@@ -155,12 +165,12 @@ def TestOneInput(data: bytes) -> None:
     assert all(v.endswith(":/var/lib/tor/hidden_service") for v in got["volumes"]), (
         f"the key path escaped its mount: {got['volumes']!r} from {text!r}")
 
-    fuzz_sh = hf.render_deploy_sh(services, text, "tor")
+    fuzz_sh = hf.render_deploy_sh(services, text, "tor", runtime)
     # Same reasoning: the path is single-quoted, so a newline inside it is data
     # and adds a line without adding a command. What must not change is the
     # script's WORDS -- an injected command is new tokens, and a token that
     # changed where no path was is a payload that got out of its quotes.
-    benign_tokens = BENIGN["tokens"]
+    benign_tokens = BENIGN[runtime, "tokens"]
     try:
         fuzz_tokens = shlex.split(fuzz_sh, comments=True)
     except ValueError as exc:
