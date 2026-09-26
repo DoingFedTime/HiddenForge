@@ -466,6 +466,26 @@ def test_podman_services_come_back_after_a_reboot():
         "tor": "unless-stopped", "web": "unless-stopped"}
 
 
+def test_a_crafted_key_path_is_printed_by_deploy_sh_never_run(hf, tmp_path, capsys):
+    """The status hint put the shell-quoted path inside an echo's double quotes;
+    a path holding `"` closed them. Measured: --keys 'k"; touch X; echo "' made
+    deploy.sh run `touch X`. Found by the fuzz target."""
+    marker = tmp_path / "INJECTED"
+    marker2 = tmp_path / "INJ2"
+    keys = f'k"; touch {marker}; echo "\'$(touch {marker2})'
+    out = tmp_path / "out"
+    assert hf.main(["setup", "--backend", "web:80", "--keys", keys, "-o", str(out),
+                    "--json"]) == 0
+    capsys.readouterr()
+    script = (out / "deploy.sh").read_text()
+    line = next(ln for ln in script.splitlines() if "status --container" in ln)
+    proc = subprocess.run(["bash", "-c", line], capture_output=True, text=True, timeout=10)
+    assert proc.returncode == 0
+    assert not marker.exists() and not marker2.exists()
+    # Printed as a command the operator can paste: the path comes back whole.
+    assert shlex.split(proc.stdout)[-1] == keys
+
+
 def test_setup_rejects_bad_name(hf, tmp_path, capsys):
     rc = hf.main(["setup", "--backend", "web:80", "--name", "../evil",
                   "-o", str(tmp_path), "--json"])

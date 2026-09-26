@@ -86,6 +86,13 @@ both injectable into the compose fragment and the 0755 deploy script.
   now belongs to the invoking user. Measured on the soak's live tor-owned
   volume: the sudo backup was the user's, moved without sudo, and restored to
   the address the running service serves.
+- **(Found before release, in a change made during this cycle.)** The
+  `deploy.sh` status hint added above first put the shell-quoted key path
+  inside an echo's double quotes, so a path containing `"` closed them and the
+  rest ran as shell: measured, `--keys 'k"; touch X; echo "'` made deploy.sh
+  run `touch X`. The fuzz target's structure check caught it. The line is now
+  one printf argument, shell-quoted whole; a regression test runs it with that
+  payload and a `$(...)` payload and checks nothing executes.
 - **After a reboot, a rootless Podman onion stayed down.** Podman's boot
   service (`podman-restart.service`) starts only containers whose restart
   policy is `always`; `podman-compose.yml` and the Podman `setup` fragment used

@@ -1589,6 +1589,12 @@ def render_deploy_sh(services: dict[str, list[str]], keys_dir: str,
     # Where the address is kept on the host. Under rootless Podman the published
     # <name>.onion is never written (the supervisor cannot read `hostname`), so
     # saying it was would send the operator looking for a file that never comes.
+    # A whole line of output, shell-quoted as ONE printf argument, so nothing in
+    # the key path can end a string: it is printed, never parsed. The first form
+    # of this line put the shell-quoted path inside an echo's double quotes, and
+    # a path holding `"` closed them -- measured, `--keys 'k"; touch X; echo "'`
+    # made deploy.sh run `touch X`. Found by the fuzz target's structure check.
+    status_line = shlex.quote(f"  hiddenforge status --container {container} --keys {keys_q}")
     persisted = (f"{keys_dir_display}/$svc/hostname (read it with the exec command above)"
                  if runtime == "podman" else
                  f"{keys_dir_display}/$svc/hostname and {keys_dir_display}/$svc.onion")
@@ -1624,7 +1630,7 @@ for svc in {names}; do
         echo "Persisted to: {persisted}"
     else
         echo "$svc: no address yet. Container logging is off by design; run"
-        echo "  hiddenforge status --container {container_q} --keys {keys_q}"
+        printf '%s\\n' {status_line}
     fi
 done
 echo "The address WORKS only once 'hiddenforge status' reports ready: true (Tor"
