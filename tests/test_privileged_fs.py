@@ -315,3 +315,45 @@ def test_chown_r_does_not_abort_startup_on_a_socket(tmp_path, capsys):
     finally:
         sock.close()
     assert "device node or socket" in capsys.readouterr().out
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# a restart over a directory a previous start already handed to tor
+# ─────────────────────────────────────────────────────────────────────────────
+
+class _Tor:
+    def __init__(self, uid):
+        self.pw_uid, self.pw_gid = uid, os.getgid()
+
+
+def _denied(*a, **kw):
+    raise PermissionError(13, "Permission denied")
+
+
+def test_a_tor_owned_closed_directory_is_left_alone_on_restart(tmp_path,
+                                                                monkeypatch, capsys):
+    """Rootless Podman, podman-compose.yml as shipped: root has no DAC_OVERRIDE,
+    so it cannot open a service directory a previous start handed to tor.
+    Measured: every restart died here and the container restart-looped. That
+    directory is already in the state being asked for, so this is not an error."""
+    d = tmp_path / "hs"
+    d.mkdir(mode=0o700)
+    monkeypatch.setattr(e, "_chmod_dir_nofollow", _denied)
+    e._prepare_hs_dir(str(d), _Tor(os.getuid()))
+    assert "already the tor user's" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("case", ["other-owner", "open-mode", "symlink"])
+def test_anything_else_behind_a_permission_error_still_fails(tmp_path, monkeypatch,
+                                                             case):
+    """The excuse is narrow: a real directory, owned by tor, closed to others."""
+    d = tmp_path / "hs"
+    if case == "symlink":
+        (tmp_path / "real").mkdir(mode=0o700)
+        d.symlink_to(tmp_path / "real")
+    else:
+        d.mkdir(mode=0o755 if case == "open-mode" else 0o700)
+    uid = os.getuid() + 1 if case == "other-owner" else os.getuid()
+    monkeypatch.setattr(e, "_chmod_dir_nofollow", _denied)
+    with pytest.raises(PermissionError):
+        e._prepare_hs_dir(str(d), _Tor(uid))

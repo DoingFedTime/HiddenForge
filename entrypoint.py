@@ -552,8 +552,28 @@ def _prepare_hs_dir(hs_dir, tor_pw):
     # already exists from a previous run it is owned by the tor user, so skip
     # chmod -- it is already 0700. Always chown so newly-created dirs transfer to
     # the tor user regardless of the calling uid.
-    _chmod_dir_nofollow(hs_dir, 0o700, only_if_root_owned=True)
-    _chown_r(hs_dir, tor_pw.pw_uid, tor_pw.pw_gid)
+    try:
+        _chmod_dir_nofollow(hs_dir, 0o700, only_if_root_owned=True)
+        _chown_r(hs_dir, tor_pw.pw_uid, tor_pw.pw_gid)
+    except PermissionError:
+        # Second and later starts under rootless Podman, as podman-compose.yml
+        # ships it: root there has no DAC_OVERRIDE, so it cannot open a
+        # directory a previous start handed to the tor user (0700). Measured:
+        # every restart failed "Permission denied" here and the container
+        # restart-looped, silently, under `logging: driver: none`.
+        #
+        # A directory that is already the tor user's and closed to everyone
+        # else is exactly the state this function exists to produce, so there
+        # is nothing to do. lstat needs no access to the directory's contents,
+        # and it sees a symlink as a symlink, so a planted link is not excused:
+        # anything but a real directory, owned by tor, mode 0700 or tighter,
+        # still fails.
+        st = os.lstat(hs_dir)
+        if not (stat.S_ISDIR(st.st_mode) and st.st_uid == tor_pw.pw_uid
+                and stat.S_IMODE(st.st_mode) & 0o077 == 0):
+            raise
+        print(f"{_safe(hs_dir)} is already the tor user's (prepared by a previous "
+              "start); nothing to change.")
 
 
 def generate_basic_torrc():

@@ -2361,6 +2361,13 @@ def _rotate_inside(keys: Path) -> tuple[Path, list[str]]:
         archive_fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
                              dir_fd=root_fd)
         try:
+            # Owned like the volume it sits in. Made by the container's root, a
+            # 0700 archive was unreadable to the host user who owns the volume:
+            # measured, the old identity was kept but could not be opened
+            # without sudo. The entries moved into it keep their own owners.
+            vol = os.fstat(root_fd)
+            if os.geteuid() == 0 and os.fstat(archive_fd).st_uid != vol.st_uid:
+                os.fchown(archive_fd, vol.st_uid, vol.st_gid)
             for entry in entries:
                 os.rename(entry, entry, src_dir_fd=root_fd, dst_dir_fd=archive_fd)
         finally:
