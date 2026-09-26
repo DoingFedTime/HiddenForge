@@ -69,6 +69,13 @@ both injectable into the compose fragment and the 0755 deploy script.
   under Docker, `podman unshare` under rootless Podman -- both measured to
   produce a complete archive that restores to the same address), and a volume
   with no identity in it is refused.
+- **`status` could say `ready: true` beside a reason saying it was not.** When
+  the engine reported a health status, `status` believed it over the fresh
+  in-container check it had just run -- but Docker re-runs the healthcheck only
+  every 60s and needs three failures to flip, so for minutes after, say,
+  Vanguards died, `status` answered ready with the reason "Vanguards addon is
+  NOT running". Every opinion available (the engine's, when it has one, and the
+  fresh probe's) must now agree.
 - **"Ready" and the address file came about 45 seconds before the address
   worked.** Readiness required introduction circuits, but a client finds a
   service through its descriptor on the HSDirs, and Tor uploads that after the

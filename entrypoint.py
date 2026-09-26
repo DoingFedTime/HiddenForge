@@ -215,7 +215,7 @@ def _kill_proc(proc, name, timeout=10):
 
 
 def signal_handler(signum, frame):
-    """Graceful shutdown: stop Vanguards first, then Tor."""
+    """Graceful shutdown: the control-socket clients first, then Tor."""
     print(f"Received signal {signum}, shutting down...")
     _kill_proc(_upload_watcher, "upload watcher", timeout=5)
     _kill_proc(_vanguards_process, "Vanguards", timeout=5)
@@ -1062,8 +1062,8 @@ CAP_SETUID       = 7
 #                 publish into EACCES, which would silently and permanently
 #                 disable address publication - the same failure class the
 #                 readiness gate was added to fix.
-#   SETGID/SETUID su-exec, for the Vanguards restart budget and for the
-#                 reachability gate's call into healthcheck.py.
+#   SETGID/SETUID su-exec, for restarting Vanguards and the upload watcher, and
+#                 for the reachability gate's call into healthcheck.py.
 #
 # CHOWN and FOWNER are dropped: the last chown happens before Tor starts, and the
 # code never chmods a file it does not already own (see _chmod_dir_nofollow).

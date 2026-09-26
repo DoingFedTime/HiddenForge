@@ -554,6 +554,11 @@ def build_manifest() -> dict:
         "health": {
             "docker_healthcheck": ["CMD", "su-exec", "tor", "python3",
                                    "/usr/local/bin/healthcheck.py"],
+            "podman_healthcheck": None,
+            "podman_note": "No healthcheck under Podman: rootless Podman 4.9 never "
+                           "restarts a container that has one when no systemd user "
+                           "session is reachable, and restarting is how this "
+                           "container recovers. `status` runs the check itself.",
             "command": "hiddenforge status --json",
             "ready_field": "ready",
             "dropped_mappings_field": "dropped_mappings",
@@ -562,6 +567,9 @@ def build_manifest() -> dict:
                 "process_up": "a Tor process exists in the container",
                 "tor_bootstrapped": "the control socket reports bootstrap 100%",
                 "hidden_service_published": "the address file exists",
+                "hidden_service_reachable": "established introduction circuits AND "
+                                            "the descriptor uploaded to the network "
+                                            "by this Tor, for every service",
                 "ready": "running AND healthy AND published - never false-positive",
             },
             "poll": "Poll `hiddenforge status --json` and publish nothing until "
@@ -897,10 +905,18 @@ def cmd_status(args) -> int:
     # the service was ready. The probe run above is the identical script, so
     # its verdict stands in until the engine has one of its own; an engine that
     # says "unhealthy" is still believed.
-    if health in (None, "", "starting"):
-        healthy = bool(hc is not None and hc.get("ready") is True)
-    else:
-        healthy = health == "healthy"
+    #
+    # And a FRESH probe that says not-ready is believed over an engine that says
+    # healthy. Docker re-runs the healthcheck only every 60s and flips to
+    # unhealthy after three failures, so its "healthy" can be minutes old: with
+    # Vanguards dead, or a descriptor not uploaded, `status` answered ready: true
+    # beside a reason saying otherwise. Every opinion that exists must agree.
+    opinions = []
+    if health not in (None, "", "starting"):
+        opinions.append(health == "healthy")
+    if hc is not None and isinstance(hc.get("ready"), bool):
+        opinions.append(hc["ready"])
+    healthy = bool(opinions) and all(opinions)
     ready = bool(running and healthy and published and addresses
                  and all(a["onion"] for a in addresses))
     if not ready and not reason:

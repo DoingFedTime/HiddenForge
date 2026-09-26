@@ -831,6 +831,39 @@ def test_an_engine_health_status_is_still_believed_over_the_probe(hf, tmp_path,
     assert rc == hf.EXIT_NOT_READY and doc["ready"] is False
 
 
+def test_a_stale_healthy_engine_does_not_outvote_a_failing_probe(hf, tmp_path, capsys,
+                                                                  monkeypatch):
+    """Docker re-runs the healthcheck every 60s and needs three failures to say
+    unhealthy, so "healthy" can be minutes old. With Vanguards dead, `status`
+    answered ready: true beside a reason saying the addon was NOT running."""
+    _write_service(tmp_path, "app", VECTOR_PUB_HEX, VECTOR_ONION)
+    (tmp_path / "app.onion").write_text(VECTOR_ONION + "\n")
+    monkeypatch.setattr(hf, "_docker_inspect", lambda c: (
+        {"State": {"Running": True, "Health": {"Status": "healthy"}},
+         "RestartCount": 0}, None))
+    monkeypatch.setattr(hf, "_resolve_container", lambda c: "cid")
+    monkeypatch.setattr(hf, "_docker_exec_json", lambda c, a: {
+        "ready": False, "vanguards": False, "hidden_service_published": True,
+        "reason": "Tor is serving but the Vanguards addon is NOT running",
+        "services": [{"name": "app", "address": VECTOR_ONION, "published": True}]})
+    monkeypatch.setattr(hf, "_docker_exec_text", lambda c, a: None)
+    rc = hf.main(["status", "--container", "tor", "--keys", str(tmp_path), "--json"])
+    doc = json.loads(capsys.readouterr().out)
+    assert rc == hf.EXIT_NOT_READY and doc["ready"] is False
+    assert "Vanguards" in doc["reason"]
+
+
+def test_no_opinion_at_all_is_not_ready(hf, tmp_path, capsys, monkeypatch):
+    _write_service(tmp_path, "app", VECTOR_PUB_HEX, VECTOR_ONION)
+    monkeypatch.setattr(hf, "_docker_inspect", lambda c: (
+        {"State": {"Running": True}, "RestartCount": 0}, None))
+    monkeypatch.setattr(hf, "_resolve_container", lambda c: "cid")
+    monkeypatch.setattr(hf, "_docker_exec_json", lambda c, a: None)
+    monkeypatch.setattr(hf, "_docker_exec_text", lambda c, a: None)
+    rc = hf.main(["status", "--container", "tor", "--keys", str(tmp_path), "--json"])
+    assert rc == hf.EXIT_NOT_READY
+
+
 def test_status_surfaces_dropped_mappings(hf, tmp_path, capsys, monkeypatch):
     """A mapping that never made it into the torrc must be visible in status."""
     os.chmod(tmp_path, 0o700)
