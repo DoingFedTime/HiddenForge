@@ -32,8 +32,11 @@ for svc in blog; do
         echo "$svc .onion: $onion"
         echo "Persisted to: ./tor-keys/$svc/hostname and ./tor-keys/$svc.onion"
     else
-        echo "$svc: address not ready yet; check the container logs"
+        echo "$svc: no address yet. Container logging is off by design; run"
+        echo "  hiddenforge status --container tor --keys ./tor-keys"
     fi
 done
+echo "The address WORKS only once 'hiddenforge status' reports ready: true (Tor"
+echo "must publish it to the network first; a few minutes on a first boot)."
 echo "BACK UP THE ENTIRE ./tor-keys DIRECTORY. It IS your address."
 echo "================================================================="

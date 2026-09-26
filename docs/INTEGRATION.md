@@ -82,7 +82,7 @@ existing `docker-compose.yml` uses.
 > the name move (two successful lookups in a row without the old IP, checked every
 > 30 seconds) and exits so the restart policy brings the container back with a
 > fresh lookup; the address is unchanged. Keep a restart policy on the service
-> (the fragment sets `restart: unless-stopped`). A backend that is merely down, or
+> (the fragment sets `restart: unless-stopped`, or `always` for Podman). A backend that is merely down, or
 > a DNS failure, never triggers this. A backend whose name does not resolve yet at
 > start (a host reboot starts containers in no set order) is watched too: its
 > service is left out until the name resolves, then the container restarts and

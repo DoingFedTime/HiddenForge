@@ -1172,6 +1172,50 @@ def _append_in_container_key_checks(checks: list[dict], container: str | None,
         "key modes were not verified") for n in closed if n not in covered)
 
 
+def _append_restart_checks(checks: list[dict], hc: dict) -> None:
+    """The restart policy is how this container heals, so check it.
+
+    It exits on purpose -- when Tor dies, when a backend moves, when a backend
+    that was down at boot comes up -- and relies on the engine to start it again.
+    With no restart policy each of those is an outage that lasts until someone
+    notices. Podman adds a second requirement: after a REBOOT it restarts only
+    `always` containers, and only with linger and podman-restart.service enabled
+    for the user (measured on Ubuntu 24.04 with real reboots: `unless-stopped`
+    stayed Exited, `always` came back ready with the same address).
+    """
+    eng = _engine()
+    policy = str(((hc.get("RestartPolicy") or {}).get("Name")) or "")
+    name = "the container is restarted when it exits (restart policy)"
+    if policy in ("", "no"):
+        checks.append(_check(False, name, f"RestartPolicy={policy or 'none'}; set "
+                             "`restart: " + ("always" if eng == "podman" else
+                                             "unless-stopped") + "`"))
+        return
+    if eng != "podman":
+        checks.append(_check(policy in ("always", "unless-stopped"), name,
+                             f"RestartPolicy={policy}", severity="warn"))
+        return
+    checks.append(_check(policy == "always", "the container comes back after a reboot "
+                         "(Podman restarts only `always`)",
+                         f"RestartPolicy={policy}" + ("" if policy == "always" else
+                                                      "; set `restart: always`"),
+                         severity="warn"))
+    user = os.environ.get("USER") or ""
+    linger = _run(["loginctl", "show-user", user, "--property=Linger"]) if user else None
+    checks.append(_check(bool(linger and linger.stdout.strip() == "Linger=yes"),
+                         "user services run without a login session (linger)",
+                         (linger.stdout.strip() or linger.stderr.strip()) if linger
+                         else "USER not set; run `loginctl enable-linger $USER`",
+                         severity="warn"))
+    unit = _run(["systemctl", "--user", "is-enabled", "podman-restart.service"])
+    checks.append(_check(unit.stdout.strip() == "enabled",
+                         "podman-restart.service is enabled (starts containers at boot)",
+                         (unit.stdout.strip() or unit.stderr.strip() or "unknown")
+                         + ("" if unit.stdout.strip() == "enabled" else
+                            "; run `systemctl --user enable podman-restart.service`"),
+                         severity="warn"))
+
+
 def cmd_doctor(args) -> int:
     container = args.container
     checks: list[dict] = []
@@ -1270,7 +1314,8 @@ def cmd_doctor(args) -> int:
                          "process count is capped at 512 or fewer",
                          pids_detail + ("" if pids is not None and 0 < pids <= 512 else
                                         "; podman-compose applies pids_limit only from "
-                                        "version 1.1")))
+                                        "version 1.1 -- Docker Compose on the Podman "
+                                        "socket applies it (see the README)")))
 
     name = "swap is disabled (process memory cannot be paged to disk)"
     if runtime.get("swap"):
@@ -1284,9 +1329,10 @@ def cmd_doctor(args) -> int:
         else:
             checks.append(_check(False, name,
                                  f"memory.swap.max={runtime['swap']} and the host has "
-                                 "swap. Set memswap_limit equal to mem_limit (Docker); "
-                                 "podman-compose cannot set it at all, so under Podman "
-                                 "disable swap on the host"))
+                                 "swap. Set memswap_limit equal to mem_limit; "
+                                 "podman-compose cannot apply it at all, so under Podman "
+                                 "use Docker Compose on the Podman socket (see the "
+                                 "README), or disable swap on the host"))
     else:
         mem = _as_int(hc.get("Memory")) or 0
         memswap = _as_int(hc.get("MemorySwap")) or 0
@@ -1302,6 +1348,8 @@ def cmd_doctor(args) -> int:
     logdriver = (hc.get("LogConfig") or {}).get("Type")
     checks.append(_check(logdriver == "none", "logging driver is 'none' (no host log)",
                          f"LogConfig.Type={logdriver!r}", severity="warn"))
+
+    _append_restart_checks(checks, hc)
 
     # Without a loopback DNS server the engine's resolver forwards any name it
     # cannot answer -- a backend that is down or not up yet -- to the host's
@@ -1398,6 +1446,9 @@ def render_compose_fragment(services: dict[str, list[str]], image: str, keys: st
     if runtime == "docker":
         tor_tmpfs += ",uid=100,gid=101,mode=0700"
     compose_cmd = "podman-compose" if runtime == "podman" else "docker compose"
+    # Podman restarts only `always` containers after a reboot (podman-restart
+    # .service); Docker restarts `unless-stopped` ones itself.
+    restart = "always" if runtime == "podman" else "unless-stopped"
     # No healthcheck under Podman: rootless Podman 4.9 never restarts a
     # container that has one unless a systemd user manager is reachable, and the
     # restart is how this container recovers (see podman-compose.yml).
@@ -1437,7 +1488,7 @@ networks:
 services:
   {container}:
     image: {image}
-    restart: unless-stopped
+    restart: {restart}
     cap_drop: [ALL]
     cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID]
     security_opt:
@@ -1491,6 +1542,12 @@ def render_deploy_sh(services: dict[str, list[str]], keys_dir: str,
                         "    exit 1\nfi")
         up = "docker compose"
     container_q = shlex.quote(container)
+    # Where the address is kept on the host. Under rootless Podman the published
+    # <name>.onion is never written (the supervisor cannot read `hostname`), so
+    # saying it was would send the operator looking for a file that never comes.
+    persisted = (f"{keys_dir_display}/$svc/hostname (read it with the exec command above)"
+                 if runtime == "podman" else
+                 f"{keys_dir_display}/$svc/hostname and {keys_dir_display}/$svc.onion")
     return f"""#!/usr/bin/env bash
 # hiddenforge, one-shot deploy. Generated by `hiddenforge setup`.
 # Usage: ./deploy.sh [path/to/your-compose.yml]
@@ -1520,11 +1577,14 @@ for svc in {names}; do
     echo "================================================================="
     if [ -n "$onion" ]; then
         echo "$svc .onion: $onion"
-        echo "Persisted to: {keys_dir_display}/$svc/hostname and {keys_dir_display}/$svc.onion"
+        echo "Persisted to: {persisted}"
     else
-        echo "$svc: address not ready yet; check the container logs"
+        echo "$svc: no address yet. Container logging is off by design; run"
+        echo "  hiddenforge status --container {container_q} --keys {keys_q}"
     fi
 done
+echo "The address WORKS only once 'hiddenforge status' reports ready: true (Tor"
+echo "must publish it to the network first; a few minutes on a first boot)."
 echo "BACK UP THE ENTIRE {keys_dir_display} DIRECTORY. It IS your address."
 echo "================================================================="
 """

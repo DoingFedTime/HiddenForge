@@ -42,7 +42,14 @@ networks:
 services:
   tor:
     image: sambent.dev/sam/hiddenforge:latest
-    restart: unless-stopped
+    # `always`, not `unless-stopped`: after a reboot Podman restarts only
+    # containers whose policy is `always` (podman-restart.service runs
+    # `podman start --all --filter restart-policy=always`). Measured on Ubuntu
+    # 24.04 with a real reboot: `unless-stopped` stayed Exited; `always` came
+    # back and was ready with the same address. It also needs, once:
+    #   loginctl enable-linger $USER
+    #   systemctl --user enable podman-restart.service
+    restart: always
 
     # ── Security flags ────────────────────────────────────────────────────
     cap_drop:
@@ -104,7 +111,7 @@ services:
     # systemd user timers. Without a reachable systemd user manager -- a service
     # account with no login session, `sudo -iu`, cron, a broken user bus -- a
     # container that has a healthcheck is NEVER restarted when it exits.
-    # Measured on Ubuntu 24.04: with a healthcheck, `restart: unless-stopped`
+    # Measured on Ubuntu 24.04: with a healthcheck, the restart policy
     # left it stopped after exit 1; with none, it restarted every time, with or
     # without a session. Exiting so the restart policy starts it again is how
     # this container recovers on its own: after Tor dies, when a backend moves to
@@ -160,7 +167,7 @@ services:
     #   b) Configure your backend to listen on port >= 1024 (e.g. 8080) and
     #      update the *_TOR_SERVICE_HOSTS mapping accordingly: "80:web:8080"
     image: docker.io/library/nginx:alpine
-    restart: unless-stopped
+    restart: always                  # see the tor service: Podman reboots
     cap_drop:
       - ALL
     cap_add:

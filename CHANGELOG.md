@@ -69,6 +69,21 @@ both injectable into the compose fragment and the 0755 deploy script.
   under Docker, `podman unshare` under rootless Podman -- both measured to
   produce a complete archive that restores to the same address), and a volume
   with no identity in it is refused.
+- **After a reboot, a rootless Podman onion stayed down.** Podman's boot
+  service (`podman-restart.service`) starts only containers whose restart
+  policy is `always`; `podman-compose.yml` and the Podman `setup` fragment used
+  `unless-stopped`. Measured with real reboots on Ubuntu 24.04, linger and the
+  boot service enabled: `unless-stopped` left both containers Exited; `always`
+  brought them back ready with the same address. The Podman files now use
+  `always`, the README says to enable linger and the boot service, and
+  `doctor` checks all three (and fails a container with no restart policy on
+  any engine, since the container heals by exiting and being restarted). On
+  Docker, three real reboots each came back on their own with the same address.
+- **The generated `deploy.sh` misled.** It printed the address the moment Tor
+  wrote the key (before it worked), told the operator to "check the container
+  logs" (logging is off by design), and under Podman named an address file that
+  is never written there. It now says the address works once `status` reports
+  ready, points at `hiddenforge status`, and names only files that exist.
 - **`status` could say `ready: true` beside a reason saying it was not.** When
   the engine reported a health status, `status` believed it over the fresh
   in-container check it had just run -- but Docker re-runs the healthcheck only

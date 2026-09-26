@@ -439,7 +439,8 @@ def test_only_the_docker_fragment_carries_a_healthcheck(hf, tmp_path, capsys,
     frag = yaml.safe_load((tmp_path / "compose.service.yml").read_text())
     (svc,) = frag["services"].values()
     assert ("healthcheck" in svc) is has_healthcheck
-    assert svc["restart"] == "unless-stopped"
+    # Podman restarts only `always` containers after a reboot (measured).
+    assert svc["restart"] == ("always" if runtime == "podman" else "unless-stopped")
 
 
 def test_the_shipped_podman_file_declares_no_healthcheck():
@@ -449,8 +450,20 @@ def test_the_shipped_podman_file_declares_no_healthcheck():
     podman = yaml.safe_load((REPO / "podman-compose.yml").read_text())
     docker = yaml.safe_load((REPO / "docker-compose.yml").read_text())
     assert "healthcheck" not in podman["services"]["tor"]
-    assert podman["services"]["tor"]["restart"] == "unless-stopped"
     assert "healthcheck" in docker["services"]["tor"]
+
+
+def test_podman_services_come_back_after_a_reboot():
+    """podman-restart.service starts only restart-policy=always containers.
+    Measured with a real reboot on Ubuntu 24.04: unless-stopped stayed Exited,
+    always came back ready with the same address."""
+    import yaml
+    podman = yaml.safe_load((REPO / "podman-compose.yml").read_text())
+    docker = yaml.safe_load((REPO / "docker-compose.yml").read_text())
+    assert {n: s["restart"] for n, s in podman["services"].items()} == {
+        "tor": "always", "web": "always"}
+    assert {n: s["restart"] for n, s in docker["services"].items()} == {
+        "tor": "unless-stopped", "web": "unless-stopped"}
 
 
 def test_setup_rejects_bad_name(hf, tmp_path, capsys):
@@ -577,6 +590,7 @@ def _fake_inspect():
             "MemorySwap": 536870912,
             "LogConfig": {"Type": "none"},
             "Dns": ["127.0.0.1"],
+            "RestartPolicy": {"Name": "unless-stopped"},
         },
         "NetworkSettings": {"Ports": {}},
         "AppArmorProfile": "docker-default",
@@ -632,6 +646,74 @@ def test_doctor_warns_when_dns_can_leave_the_container(hf, tmp_path, capsys,
     check = next(c for c in doc["checks"] if c["check"] == "no DNS query leaves the container")
     assert check["ok"] is ok
     assert check["severity"] == "warn"
+
+
+def _restart_checks(hf, monkeypatch, capsys, tmp_path, policy, engine,
+                    linger="Linger=yes", unit="enabled"):
+    os.chmod(tmp_path, 0o700)
+    info = _fake_inspect()
+    info["HostConfig"]["RestartPolicy"] = {"Name": policy} if policy is not None else None
+    monkeypatch.setattr(hf, "_docker_inspect", lambda c: (info, None))
+    monkeypatch.setattr(hf, "_resolve_container", lambda c: "cid")
+    monkeypatch.setattr(hf, "_docker_exec_text", lambda c, a: None)
+    monkeypatch.setattr(hf, "_engine", lambda: engine)
+    monkeypatch.setattr(hf, "_is_rootless", lambda: engine == "podman")
+    monkeypatch.setenv("USER", "someone")
+
+    def run(cmd, **kw):
+        if cmd[0] == "loginctl":
+            return subprocess.CompletedProcess(cmd, 0, linger + "\n", "")
+        if cmd[:2] == ["systemctl", "--user"]:
+            return subprocess.CompletedProcess(cmd, 0, unit + "\n", "")
+        return subprocess.CompletedProcess(cmd, 1, "", "")
+
+    monkeypatch.setattr(hf, "_run", run)
+    hf.main(["doctor", "--container", "tor", "--keys", str(tmp_path), "--json"])
+    doc = json.loads(capsys.readouterr().out)
+    return {c["check"]: c for c in doc["checks"]}, doc
+
+
+@pytest.mark.parametrize("engine", ["docker", "podman"])
+@pytest.mark.parametrize("policy", ["no", "", None])
+def test_no_restart_policy_is_a_failure(hf, monkeypatch, capsys, tmp_path, engine, policy):
+    """The container heals by exiting and being restarted. Without a policy every
+    one of those exits is an outage until someone notices."""
+    checks, doc = _restart_checks(hf, monkeypatch, capsys, tmp_path, policy, engine)
+    c = checks["the container is restarted when it exits (restart policy)"]
+    assert c["ok"] is False and c["severity"] == "fail"
+    assert doc["ok"] is False
+
+
+@pytest.mark.parametrize("policy", ["unless-stopped", "always"])
+def test_docker_accepts_both_restarting_policies(hf, monkeypatch, capsys, tmp_path, policy):
+    checks, _doc = _restart_checks(hf, monkeypatch, capsys, tmp_path, policy, "docker")
+    assert checks["the container is restarted when it exits (restart policy)"]["ok"] is True
+
+
+@pytest.mark.parametrize("policy, ok", [("always", True), ("unless-stopped", False),
+                                        ("on-failure", False)])
+def test_podman_needs_always_to_survive_a_reboot(hf, monkeypatch, capsys, tmp_path,
+                                                 policy, ok):
+    """podman-restart.service starts only restart-policy=always containers.
+    Measured with real reboots: unless-stopped stayed Exited."""
+    checks, _doc = _restart_checks(hf, monkeypatch, capsys, tmp_path, policy, "podman")
+    c = checks["the container comes back after a reboot (Podman restarts only `always`)"]
+    assert c["ok"] is ok and c["severity"] == "warn"
+
+
+@pytest.mark.parametrize("linger, unit, ok_linger, ok_unit", [
+    ("Linger=yes", "enabled", True, True),
+    ("Linger=no", "disabled", False, False),
+])
+def test_podman_boot_prerequisites_are_checked(hf, monkeypatch, capsys, tmp_path,
+                                               linger, unit, ok_linger, ok_unit):
+    checks, _doc = _restart_checks(hf, monkeypatch, capsys, tmp_path, "always", "podman",
+                                   linger=linger, unit=unit)
+    assert checks["user services run without a login session (linger)"]["ok"] is ok_linger
+    unit_check = checks["podman-restart.service is enabled (starts containers at boot)"]
+    assert unit_check["ok"] is ok_unit
+    if not ok_unit:
+        assert "systemctl --user enable podman-restart.service" in unit_check["detail"]
 
 
 def test_doctor_flags_missing_torrc_directive(hf, tmp_path, capsys, monkeypatch):

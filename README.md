@@ -130,7 +130,7 @@ The only two lines you need to edit are flagged with `<-- EDIT`.
 > (measured: restarted 39 seconds after the backend came up, then served it).
 > Until then `hiddenforge status` is not ready and lists the mapping as dropped.
 > This relies on a restart policy, which both shipped compose files set
-> (`restart: unless-stopped`).
+> (`restart: unless-stopped`; `always` in the Podman file, see below).
 
 - `TOR_SANDBOX` set to `0` disables `Sandbox 1` (default: `1`)
 
@@ -382,6 +382,10 @@ drops some, below). It needs only the Compose binary, not the Docker engine:
 sudo apt install podman
 sudo apt install --no-install-recommends docker-compose-v2
 systemctl --user enable --now podman.socket
+# Come back after a reboot: Podman restarts only `restart: always` containers
+# (the Podman file sets it), and only with these two enabled for your user.
+loginctl enable-linger $USER
+systemctl --user enable podman-restart.service
 export DOCKER_HOST=unix://$XDG_RUNTIME_DIR/podman/podman.sock
 COMPOSE=/usr/libexec/docker/cli-plugins/docker-compose
 
@@ -399,7 +403,10 @@ $COMPOSE -p hiddenforge -f podman-compose.yml exec tor su-exec tor cat /var/lib/
 Measured on a stock Ubuntu 24.04 host (Podman 4.9.3, `docker-compose-v2`
 2.40.3, Docker engine not installed): ready, `pids.max` 256, `memory.swap.max`
 0, DNS isolated; Tor killed, the container restarted with the same address and
-served HTTP 200 over Tor.
+served HTTP 200 over Tor; after a real reboot it came back ready with the same
+address. With `restart: unless-stopped` instead, the same reboot left both
+containers stopped: Podman's boot service starts only `always` containers.
+`hiddenforge doctor` checks the policy, linger and the boot service.
 
 **Alternatively, podman-compose** (`pip install podman-compose`), with the
 limits it does not apply (below):
