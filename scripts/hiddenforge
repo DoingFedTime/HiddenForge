@@ -1464,6 +1464,33 @@ def _env_var(name: str) -> str:
     return f"{name.upper().replace('-', '_')}_TOR_SERVICE_HOSTS"
 
 
+def _yaml_double_quoted(value: str) -> str:
+    """A YAML double-quoted scalar that parses back to exactly `value`.
+
+    json.dumps was used, and it is almost right: the result is one scalar, so a
+    path cannot open a key. But it writes a character outside the Basic
+    Multilingual Plane as a UTF-16 surrogate pair (\\ud83d\\udcc1), which YAML
+    reads as two separate, invalid code points -- found by the property test in
+    tests/test_fuzz.py. Measured: Docker Compose refused the fragment outright
+    ("invalid Unicode character escape code"), and a lenient parser (PyYAML)
+    decoded a different path, a different key directory. YAML has an 8-digit
+    escape for exactly this. Printable ASCII is kept as is; everything else is
+    escaped by code point.
+    """
+    out = []
+    for ch in value:
+        cp = ord(ch)
+        if ch in ('"', "\\"):
+            out.append("\\" + ch)
+        elif 0x20 <= cp < 0x7F:
+            out.append(ch)
+        elif cp <= 0xFFFF:
+            out.append(f"\\u{cp:04x}")
+        else:
+            out.append(f"\\U{cp:08x}")
+    return '"' + "".join(out) + '"'
+
+
 def render_compose_fragment(services: dict[str, list[str]], image: str, keys: str,
                             container: str, runtime: str = "docker") -> str:
     """Render the mergeable compose fragment for one or more services.
@@ -1509,7 +1536,7 @@ def render_compose_fragment(services: dict[str, list[str]], image: str, keys: st
               f"(contract v{HIDDENFORGE_VERSION}, contract {CONTRACT_VERSION}).")
     # json.dumps produces a double-quoted scalar that YAML parses as one string,
     # so a path cannot open a new key (`privileged: true`) or a second volume.
-    keys_mount = json.dumps(f"{keys}:/var/lib/tor/hidden_service")
+    keys_mount = _yaml_double_quoted(f"{keys}:/var/lib/tor/hidden_service")
     return f"""{header}
 # Merge it into YOUR compose file; do not edit it:
 #

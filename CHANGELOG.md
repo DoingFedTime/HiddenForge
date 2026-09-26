@@ -86,6 +86,17 @@ both injectable into the compose fragment and the 0755 deploy script.
   now belongs to the invoking user. Measured on the soak's live tor-owned
   volume: the sudo backup was the user's, moved without sudo, and restored to
   the address the running service serves.
+- **`setup` wrote an unparseable fragment for a key path with a character
+  outside the Basic Multilingual Plane** (an emoji, for example). The path was
+  encoded with json.dumps, which writes such a character as a UTF-16 surrogate
+  pair; YAML reads that as two invalid code points. Measured: Docker Compose
+  refused the fragment ("invalid Unicode character escape code"), and a lenient
+  parser decoded a different path. It now uses YAML's own escapes (`\U` for
+  those characters); Docker Compose reads the exact path back. Found by a new
+  CI property test: for any key path the validator accepts, on both runtimes,
+  deploy.sh keeps the same shell words and the fragment the same keys and the
+  exact mount -- the invariant the coverage-guided fuzz target checks, now in
+  CI, which had passed while the deploy.sh injection below was present.
 - **(Found before release, in a change made during this cycle.)** The
   `deploy.sh` status hint added above first put the shell-quoted key path
   inside an echo's double quotes, so a path containing `"` closed them and the
