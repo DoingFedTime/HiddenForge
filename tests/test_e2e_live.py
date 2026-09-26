@@ -361,7 +361,7 @@ def _boot(image: str, keys: Path) -> str:
          *[a for c in ("CHOWN", "DAC_OVERRIDE", "FOWNER", "SETUID", "SETGID")
            for a in ("--cap-add", c)],
          "--security-opt", "no-new-privileges", "--read-only",
-         "--tmpfs", "/tmp:rw,noexec,nosuid,nodev,size=64m",
+         "--tmpfs", "/tmp:rw,noexec,nosuid,nodev,size=64m",  # noqa: S108 - a container mount spec
          "--tmpfs", "/etc/tor:rw,noexec,nosuid,nodev,size=8m",
          "--tmpfs", "/var/lib/tor:rw,noexec,nosuid,nodev,size=64m,uid=100,gid=101,mode=0700",
          "-e", "MYSITE_TOR_SERVICE_HOSTS=80:127.0.0.1:8080",
