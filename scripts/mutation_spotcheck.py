@@ -164,9 +164,16 @@ MUTATIONS = [
         "tests/test_cli.py -k inconsistent_key_set_as_the_reason",
     ),
     (
+        "the key path's non-BMP characters are written as UTF-16 surrogates again",
+        "scripts/hiddenforge",
+        '            out.append(f"\\\\U{cp:08x}")',
+        '            out.append(f"\\\\u{cp:04x}")',
+        "tests/test_fuzz.py -k structure_of_the_setup_files",
+    ),
+    (
         "the key path goes into the compose fragment unquoted (container escape)",
         "scripts/hiddenforge",
-        '    keys_mount = json.dumps(f"{keys}:/var/lib/tor/hidden_service")',
+        '    keys_mount = _yaml_double_quoted(f"{keys}:/var/lib/tor/hidden_service")',
         '    keys_mount = f"{keys}:/var/lib/tor/hidden_service"',
         "tests/test_cli.py -k compose_key",
     ),
