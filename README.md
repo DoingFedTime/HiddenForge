@@ -10,6 +10,13 @@ docker pull doingfedtime/hiddenforge      # Docker Hub
 Both serve the identical digest, and the same signatures verify either one — use
 whichever you prefer.
 
+> **Which version this README describes.** This README describes **2.1.0**,
+> which is not yet published. `:latest` on both registries is **2.0.4** (Tor
+> 0.4.9.11, signed). 2.0.4 runs the onion service from the compose file, but it
+> has no `hiddenforge` CLI: `setup`, `show`, `status`, `doctor`, `verify-image`,
+> the in-image `version` / `info` commands and `manifest.json` all arrive with
+> 2.1.0. On 2.0.4, `docker run <image> version --json` just starts Tor.
+
 **Verify what you pulled** (signatures + reproducible build): the [verification guide](https://sambent.dev/sam/HiddenForge/wiki/Verifying-the-Image).
 
 **Documentation:** the full guide lives in the [wiki](https://sambent.dev/sam/HiddenForge/wiki).
@@ -155,7 +162,7 @@ software. HiddenForge pins every dependency at every layer.
 | `mkp224o` source | commit `5172c0fd` + SHA256 | The vanity generator, vendored as a tarball the Dockerfile hash-checks before building it |
 | `vanguards` pip | `0.3.1` + SHA256 | Guard protection addon; a compromised version could leak circuit topology |
 | `stem` pip | `1.8.2` + SHA256 | Tor controller library; underpins all Vanguards communication |
-| `setuptools` pip | `82.0.1` + SHA256 | Build dep for stem; uninstalled post-build but listed for hash verification completeness |
+| `setuptools` pip | `84.0.0` + SHA256 | Build dep for stem; uninstalled post-build but listed for hash verification completeness |
 
 **How hash verification works:**
 
@@ -501,4 +508,4 @@ podman info --format '{{.Host.Security.Rootless}}'
 | Base image | Alpine 3.23.5 digest-pinned |
 | Host isolation (optional) | Rootless Podman: container escape = host user, not real root |
 
-**Tor version: 0.4.9.13**
+**Tor version: 0.4.9.13** (2.1.0; the published 2.0.4 image runs 0.4.9.11)

@@ -12,7 +12,11 @@
 [extend]
 useDefault = true
 
-[[allowlists]]
+# `[allowlist]` (singular), not `[[allowlists]]`: gitleaks before 8.28 ignores
+# the array form, so a contributor running an older gitleaks saw these five
+# "leaks" reported as if nothing had been accepted. Measured: the singular form
+# gives "no leaks found" on 8.21.2 and on 8.28 (the version CI pins).
+[allowlist]
 description = "filename constants that match the api-key heuristic (not credentials)"
 regexTarget = "match"
 regexes = [

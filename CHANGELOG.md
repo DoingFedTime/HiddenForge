@@ -2,9 +2,14 @@
 
 All notable changes to HiddenForge are documented here.
 
+**What is published:** the latest released image is **2.0.4**
+(`sha256:063d824c...`, signed; see `signatures/`). Everything under 2.1.0 below
+is in this tree but not yet tagged, published or signed, and `v2.0.5` is a git
+tag with no image of its own: its changes ship with 2.1.0.
+
 ---
 
-## [Unreleased]
+## [2.1.0] - unreleased
 
 Mutation testing works, and the code it found wrong is fixed. The previous
 artifact recorded 787 generated mutants and **0 checked**. A full run now reports
@@ -602,7 +607,7 @@ changed and re-reproduced by a second, adversarial reviewer.
 
 ---
 
-## [2.1.0] - 2026-09-11
+### Earlier 2.1.0 work (completed 2026-09-11)
 
 Machine-first adoption: hiddenforge can now be integrated by a program, and the
 vanity generator ships inside the image. Everything below is additive; the
@@ -783,7 +788,7 @@ existing `docker compose up -d` human path is unchanged.
 
 ---
 
-## [2.0.5] - 2026-08-22
+## [2.0.5] - 2026-08-22 (tagged; no image was published)
 
 ### Security
 - **The Tor config is written through an `O_NOFOLLOW` descriptor**, and its mode

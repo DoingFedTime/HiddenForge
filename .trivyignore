@@ -10,8 +10,3 @@
 AVD-DS-0002 exp:2027-03-01
 DS002 exp:2027-03-01
 
-# CVE-2026-59890 / GHSA-h35f-9h28-mq5c — setuptools, Medium.
-#   Build-only dependency, listed so --require-hashes can verify every download,
-#   and uninstalled from the venv after the build. Verified absent from the
-#   final image (`import setuptools` fails). It does not ship.
-CVE-2026-59890 exp:2027-03-01

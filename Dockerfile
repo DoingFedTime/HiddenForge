@@ -174,4 +174,9 @@ HEALTHCHECK --interval=60s --timeout=10s --start-period=120s --retries=3 \
 # missing-user-entrypoint here; .trivyignore and the semgrep exclusion carry the
 # same reason, and SECURITY.md explains it. The cap set is dropped to ALL then
 # re-added minimally in the compose files, and `hiddenforge doctor` verifies it.
+# The same reason inline, for scanners run without this repo's ignore files.
+# (Trivy reports DS002 against the whole file, with no line an inline comment
+# could name; a plain `trivy config .` from the repo root reads .trivyignore.)
+# checkov:skip=CKV_DOCKER_3:starts as root to chown the key mount, then su-exec tor
+# nosemgrep: dockerfile.security.missing-user-entrypoint.missing-user-entrypoint
 ENTRYPOINT ["python3", "/usr/local/bin/entrypoint.py"]

@@ -14,5 +14,5 @@ stem==1.8.2 \
 
 # setuptools is pulled in by vanguards as a build dep; it is uninstalled
 # from the venv after install but must be listed here for --require-hashes.
-setuptools==82.0.1 \
-    --hash=sha256:a59e362652f08dcd477c78bb6e7bd9d80a7995bc73ce773050228a348ce2e5bb
+setuptools==84.0.0 \
+    --hash=sha256:51a52592b3b99e102b609654876bd65f19f999935166d1352678931132b0c670
