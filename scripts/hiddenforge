@@ -1768,7 +1768,11 @@ def cmd_vanity(args) -> int:
         inner += ["--force"]
     uid, gid = os.getuid(), os.getgid()
     inner += ["--uid", str(uid), "--gid", str(gid)]
-    cmd = [eng, "run", "--rm", "-v", f"{keys}:/keys", args.image, *inner]
+    # The generator needs nothing from the network, so it gets none: a key
+    # should be made where nothing can carry it away.
+    cmd = [eng, "run", "--rm", "--network", "none",
+           "--security-opt", "no-new-privileges", "-v", f"{keys}:/keys",
+           args.image, *inner]
     # Unbounded by design: a vanity search may run for hours for a long prefix;
     # a timeout here would be the bug. (Contrast the _run() wrapper, which is
     # bounded because docker inspect/exec must not hang.)

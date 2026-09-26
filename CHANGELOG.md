@@ -69,6 +69,11 @@ both injectable into the compose fragment and the 0755 deploy script.
   under Docker, `podman unshare` under rootless Podman -- both measured to
   produce a complete archive that restores to the same address), and a volume
   with no identity in it is refused.
+- **The vanity generator ran with networking on.** `hiddenforge vanity` makes a
+  secret key inside a container that had the default network. It now runs with
+  `--network none` and `no-new-privileges` (measured: key generated, prefix
+  matched, files owned by the caller). The README's offline-key steps point at
+  it instead of a separately built mkp224o.
 - **Vanguards could be switched off for the life of the container.** After six
   quick failures the supervisor disabled the addon for good: bandguards and
   rendguard stayed off until someone restarted the container by hand, and

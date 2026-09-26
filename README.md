@@ -32,7 +32,7 @@ curl -O https://sambent.dev/sam/HiddenForge/raw/branch/master/docker-compose.yml
 mkdir -p ./tor-keys
 docker compose up -d
 
-# Your .onion address appears here once Tor bootstraps (first boot takes a couple of minutes):
+# Your .onion address appears here once Tor bootstraps (first boot: a few minutes, up to ~6):
 # Replace "myapp" with whatever you named your service in step 2
 docker compose exec tor cat /var/lib/tor/hidden_service/myapp/hostname
 ```
@@ -278,9 +278,11 @@ production host. For a state-level adversary threat model, generate keys
 production host in plaintext.
 
 ```bash
-# Option A: mkp224o (generates vanity .onion addresses)
-#   https://github.com/cathugger/mkp224o
-mkp224o -d ./keys myprefix
+# Option A: the vanity generator built into the image (mkp224o, pinned and
+# hash-checked in the Dockerfile). Pull the image while online, then on the
+# air-gapped machine -- the generator container itself also runs with no network:
+hiddenforge vanity --prefix myprefix --name myapp --keys ./keys --bench   # how long?
+hiddenforge vanity --prefix myprefix --name myapp --keys ./keys           # writes ./keys/myapp/
 
 # Option B: run Tor once on an air-gapped machine, let it generate
 # keys, copy the service directory out, then wipe the machine.
@@ -378,7 +380,7 @@ pip install podman-compose   # or: pipx install podman-compose
 mkdir -p ./tor-keys
 podman-compose -f podman-compose.yml up -d
 
-# Read the .onion address once Tor bootstraps (first boot takes a couple of minutes)
+# Read the .onion address once Tor bootstraps (first boot: a few minutes, up to ~6)
 # NOTE the `su-exec tor`: unlike the Docker file, this one drops DAC_OVERRIDE, so
 # the exec'd root user cannot traverse the 0700 tor-owned DataDirectory. Reading
 # it as the tor user is the correct way — do NOT "fix" a permission error here by

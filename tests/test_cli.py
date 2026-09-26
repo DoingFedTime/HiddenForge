@@ -1575,6 +1575,21 @@ def test_vanity_refuses_a_key_path_the_engine_cannot_mount(hf, tmp_path, capsys,
     assert not (tmp_path / "a:b").exists()
 
 
+def test_the_vanity_generator_runs_with_no_network(hf, tmp_path, capsys, monkeypatch):
+    """It makes a secret key and needs nothing from the network, so the
+    container it runs in gets none."""
+    called = []
+    monkeypatch.setattr(hf, "_engine", lambda: "docker")
+    monkeypatch.setattr(hf.subprocess, "run", lambda cmd, **k: called.append(cmd) or
+                        hf.subprocess.CompletedProcess(cmd, 1, "", "stop here"))
+    hf.main(["vanity", "--prefix", "a", "--name", "x", "--keys", str(tmp_path),
+             "--json"])
+    cmd = called[0]
+    assert cmd[:2] == ["docker", "run"]
+    assert cmd[cmd.index("--network") + 1] == "none"
+    assert cmd[cmd.index("--security-opt") + 1] == "no-new-privileges"
+
+
 def test_show_does_not_hang_on_a_fifo_planted_as_the_hostname(hf, tmp_path, capsys):
     """_read_nofollow checked for a regular file only AFTER opening, and opening a
     FIFO blocks until a writer appears. O_NONBLOCK makes the open return so the
