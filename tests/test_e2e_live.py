@@ -343,3 +343,72 @@ def test_demo_publishes_and_show_agrees(workdir):
     finally:
         subprocess.run(_compose(workdir, "down", "-v", override=True),
                        capture_output=True, timeout=120)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# upgrading in place keeps the address; rolling back keeps it too
+# ─────────────────────────────────────────────────────────────────────────────
+
+PREVIOUS_IMAGE = os.environ.get("HIDDENFORGE_PREVIOUS_IMAGE",
+                                "sambent.dev/sam/hiddenforge:2.0.4")
+
+
+def _boot(image: str, keys: Path) -> str:
+    """Start `image` on `keys` with the shipped Docker flags; no network is
+    needed -- Tor creates the service key before it ever reaches the network."""
+    cid = subprocess.run(
+        ["docker", "run", "-d", "--network", "none", "--cap-drop", "ALL",
+         *[a for c in ("CHOWN", "DAC_OVERRIDE", "FOWNER", "SETUID", "SETGID")
+           for a in ("--cap-add", c)],
+         "--security-opt", "no-new-privileges", "--read-only",
+         "--tmpfs", "/tmp:rw,noexec,nosuid,nodev,size=64m",
+         "--tmpfs", "/etc/tor:rw,noexec,nosuid,nodev,size=8m",
+         "--tmpfs", "/var/lib/tor:rw,noexec,nosuid,nodev,size=64m,uid=100,gid=101,mode=0700",
+         "-e", "MYSITE_TOR_SERVICE_HOSTS=80:127.0.0.1:8080",
+         "-v", f"{keys}:/var/lib/tor/hidden_service", image],
+        capture_output=True, text=True, check=True).stdout.strip()
+    return cid
+
+
+def _identity(keys: Path) -> tuple[str, str]:
+    """(sha256 of the secret key, hostname), read as root in a throwaway container."""
+    out = subprocess.run(
+        ["docker", "run", "--rm", "--entrypoint", "sh", "-v", f"{keys}:/k:ro", IMAGE,
+         "-c", "sha256sum /k/mysite/hs_ed25519_secret_key; cat /k/mysite/hostname"],
+        capture_output=True, text=True, check=True).stdout.split()
+    return out[0], out[-1]
+
+
+def _run_for(image: str, keys: Path, seconds: int = 20) -> str:
+    cid = _boot(image, keys)
+    try:
+        time.sleep(seconds)
+        return subprocess.run(["docker", "inspect", "-f", "{{.State.Status}}", cid],
+                              capture_output=True, text=True, check=True).stdout.strip()
+    finally:
+        subprocess.run(["docker", "rm", "-f", cid], capture_output=True, check=False)
+
+
+@requires_image
+def test_upgrading_and_rolling_back_keep_the_address(workdir):
+    """The wiki promises an in-place upgrade from the previous release keeps the
+    same address, and that rolling back does too. That was a claim; this makes it
+    a release gate. The key IS the address, and nobody gets a second one."""
+    if subprocess.run(["docker", "image", "inspect", PREVIOUS_IMAGE],
+                      capture_output=True).returncode != 0:
+        pulled = subprocess.run(["docker", "pull", PREVIOUS_IMAGE],
+                                capture_output=True, text=True)
+        assert pulled.returncode == 0, (
+            f"cannot fetch the previous release {PREVIOUS_IMAGE} to test the upgrade "
+            f"from (set HIDDENFORGE_PREVIOUS_IMAGE): {pulled.stderr.strip()[-300:]}")
+    keys = workdir / "keys"
+    keys.mkdir()
+    assert _run_for(PREVIOUS_IMAGE, keys) == "running"
+    before = _identity(keys)
+    assert ONION_RE.fullmatch(before[1]), before
+
+    assert _run_for(IMAGE, keys) == "running", "the new image did not stay up"
+    assert _identity(keys) == before, "upgrading changed the identity"
+
+    assert _run_for(PREVIOUS_IMAGE, keys) == "running", "rollback did not stay up"
+    assert _identity(keys) == before, "rolling back changed the identity"
