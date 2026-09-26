@@ -87,3 +87,9 @@ select = ["E", "F", "W", "B", "S", "UP", "RUF", "PLW", "SIM", "PERF"]
 # CLI is an extensionless script. Its coverage is tests/test_cli.py plus the
 # curated kill-check in scripts/mutation_spotcheck.py.
 paths_to_mutate = ["entrypoint.py", "healthcheck.py", "vanity.py"]
+
+[tool.mypy]
+# A bare `mypy .` checks what scripts/typecheck.sh checks. fuzz/ runs under
+# atheris, which is not installed on the host, so its types cannot be resolved
+# there; mutants/ is mutmut's working copy of the tree, not source.
+exclude = ["^fuzz/", "^mutants/"]
