@@ -363,17 +363,21 @@ MUTATIONS = [
         "tests/test_privileged_fs.py -k hardlinked",
     ),
     (
-        "setup writes through whatever inode sits at the output path again",
+        "setup, backup and encrypt-key write through whatever inode sits at the output path again",
         "scripts/hiddenforge",
         "    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)\n"
-        "    try:\n        with os.fdopen(fd, \"w\", encoding=\"utf-8\") as fh:\n"
-        "            fh.write(text)\n            fh.flush()\n"
-        "            os.fchmod(fh.fileno(), mode)\n        os.replace(tmp, path)",
+        "    try:\n        with os.fdopen(fd, \"wb\") as fh:\n"
+        "            fh.write(data)\n            fh.flush()\n"
+        "            os.fchmod(fh.fileno(), mode)\n"
+        "            if owner is not None:\n                os.fchown(fh.fileno(), *owner)\n"
+        "            os.fsync(fh.fileno())\n        os.replace(tmp, path)",
         "    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, mode)\n"
-        "    try:\n        with os.fdopen(fd, \"w\", encoding=\"utf-8\") as fh:\n"
-        "            fh.write(text)\n            fh.flush()\n"
-        "            os.fchmod(fh.fileno(), mode)",
-        "tests/test_cli.py -k hardlinked_output",
+        "    try:\n        with os.fdopen(fd, \"wb\") as fh:\n"
+        "            fh.write(data)\n            fh.flush()\n"
+        "            os.fchmod(fh.fileno(), mode)\n"
+        "            if owner is not None:\n                os.fchown(fh.fileno(), *owner)\n"
+        "            os.fsync(fh.fileno())",
+        "tests/test_cli.py tests/test_backup.py -k 'hardlinked_output or hardlink'",
     ),
     (
         "extraction writes key material through a hardlink planted after the scan",
