@@ -1382,6 +1382,17 @@ def render_compose_fragment(services: dict[str, list[str]], image: str, keys: st
     if runtime == "docker":
         tor_tmpfs += ",uid=100,gid=101,mode=0700"
     compose_cmd = "podman-compose" if runtime == "podman" else "docker compose"
+    # No healthcheck under Podman: rootless Podman 4.9 never restarts a
+    # container that has one unless a systemd user manager is reachable, and the
+    # restart is how this container recovers (see podman-compose.yml).
+    healthcheck = ("" if runtime == "podman" else
+                   '    healthcheck:\n'
+                   '      test: ["CMD", "su-exec", "tor", "python3", '
+                   '"/usr/local/bin/healthcheck.py"]\n'
+                   '      interval: 60s\n'
+                   '      timeout: 10s\n'
+                   '      start_period: 120s\n'
+                   '      retries: 3\n')
     example = sorted(services)[0]
     header = (f"# hiddenforge compose fragment "
               f"(contract v{HIDDENFORGE_VERSION}, contract {CONTRACT_VERSION}).")
@@ -1440,13 +1451,7 @@ services:
     # network, but a name that does not (a backend down or not up yet) is never
     # forwarded upstream. Tor itself needs no DNS.
     dns: 127.0.0.1
-    healthcheck:
-      test: ["CMD", "su-exec", "tor", "python3", "/usr/local/bin/healthcheck.py"]
-      interval: 60s
-      timeout: 10s
-      start_period: 120s
-      retries: 3
-{dep_block}"""
+{healthcheck}{dep_block}"""
 
 
 def render_deploy_sh(services: dict[str, list[str]], keys_dir: str,

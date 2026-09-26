@@ -69,6 +69,23 @@ both injectable into the compose fragment and the 0755 deploy script.
   under Docker, `podman unshare` under rootless Podman -- both measured to
   produce a complete archive that restores to the same address), and a volume
   with no identity in it is refused.
+- **Under rootless Podman the container could stay down instead of healing.**
+  Rootless Podman 4.9 (Ubuntu 24.04's version) runs healthchecks through
+  systemd user timers, and when no systemd user manager is reachable -- a
+  service account with no login session, `sudo -iu`, cron, a broken user bus --
+  it never restarts a container that has a healthcheck. Measured on Ubuntu
+  24.04: with any healthcheck, `restart: unless-stopped` left the container
+  stopped after exit 1; with none it restarted every time, with or without a
+  session (rootful 4.9 and rootless 5.4 restart either way). This container
+  recovers by exiting and being restarted: after Tor dies, when a backend moves,
+  when a late backend comes up. `podman-compose.yml` and the `setup --runtime
+  podman` fragment now declare no healthcheck at all (not even `disable: true`,
+  which Docker Compose sends to Podman as test [NONE] and Podman 4.9 still
+  treats as a healthcheck). Measured on both podman-compose and Docker Compose
+  over the Podman socket: Tor killed, container restarted, same onion, ready,
+  HTTP 200 over Tor. Readiness under Podman is `hiddenforge status`, which runs
+  the check itself when the engine reports no health; the Docker files keep
+  their healthcheck, since Docker restarts with one.
 - **A backend that was down announced itself to the host's DNS.** The
   engine's resolver answers backend names on the internal network, but forwards
   a name it cannot answer to the host's upstream DNS -- and the supervisor

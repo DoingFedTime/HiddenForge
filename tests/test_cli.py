@@ -424,6 +424,35 @@ def test_setup_podman_runtime_omits_apparmor(hf, tmp_path, capsys):
     assert "podman-compose" in (tmp_path / "deploy.sh").read_text()
 
 
+@pytest.mark.parametrize("runtime, has_healthcheck", [("docker", True), ("podman", False)])
+def test_only_the_docker_fragment_carries_a_healthcheck(hf, tmp_path, capsys,
+                                                        runtime, has_healthcheck):
+    """Rootless Podman 4.9 never restarts a container that has a healthcheck when
+    no systemd user manager is reachable (measured on Ubuntu 24.04), and the
+    restart is how the container follows a moved backend or recovers from a dead
+    Tor. `disable: true` is no answer: Docker Compose on the Podman socket sends
+    it as test [NONE], which Podman 4.9 still treats as a healthcheck."""
+    import yaml
+    assert hf.main(["setup", "--backend", "web:80", "--runtime", runtime,
+                    "-o", str(tmp_path), "--json"]) == 0
+    capsys.readouterr()
+    frag = yaml.safe_load((tmp_path / "compose.service.yml").read_text())
+    (svc,) = frag["services"].values()
+    assert ("healthcheck" in svc) is has_healthcheck
+    assert svc["restart"] == "unless-stopped"
+
+
+def test_the_shipped_podman_file_declares_no_healthcheck():
+    """Same reason as the fragment. The Docker file keeps its healthcheck: Docker
+    restarts a container that has one (measured)."""
+    import yaml
+    podman = yaml.safe_load((REPO / "podman-compose.yml").read_text())
+    docker = yaml.safe_load((REPO / "docker-compose.yml").read_text())
+    assert "healthcheck" not in podman["services"]["tor"]
+    assert podman["services"]["tor"]["restart"] == "unless-stopped"
+    assert "healthcheck" in docker["services"]["tor"]
+
+
 def test_setup_rejects_bad_name(hf, tmp_path, capsys):
     rc = hf.main(["setup", "--backend", "web:80", "--name", "../evil",
                   "-o", str(tmp_path), "--json"])

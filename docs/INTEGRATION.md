@@ -29,7 +29,7 @@ hiddenforge show --keys ./tor-keys --name myapp --json
 
 | File | What it is |
 |---|---|
-| `compose.service.yml` | the merge fragment: `tor` service, both networks, key volume, caps, hardening, env, healthcheck |
+| `compose.service.yml` | the merge fragment: `tor` service, both networks, key volume, caps, hardening, env, healthcheck (Docker only -- see below) |
 | `deploy.sh` | the same three steps as a script |
 | `README.txt` | human summary of what was generated |
 | `hiddenforge.json` | machine descriptor (name, env var, merge command, address command) |
@@ -56,7 +56,10 @@ hiddenforge setup \
 This writes one `{NAME}_TOR_SERVICE_HOSTS` per service (mappings for the same
 name are joined: `"80:blog:80,443:blog:443"`) and a `depends_on` for each real
 backend service. Podman users add `--runtime podman`, which drops the
-Docker-only `apparmor=` option and points `deploy.sh` at `podman-compose`.
+Docker-only `apparmor=` option, leaves out the healthcheck (rootless Podman 4.9
+never restarts a container that has one when no systemd user session is
+reachable, and restarting is how this container recovers), and points
+`deploy.sh` at `podman-compose`.
 
 `setup` refuses to overwrite an existing output directory unless `--force` is
 given, so a hand-tuned fragment is not clobbered by a re-run.
@@ -158,7 +161,7 @@ Publish nothing until **`ready` is true**. It is the AND of:
 | field | meaning |
 |---|---|
 | `running` | the container is up |
-| `healthy` | Docker healthcheck passes: bootstrapped, a circuit established, every service holding established introduction points, and Vanguards alive |
+| `healthy` | the healthcheck passes: bootstrapped, a circuit established, every service holding established introduction points, and Vanguards alive. Under Podman no engine healthcheck is set (rootless Podman 4.9 does not restart a container that has one when no systemd user session is reachable), so `health_status` is empty and `status` runs the same check itself |
 | `tor_bootstrapped` | Tor reports `PROGRESS=100` |
 | `hidden_service_published` | the address file exists |
 | `vanguards` | the guard-protection addon is alive |
