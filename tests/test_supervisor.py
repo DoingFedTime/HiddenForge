@@ -409,7 +409,10 @@ def test_the_socket_wait_is_bounded(supervisor):
     """An unbounded wait would hang a container whose Tor never opens its control
     socket, with Tor unsupervised behind it."""
     _code, h = supervisor(tor_polls=[0])
-    assert h.wait_kwargs == {"timeout": 120}
+    assert h.wait_kwargs["timeout"] == 120
+    # ...and it is handed the Tor process, so a Tor that died at startup ends it
+    # at once instead of after the full two minutes.
+    assert h.wait_kwargs["tor"] is e._tor_process
 
 
 # ─────────────────────────────────────────────────────────────────────────────

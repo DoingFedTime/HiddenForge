@@ -68,10 +68,10 @@ MUTATIONS = [
     (
         "service-directory chmod runs AFTER chown (symlink escape)",
         "entrypoint.py",
-        "        _chmod_dir_nofollow(hs_dir, 0o700, only_if_root_owned=True)\n"
+        "        _secure_service_dir(hs_dir)\n"
         "        _chown_r(hs_dir, tor_pw.pw_uid, tor_pw.pw_gid)",
         "        _chown_r(hs_dir, tor_pw.pw_uid, tor_pw.pw_gid)\n"
-        "        _chmod_dir_nofollow(hs_dir, 0o700, only_if_root_owned=True)",
+        "        _secure_service_dir(hs_dir)",
         "tests/test_privileged_fs.py",
     ),
     (
@@ -456,6 +456,27 @@ MUTATIONS = [
         "            except (OSError, UnicodeError):\n                self.misses[name] += 1\n"
         "                continue",
         "tests/test_backend_watch.py -k failed_lookup",
+    ),
+    (
+        "a service directory the operator created keeps its open mode again",
+        "entrypoint.py",
+        "            os.fchmod(fd, 0o700)\n        except PermissionError as exc:",
+        "            pass\n        except PermissionError as exc:",
+        "tests/test_torrc_write.py -k tightened",
+    ),
+    (
+        "a symlink at a service path is not named before use",
+        "entrypoint.py",
+        "    if st is not None and not stat.S_ISDIR(st.st_mode):",
+        "    if False:",
+        "tests/test_privileged_fs.py -k chmods_before_chown",
+    ),
+    (
+        "the socket wait ignores a Tor that already died",
+        "entrypoint.py",
+        "        if tor is not None and tor.poll() is not None:",
+        "        if False:",
+        "tests/test_probes.py -k died",
     ),
 ]
 

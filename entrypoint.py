@@ -544,6 +544,36 @@ VanguardsLiteEnabled 1
     return torrc_content, hs_dirs
 
 
+def _secure_service_dir(path):
+    """Make a service directory exactly 0700, whoever created it, or say why not.
+
+    Tor refuses a HiddenServiceDir anyone else can read ("Permissions on
+    directory ... are too permissive") and does not start. The old guard only
+    chmod'ed a directory root owned, so one the operator created -- the README's
+    own offline-key steps do that -- kept its umask mode (0775): measured, Tor
+    refused it and the container restart-looped with the reason in a log the
+    shipped compose file discards. The chmod is done on an O_NOFOLLOW
+    descriptor, so it cannot land on a symlink's target. Where it is not
+    permitted (no FOWNER, and not the owner) this stops with the fix instead.
+    """
+    fd = _open_dir_nofollow(path)
+    try:
+        st = os.fstat(fd)
+        mode = stat.S_IMODE(st.st_mode)
+        if mode == 0o700:
+            return
+        try:
+            os.fchmod(fd, 0o700)
+        except PermissionError as exc:
+            raise PermissionError(
+                errno.EPERM,
+                f"{path} is mode {oct(mode)}, which Tor refuses, and it cannot be "
+                f"set to 0700 here (it belongs to uid {st.st_uid} and the runtime "
+                "grants no FOWNER). Run `chmod 700` on it on the host.") from exc
+    finally:
+        os.close(fd)
+
+
 def _prepare_hs_dir(hs_dir, tor_pw):
     """Create and secure one hidden-service directory: chmod first, then chown.
 
@@ -555,13 +585,23 @@ def _prepare_hs_dir(hs_dir, tor_pw):
     because mutmut replaces the function body with a trampoline and the source
     no longer contains the call.
     """
-    Path(hs_dir).mkdir(parents=True, exist_ok=True)
-    # chmod requires owning the directory (CAP_FOWNER not assumed). If the dir
-    # already exists from a previous run it is owned by the tor user, so skip
-    # chmod -- it is already 0700. Always chown so newly-created dirs transfer to
-    # the tor user regardless of the calling uid.
+    # Named before anything else touches it: mkdir(exist_ok=True) would pass
+    # through a symlink, and the old failure for a link or a file here was a
+    # bare "[Errno 17] File exists" that told the operator nothing.
     try:
-        _chmod_dir_nofollow(hs_dir, 0o700, only_if_root_owned=True)
+        st = os.lstat(hs_dir)
+    except FileNotFoundError:
+        st = None
+    if st is not None and not stat.S_ISDIR(st.st_mode):
+        kind = "a symlink" if stat.S_ISLNK(st.st_mode) else "not a directory"
+        raise RuntimeError(
+            f"{hs_dir} in the key volume is {kind}; refusing to use it as a service "
+            "directory. Replace it with the real directory (restore it from a backup).")
+    Path(hs_dir).mkdir(parents=True, exist_ok=True)
+    # 0700 first, then hand the tree to tor. Always chown so newly-created dirs
+    # transfer to the tor user regardless of the calling uid.
+    try:
+        _secure_service_dir(hs_dir)
         _chown_r(hs_dir, tor_pw.pw_uid, tor_pw.pw_gid)
     except PermissionError:
         # Second and later starts under rootless Podman, as podman-compose.yml
@@ -943,7 +983,7 @@ def _control_socket_ready():
         return False
 
 
-def wait_for_socket(timeout=120):
+def wait_for_socket(timeout=120, tor=None):
     """Block until Tor's control Unix socket appears.
 
     The socket lives inside /var/lib/tor (tor:tor 0700).  Root without
@@ -957,6 +997,12 @@ def wait_for_socket(timeout=120):
     while True:
         if _control_socket_ready():
             break
+        # A Tor that died at startup (a config it refused, a directory it
+        # rejected) used to leave this waiting its full two minutes with the
+        # container showing "running" over no Tor at all.
+        if tor is not None and tor.poll() is not None:
+            raise RuntimeError(f"Tor exited (code {tor.poll()}) before its control "
+                               "socket appeared")
         if time.monotonic() - start > timeout:
             raise TimeoutError(
                 f"Tor control socket not found after {timeout}s"
@@ -1350,7 +1396,7 @@ def main():
     vanguards_next_attempt = 0.0
     vanguards_given_up    = False
     try:
-        wait_for_socket(timeout=120)
+        wait_for_socket(timeout=120, tor=_tor_process)
         _vanguards_process   = start_vanguards()
         vanguards_last_start = time.monotonic()
         print("Vanguards addon started.")

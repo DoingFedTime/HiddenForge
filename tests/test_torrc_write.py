@@ -211,18 +211,39 @@ def test_preparing_creates_missing_parents(tmp_path):
     assert d.is_dir()
 
 
-def test_preparing_only_chmods_a_directory_it_owns_as_root(tmp_path, monkeypatch):
-    """CAP_FOWNER is not assumed, and on a restart the directory already belongs
-    to the tor user: chmod'ing it would fail. Passing the guard is what makes the
-    second boot work."""
-    seen = {}
-    monkeypatch.setattr(
-        e, "_chmod_dir_nofollow",
-        lambda path, mode, **kw: seen.update(path=path, mode=mode, kw=kw))
+def test_a_service_directory_the_operator_made_is_tightened(tmp_path, monkeypatch):
+    """Measured in a real container: a service directory created on the host
+    (umask 0775, as the README's offline-key steps do) was left as it was, Tor
+    refused it as too permissive, and the container restart-looped."""
+    d = tmp_path / "app"
+    d.mkdir()
+    os.chmod(d, 0o775)  # noqa: S103 - the operator's umask, which is the bug
     monkeypatch.setattr(e, "_chown_r", lambda *a: None)
-    e._prepare_hs_dir(str(tmp_path / "app"), TorPw(1, 1))
-    assert seen["mode"] == 0o700
-    assert seen["kw"] == {"only_if_root_owned": True}
+    e._prepare_hs_dir(str(d), TorPw(os.getuid(), os.getgid()))
+    assert stat.S_IMODE(os.stat(d).st_mode) == 0o700
+
+
+def test_a_directory_already_0700_is_not_touched(tmp_path, monkeypatch):
+    """On a restart it belongs to tor and is already right; no chmod is needed,
+    which is what lets a runtime without FOWNER boot a second time."""
+    d = tmp_path / "app"
+    d.mkdir(mode=0o700)
+    monkeypatch.setattr(e.os, "fchmod", lambda *a: pytest.fail("chmod not needed"))
+    monkeypatch.setattr(e, "_chown_r", lambda *a: None)
+    e._prepare_hs_dir(str(d), TorPw(os.getuid(), os.getgid()))
+
+
+def test_a_directory_that_cannot_be_tightened_says_how_to_fix_it(tmp_path, monkeypatch):
+    d = tmp_path / "app"
+    d.mkdir()
+    os.chmod(d, 0o755)  # noqa: S103 - the state under test
+
+    def denied(fd, mode):
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(e.os, "fchmod", denied)
+    with pytest.raises(PermissionError, match="chmod 700"):
+        e._secure_service_dir(str(d))
 
 
 # ─────────────────────────────────────────────────────────────────────────────

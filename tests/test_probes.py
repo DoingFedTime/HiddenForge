@@ -494,3 +494,16 @@ def test_a_su_exec_that_never_drops_is_refused_at_the_deadline(monkeypatch, caps
     monkeypatch.setattr(e.time, "sleep", lambda s: clock.__setitem__("t", clock["t"] + s))
     assert e._assert_process_dropped(_Pid(), "Tor", timeout=1) is False
     assert "could not confirm Tor dropped privileges" in capsys.readouterr().out
+
+
+def test_a_tor_that_died_ends_the_wait_at_once(monkeypatch):
+    """Measured: a Tor that refused its config at startup left the supervisor
+    waiting the full two minutes for a socket that would never appear, with the
+    container showing "running" over no Tor."""
+    class Dead:
+        def poll(self):
+            return 1
+    monkeypatch.setattr(e, "_control_socket_ready", lambda: False)
+    monkeypatch.setattr(e.time, "sleep", lambda s: pytest.fail("waited on a dead Tor"))
+    with pytest.raises(RuntimeError, match="Tor exited"):
+        e.wait_for_socket(timeout=120, tor=Dead())

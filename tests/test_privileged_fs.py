@@ -255,7 +255,7 @@ def test_prepare_hs_dir_chmods_before_chown(tmp_path, monkeypatch):
     monkeypatch.setattr(e, "_chown_r", lambda *a, **k: calls.append(a))
     tor_pw = namedtuple("TorPw", "pw_uid pw_gid")(os.getuid(), os.getgid())
 
-    with pytest.raises(OSError):
+    with pytest.raises(RuntimeError, match="is a symlink"):
         e._prepare_hs_dir(str(link), tor_pw)
     assert calls == [], "the chown ran despite the symlink: the ordering regressed"
 
@@ -269,8 +269,8 @@ def test_prepare_hs_dir_chmods_then_chowns(tmp_path, monkeypatch):
     """
     d = tmp_path / "hs"
     order = []
-    monkeypatch.setattr(e, "_chmod_dir_nofollow",
-                        lambda path, mode, **k: order.append(("chmod", path, mode)))
+    monkeypatch.setattr(e, "_secure_service_dir",
+                        lambda path: order.append(("chmod", path, 0o700)))
     monkeypatch.setattr(e, "_chown_r",
                         lambda path, uid, gid: order.append(("chown", path, uid, gid)))
     tor_pw = namedtuple("TorPw", "pw_uid pw_gid")(12345, 67890)
@@ -338,7 +338,7 @@ def test_a_tor_owned_closed_directory_is_left_alone_on_restart(tmp_path,
     directory is already in the state being asked for, so this is not an error."""
     d = tmp_path / "hs"
     d.mkdir(mode=0o700)
-    monkeypatch.setattr(e, "_chmod_dir_nofollow", _denied)
+    monkeypatch.setattr(e, "_secure_service_dir", _denied)
     e._prepare_hs_dir(str(d), _Tor(os.getuid()))
     assert "already the tor user's" in capsys.readouterr().out
 
@@ -354,6 +354,6 @@ def test_anything_else_behind_a_permission_error_still_fails(tmp_path, monkeypat
     else:
         d.mkdir(mode=0o755 if case == "open-mode" else 0o700)
     uid = os.getuid() + 1 if case == "other-owner" else os.getuid()
-    monkeypatch.setattr(e, "_chmod_dir_nofollow", _denied)
-    with pytest.raises(PermissionError):
+    monkeypatch.setattr(e, "_secure_service_dir", _denied)
+    with pytest.raises((PermissionError, RuntimeError)):
         e._prepare_hs_dir(str(d), _Tor(uid))

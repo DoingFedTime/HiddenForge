@@ -77,6 +77,20 @@ both injectable into the compose fragment and the 0755 deploy script.
   with a fresh lookup. Measured live: a moved backend was followed in about a
   minute and served at its new IP; a backend that was simply down for 80s
   caused no restart.
+- **A service directory the operator created was left world-readable, and Tor
+  refused it.** Startup only chmod'ed directories root owned, so one made on the
+  host -- as the README's offline-key steps do -- kept its umask mode (0775):
+  measured in a real container, Tor refused it as "too permissive" and never
+  started. It is now set to 0700 through a no-follow descriptor whoever made it;
+  where the runtime forbids that, startup stops with the exact fix.
+- **A symlink or file at a service path failed as a bare "File exists"**; it is
+  now refused by name before anything uses it.
+- **A Tor that died at startup went unnoticed for two minutes** while the
+  supervisor waited for its control socket; the wait now ends at once.
+- Verified by a hostile key-volume battery against the real container (symlinked
+  and hardlinked keys, FIFOs, sockets, `/dev/zero` links, a 700 MB file, control
+  characters in names, a symlinked address file): nothing outside the volume was
+  touched in any case.
 - **The supervisor ran the reachability probe every second** while an address
   waited to be published (a Python process and a control connection per
   second, for minutes on a slow network). A "not yet" is now remembered for 10s;
