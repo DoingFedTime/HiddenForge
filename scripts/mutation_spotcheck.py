@@ -413,7 +413,8 @@ MUTATIONS = [
     (
         "show ignores --container when the host cannot read the address",
         "scripts/hiddenforge",
-        "    if container is None or entry[\"onion\"] is not None or entry[\"source\"] is not None:",
+        "    if container is None or entry[\"onion\"] is not None "
+        "or entry[\"source\"] is not None:",
         "    if True:",
         "tests/test_doctor_keys.py -k with_container",
     ),
