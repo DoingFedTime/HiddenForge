@@ -59,6 +59,29 @@ without verifying the archive, a `verify-image` that printed VERIFIED for a
 stripped post-quantum signature, and `--keys` and `--container` values that were
 both injectable into the compose fragment and the 0755 deploy script.
 
+### Fixed (found by exercising the product, 2026-09-26)
+- **`backup` could report success over an archive with no key in it.** On a
+  running deployment each service directory belongs to the container's tor
+  user, and `Path.rglob` silently skips a directory it cannot read: from the
+  host user's account `backup` exited 0, `ok: true`, over a 307-byte archive
+  holding only `<name>.onion`. An operator relying on it had nothing. Any
+  unreadable directory now aborts the backup with the way to run it (`sudo`
+  under Docker, `podman unshare` under rootless Podman -- both measured to
+  produce a complete archive that restores to the same address), and a volume
+  with no identity in it is refused.
+- **A recreated backend no longer blackholes the onion.** Names are resolved
+  into the torrc at start; a backend recreated on a new IP left every request
+  going to an address nobody listened on, with the healthcheck green. The
+  supervisor now re-resolves every 30s and, on two successful lookups in a row
+  that no longer include the old IP, exits so the restart policy restarts it
+  with a fresh lookup. Measured live: a moved backend was followed in about a
+  minute and served at its new IP; a backend that was simply down for 80s
+  caused no restart.
+- **The supervisor ran the reachability probe every second** while an address
+  waited to be published (a Python process and a control connection per
+  second, for minutes on a slow network). A "not yet" is now remembered for 10s;
+  a "yes" is never delayed.
+
 ### Fixed (rootless Podman, measured live, 2026-09-25)
 The runtime this project recommends for high-risk deployments, brought up from
 the shipped `podman-compose.yml` and driven through the documented flow.

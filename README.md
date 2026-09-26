@@ -110,14 +110,15 @@ The only two lines you need to edit are flagged with `<-- EDIT`.
   - `NAME` is lowercased and used as the service directory name (underscores become hyphens).
   - Docker service names resolve to IP addresses at startup, so no static IPs are required.
 
-> **Restart the Tor container after recreating your backend.** The service name is
-> resolved **once**, at startup, and the resulting IP is written into the torrc —
-> Tor never re-resolves it. If the backend container is later recreated (a
-> redeploy, `docker compose up -d` after an image change, a host reboot), it
-> usually comes back on a different IP, and the onion will keep pointing at the
-> old one: the service still answers, and every request silently blackholes.
-> Nothing logs an error, because from Tor's perspective the config is fine.
-> `docker compose restart tor` after any backend recreation.
+> **A recreated backend is followed automatically.** Tor accepts only IPs, so the
+> service name is resolved at startup and the IP written into the torrc. When the
+> backend is recreated and comes back on a different IP, the supervisor notices
+> (it re-resolves every 30 seconds and acts only when two successful lookups in a
+> row no longer include the old IP) and exits, so the container's restart policy
+> starts it again with a fresh lookup; the `.onion` address does not change.
+> Measured: the onion followed a moved backend within about a minute, and a
+> backend that was simply down caused no restart at all. This relies on a restart
+> policy, which both shipped compose files set (`restart: unless-stopped`).
 
 - `TOR_SANDBOX` set to `0` disables `Sandbox 1` (default: `1`)
 

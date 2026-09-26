@@ -999,3 +999,50 @@ def test_restore_refuses_a_duplicate_member(hf, tmp_path, capsys):
     assert rc != 0
     assert "duplicate member" in json.loads(capsys.readouterr().out)["error"]
     assert not dest.exists() or not any(dest.iterdir())
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# a backup that silently left the key out
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_a_backup_that_cannot_read_a_service_directory_refuses(hf, keys, tmp_path,
+                                                               capsys):
+    """Measured on a Docker volume from the host user's account: Path.rglob
+    skipped the tor-owned service directory, and `backup` exited 0 with ok:true
+    over an archive holding only <name>.onion -- no key at all. Nothing an
+    operator could restore an identity from."""
+    if os.geteuid() == 0:
+        pytest.skip("root reads every directory")
+    # Two services, one readable. The partial archive would still hold a key
+    # (so the "no identity" rule cannot be what refuses it) while silently
+    # lacking the other service's: exactly the backup nobody notices is wrong.
+    other = keys / "zzz"
+    other.mkdir()
+    (other / "hs_ed25519_secret_key").write_bytes(_sk(0x5a))
+    (keys / "app.onion").write_text("a" * 56 + ".onion\n")
+    os.chmod(keys / "app", 0o000)
+    out = tmp_path / "b.tar.gpg"
+    pp = tmp_path / "pp"
+    pp.write_text(TEST_PASSPHRASE + "\n")
+    try:
+        rc = hf.main(["backup", "--keys", str(keys), "--out", str(out), "--tool", "gpg",
+                      "--passphrase-file", str(pp), "--json"])
+    finally:
+        os.chmod(keys / "app", 0o700)
+    doc = json.loads(capsys.readouterr().out)
+    assert rc != 0 and "cannot read" in doc["error"] and "nothing was written" in doc["error"]
+    assert not out.exists()
+
+
+def test_a_volume_with_no_identity_is_not_backed_up(hf, tmp_path, capsys):
+    keys = tmp_path / "k"
+    keys.mkdir()
+    (keys / "app.onion").write_text("a" * 56 + ".onion\n")
+    out = tmp_path / "b.tar.gpg"
+    pp = tmp_path / "pp"
+    pp.write_text(TEST_PASSPHRASE + "\n")
+    rc = hf.main(["backup", "--keys", str(keys), "--out", str(out), "--tool", "gpg",
+                  "--passphrase-file", str(pp), "--json"])
+    doc = json.loads(capsys.readouterr().out)
+    assert rc != 0 and "no identity to back up" in doc["error"]
+    assert not out.exists()

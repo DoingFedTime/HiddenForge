@@ -29,7 +29,7 @@
   "description": "Hardened Tor v3 onion-service sidecar: expose any backend as a .onion hidden service.",
   "env": {
     "contract": "<NAME>_TOR_SERVICE_HOSTS=onion_port:backend_host:backend_port[,...]",
-    "note": "The entrypoint resolves backend hostnames to IPs once, at startup. Recreating the backend container can change its IP; restart the tor container after recreating a backend.",
+    "note": "The entrypoint resolves backend hostnames to IPs at startup and re-checks them every 30s; if a backend moves to a new IP it exits so the restart policy restarts it with a fresh lookup. Keep a restart policy on the service.",
     "optional": {
       "TOR_SANDBOX": "1 (default) | 0 - set 0 only where the kernel or runtime refuses to install Tor's filter at all"
     },

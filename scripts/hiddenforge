@@ -513,9 +513,10 @@ def build_manifest() -> dict:
                 "TOR_SANDBOX": "1 (default) | 0 - set 0 only where the kernel or "
                                "runtime refuses to install Tor's filter at all",
             },
-            "note": "The entrypoint resolves backend hostnames to IPs once, at "
-                    "startup. Recreating the backend container can change its IP; "
-                    "restart the tor container after recreating a backend.",
+            "note": "The entrypoint resolves backend hostnames to IPs at startup "
+                    "and re-checks them every 30s; if a backend moves to a new IP "
+                    "it exits so the restart policy restarts it with a fresh "
+                    "lookup. Keep a restart policy on the service.",
         },
         "ports": [],
         "networks": {
@@ -1514,8 +1515,8 @@ Services: {names}
 BACK UP THE ENTIRE {keys_dir} DIRECTORY. A key IS a .onion address.
 Losing it loses that address permanently.
 
-If you recreate a backend container, restart hiddenforge so it re-resolves the
-backend IP:  {compose_cmd} restart {container}
+If a backend is recreated on a different IP, hiddenforge notices and restarts
+itself to follow it (this needs the restart policy the fragment sets).
 """
 
 
@@ -1824,6 +1825,30 @@ def _passphrase(args) -> str | None:
     return None
 
 
+def _key_files(keys: Path) -> list[Path]:
+    """Every file under the key volume, or an error -- never a partial list.
+
+    `Path.rglob` silently skips a directory it cannot read. On a Docker
+    deployment each service directory belongs to the container's tor user
+    (0700), so from the host user's account a backup walked straight past the
+    keys: measured, `backup` exited 0 with `ok: true` over a 307-byte archive
+    holding only `<name>.onion` and no key at all. An operator holding that
+    "backup" has nothing. os.walk with an error handler that raises turns any
+    unreadable directory into a refusal before anything is written.
+    """
+    def fail(err: OSError) -> None:
+        raise OSError(err.errno, (
+            f"cannot read {err.filename}: {err.strerror}. The key volume's service "
+            "directories belong to the container's tor user, so this user cannot "
+            "include them; nothing was written. Run it as root (sudo), or under "
+            "rootless Podman with `podman unshare`."))
+    found: list[Path] = []
+    for root, dirs, files in os.walk(keys, onerror=fail, followlinks=False):
+        dirs.sort()
+        found.extend(Path(root) / f for f in sorted(files))
+    return found
+
+
 def _tar_keys(keys: Path, max_bytes: int = 512 * 1024 * 1024) -> bytes:
     """Deterministic tar of the key volume (regular files only, no symlinks)."""
     import io
@@ -1831,7 +1856,8 @@ def _tar_keys(keys: Path, max_bytes: int = 512 * 1024 * 1024) -> bytes:
     with tarfile.open(fileobj=buf, mode="w", format=tarfile.PAX_FORMAT) as tar:
         total = 0
         count = 0
-        for path in sorted(keys.rglob("*")):
+        has_identity = False
+        for path in _key_files(keys):
             if path.is_symlink():
                 continue
             if not path.is_file():
@@ -1851,6 +1877,8 @@ def _tar_keys(keys: Path, max_bytes: int = 512 * 1024 * 1024) -> bytes:
             # a symlink between the two would otherwise be read THROUGH it and
             # its target's bytes archived as key material. It now fails loudly.
             data = _read_nofollow(path, max_bytes)
+            if path.name == SECRET_FILE or ".keys.tar." in path.name:
+                has_identity = True
             info = tarfile.TarInfo(name=str(rel))
             info.size = len(data)
             info.mtime = 0
@@ -1860,6 +1888,12 @@ def _tar_keys(keys: Path, max_bytes: int = 512 * 1024 * 1024) -> bytes:
             tar.addfile(info, io.BytesIO(data))
         if count == 0:
             raise ValueError(f"no key files found under {keys}")
+        # The same rule restore enforces: an archive with no identity in it is
+        # not a backup, whatever else it holds.
+        if not has_identity:
+            raise ValueError(
+                f"no {SECRET_FILE} and no encrypted key envelope under {keys}, so "
+                "there is no identity to back up; nothing was written")
     return buf.getvalue()
 
 

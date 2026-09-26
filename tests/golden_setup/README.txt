@@ -25,5 +25,5 @@ Services: blog
 BACK UP THE ENTIRE ./tor-keys DIRECTORY. A key IS a .onion address.
 Losing it loses that address permanently.
 
-If you recreate a backend container, restart hiddenforge so it re-resolves the
-backend IP:  docker compose restart tor
+If a backend is recreated on a different IP, hiddenforge notices and restarts
+itself to follow it (this needs the restart policy the fragment sets).

@@ -72,10 +72,13 @@ The native form is `{NAME}_TOR_SERVICE_HOSTS=onion_port:backend_host:backend_por
 You can set it by hand instead of using `setup`; that is the same contract the
 existing `docker-compose.yml` uses.
 
-> **Backend hostnames are resolved once, at container start**, and the IP is
-> written into the torrc. If you recreate your backend container it may come back
-> on a different IP and the onion will silently blackhole. After recreating a
-> backend, run `docker compose restart tor`.
+> **Backend hostnames are resolved at container start** and the IP written into
+> the torrc. If the backend is recreated on a different IP, the supervisor sees
+> the name move (two successful lookups in a row without the old IP, checked every
+> 30 seconds) and exits so the restart policy brings the container back with a
+> fresh lookup; the address is unchanged. Keep a restart policy on the service
+> (the fragment sets `restart: unless-stopped`). A backend that is merely down, or
+> a DNS failure, never triggers this.
 
 ---
 
@@ -220,6 +223,13 @@ hiddenforge restore --keys ./tor-keys --input ./keys.tar.gpg --tool gpg --passph
 hiddenforge rotate  --keys ./tor-keys --confirm ROTATE --json     # DESTRUCTIVE
 ```
 
+- **Run `backup` with access to the service directories.** On a running
+  deployment they belong to the container's tor user (0700), so from your own
+  account the keys cannot be read. `backup` refuses rather than writing an
+  archive without them -- it used to exit 0 over an archive holding only
+  `<name>.onion`. Measured working: `sudo hiddenforge backup ...` under Docker,
+  and `podman unshare hiddenforge backup ...` under rootless Podman. A volume
+  with no key in it is refused too.
 - `backup` prefers `age`, then `gpg`; both are authenticated. **`openssl` is
   refused** for creation (it has no authentication). gpg uses AEAD (OCB) when the
   local gpg supports it.
@@ -431,8 +441,11 @@ print(addr["onion"], addr["key_path"])
   the address inside the container (below).
 - **`status` says `container not found`** — pass `--container <your-compose-service>`;
   hiddenforge resolves Compose service labels automatically.
-- **The onion was reachable, then stopped after a redeploy** — your backend was
-  recreated and got a new IP. `docker compose restart tor`.
+- **The onion was reachable, then stopped after a redeploy** — the supervisor
+  follows a backend that moved to a new IP by restarting the container, which
+  needs a restart policy on it (the shipped files set one). Without one the
+  container stops instead of forwarding to a dead address; bring it up again
+  with your usual compose `up -d`.
 - **`show` says the key volume cannot be enumerated** — that is intentional: the
   volume is `0751` (traverse, not list). Pass `--name <service>`.
 - **rootless Podman** — use `podman-compose.yml`, and read the `.onion` with

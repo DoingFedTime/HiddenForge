@@ -17,6 +17,7 @@ import stat
 import sys
 import subprocess
 import signal
+import threading
 import time
 from pathlib import Path
 
@@ -308,7 +309,7 @@ def resolve_to_ip(host, label):
 # Tor configuration generation
 # ---------------------------------------------------------------------------
 
-def build_torrc_string(dropped=None):
+def build_torrc_string(dropped=None, resolved=None):
     """Validate env vars and assemble the torrc text — PURE, no filesystem side effects.
 
     Returns a tuple ``(torrc_content, hs_dirs)`` where ``hs_dirs`` is the list of
@@ -323,6 +324,10 @@ def build_torrc_string(dropped=None):
     skipped or dropped service/mapping.  The entrypoint writes those to
     /var/lib/tor/dropped-mappings so ``hiddenforge status`` can surface a
     misconfiguration instead of failing silently.
+
+    If ``resolved`` is a dict, every backend given by NAME (not by IP literal)
+    is recorded in it as ``name -> the IP written into the torrc``, so the
+    supervisor can notice when that name later points somewhere else.
     """
 
     # Tor's own seccomp sandbox can be disabled via env var for environments
@@ -493,7 +498,10 @@ VanguardsLiteEnabled 1
                 if len(parts) == 3:
                     hs_port     = validate_port(parts[0],     host_mapping)
                     target_host = validate_hostname(parts[1], host_mapping)
+                    backend_name = target_host
                     target_host = resolve_to_ip(target_host,  host_mapping)
+                    if resolved is not None and backend_name != target_host:
+                        resolved[backend_name] = target_host
                     target_port = validate_port(parts[2],     host_mapping)
                     port_lines.append(f"HiddenServicePort {hs_port} {target_host}:{target_port}\n")
                 elif len(parts) == 2:
@@ -604,7 +612,8 @@ def generate_basic_torrc():
         _chmod_dir_nofollow(parent_hs, 0o751)  # nosec B103
 
     dropped = []
-    torrc_content, hs_dirs = build_torrc_string(dropped=dropped)
+    _backend_ips.clear()
+    torrc_content, hs_dirs = build_torrc_string(dropped=dropped, resolved=_backend_ips)
 
     tor_pw = pwd.getpwnam('tor')
     for hs_dir in hs_dirs:
@@ -751,6 +760,35 @@ def _read_small_regular_file(path, max_bytes=ADDRESS_FILE_MAX):
     if len(data) > max_bytes:
         raise OSError(errno.EFBIG, f"{path} is larger than {max_bytes} bytes")
     return data
+
+
+GATE_RETRY_SECONDS = 10
+
+
+class _ThrottledGate:
+    """Ask the reachability gate at most once per GATE_RETRY_SECONDS after a no.
+
+    _publish_addresses consults the gate on every one-second tick while an
+    address is waiting, and each consultation starts a Python process under
+    su-exec that opens a control connection. Measured: a new control connection
+    about every second for the whole pre-publication window -- minutes on a
+    slow network, and for ever on a broken one, inside a one-CPU container. A
+    "no" is remembered for GATE_RETRY_SECONDS; a "yes" is never delayed.
+    """
+
+    def __init__(self, gate, retry=GATE_RETRY_SECONDS, clock=time.monotonic):
+        self.gate, self.retry, self.clock = gate, retry, clock
+        self._no_until = None
+
+    def __call__(self):
+        now = self.clock()
+        if self._no_until is not None and now < self._no_until:
+            return False
+        if self.gate():
+            self._no_until = None
+            return True
+        self._no_until = now + self.retry
+        return False
 
 
 _publish_warned: set[tuple[str, str, int]] = set()
@@ -1134,6 +1172,80 @@ def start_vanguards():
 
 
 # ---------------------------------------------------------------------------
+# Backend moves
+# ---------------------------------------------------------------------------
+
+# name -> IP written into the torrc, for every backend given by name. Filled by
+# generate_basic_torrc; read by the supervisor's _BackendWatch.
+_backend_ips: dict[str, str] = {}
+
+BACKEND_RECHECK_SECONDS = 30
+BACKEND_MOVE_CONFIRMATIONS = 2
+
+
+class _BackendWatch:
+    """Notice when a backend name stops pointing where the torrc sends traffic.
+
+    Names are resolved once, at start, into the torrc: Tor accepts only IPs in
+    HiddenServicePort. A backend container that is recreated usually comes back
+    on a different IP, and from then on the onion forwards every request to an
+    address nobody listens on -- while the healthcheck stays green, because the
+    introduction points are fine. The README used to tell the operator to
+    restart by hand after every backend recreation; nobody should have to.
+
+    A move is declared only on evidence: the recorded IP must be absent from
+    ALL the addresses a SUCCESSFUL lookup returns (a scaled service answers with
+    several, in any order), on BACKEND_MOVE_CONFIRMATIONS lookups in a row. A
+    failed lookup -- the backend down, DNS briefly unavailable -- is not
+    evidence and resets the count, so this cannot restart the container over a
+    blip. Resolution runs on its own thread so a slow resolver never stalls the
+    supervision loop.
+    """
+
+    def __init__(self, recorded, resolver=socket.gethostbyname_ex,
+                 interval=BACKEND_RECHECK_SECONDS):
+        self.recorded = dict(recorded)
+        self.resolver = resolver
+        self.interval = interval
+        self.misses = dict.fromkeys(self.recorded, 0)
+        self.moved = None           # (name, old_ip, [current ips]) once confirmed
+        self._stop = threading.Event()
+
+    def check_once(self):
+        """One round of lookups; returns self.moved."""
+        for name, old in self.recorded.items():
+            try:
+                _, _, addrs = self.resolver(name)
+            except (OSError, UnicodeError):
+                self.misses[name] = 0
+                continue
+            current = set()
+            for a in addrs:
+                try:
+                    current.add(str(ipaddress.IPv4Address(a)))
+                except (ipaddress.AddressValueError, ValueError):
+                    continue
+            if not current or old in current:
+                self.misses[name] = 0
+                continue
+            self.misses[name] += 1
+            if self.misses[name] >= BACKEND_MOVE_CONFIRMATIONS:
+                self.moved = (name, old, sorted(current))
+                break
+        return self.moved
+
+    def run(self):
+        while not self._stop.wait(self.interval):
+            if self.check_once():
+                return
+
+    def start(self):
+        if self.recorded:
+            threading.Thread(target=self.run, name="backend-watch", daemon=True).start()
+        return self
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -1247,6 +1359,10 @@ def main():
     except Exception as e:
         print(f"Warning: could not start Vanguards: {e}. Will keep retrying.")
 
+    # Watch the backends' names from here on (see _BackendWatch).
+    backend_watch = _BackendWatch(_backend_ips).start()
+    publication_gate = _ThrottledGate(_service_reachable)
+
     # ── Process supervision loop ────────────────────────────────────────────
     while True:
         time.sleep(1)
@@ -1255,7 +1371,7 @@ def main():
         # reachable -- NOT merely once Tor has written hostname, which it does at
         # key-generation time. Cheap: a 56-byte read per service, skipped once
         # already correct, and the gate only runs when a write is pending.
-        _publish_addresses(hs_dirs, gate=_service_reachable)
+        _publish_addresses(hs_dirs, gate=publication_gate)
 
         # Tor is the primary process — exit if it dies.
         tor_rc = _tor_process.poll()
@@ -1274,6 +1390,19 @@ def main():
             # container stays DOWN with a success status, leaving a dead onion
             # that looks healthy in `docker ps`.
             sys.exit(tor_rc if tor_rc != 0 else 1)
+
+        # A backend that moved means every request is going to an address
+        # nobody listens on. Exit non-zero so the restart policy starts the
+        # container again and resolution runs afresh; the onion address is
+        # unaffected, it lives in the key volume.
+        if backend_watch.moved:
+            name, old, current = backend_watch.moved
+            print(f"Backend '{_safe(name)}' now resolves to {', '.join(current)}, "
+                  f"but Tor is still forwarding to {old}. Restarting so the onion "
+                  "follows it (the address itself does not change).")
+            _kill_proc(_vanguards_process, "Vanguards", timeout=5)
+            _kill_proc(_tor_process, "Tor", timeout=10)
+            sys.exit(1)
 
         now = time.monotonic()
 

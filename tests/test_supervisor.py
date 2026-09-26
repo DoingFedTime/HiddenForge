@@ -198,7 +198,8 @@ def supervisor(monkeypatch, tmp_path):
             # actually passed at the call site, so the gate was inert and a
             # container with no working onion-service circuits published its
             # address anyway. Nothing caught it.
-            assert gate is e._service_reachable, (
+            assert (isinstance(gate, e._ThrottledGate)
+                    and gate.gate is e._service_reachable), (
                 "the supervision loop must pass the readiness gate to "
                 "_publish_addresses; without it an unreachable service publishes "
                 "its .onion")
@@ -689,3 +690,47 @@ def test_sixty_one_seconds_alive_does_earn_a_reset(supervisor):
     _code, h = supervisor(tor_polls=[None] * 900 + [0],
                           vanguards_lives=[[None] * 60 + [1]] * 30)
     assert h.vanguards_started > 1 + e.VANGUARDS_MAX_RESTARTS
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# a backend that moved
+# ─────────────────────────────────────────────────────────────────────────────
+
+class _MovedAfter:
+    """A stand-in _BackendWatch whose verdict arrives after `ticks` loop turns."""
+    def __init__(self, ticks):
+        self.ticks = ticks
+
+    def __call__(self, recorded):
+        return self
+
+    def start(self):
+        return self
+
+    @property
+    def moved(self):
+        self.ticks -= 1
+        return ("web", "172.20.0.3", ["172.20.0.9"]) if self.ticks <= 0 else None
+
+
+def test_a_backend_that_moved_restarts_the_container(supervisor, monkeypatch, capsys):
+    """Every request would otherwise go to an address nobody listens on while
+    the healthcheck stays green. Exit non-zero so the restart policy brings the
+    container back and resolution runs again; Vanguards and Tor are stopped."""
+    monkeypatch.setattr(e, "_BackendWatch", _MovedAfter(3))
+    code, h = supervisor(tor_polls=[None] * 20)
+    assert code == 1
+    out = capsys.readouterr().out
+    assert "now resolves to 172.20.0.9, but Tor is still forwarding to 172.20.0.3" in out
+    stopped = [name for _proc, name, _t in h.killed]
+    assert "Tor" in stopped and "Vanguards" in stopped
+
+
+def test_no_move_changes_nothing(supervisor, monkeypatch, capsys):
+    """Without a confirmed move the loop runs exactly as before: it ends only
+    when Tor exits, and says nothing about a backend."""
+    monkeypatch.setattr(e, "_BackendWatch", _MovedAfter(10**9))
+    code, _h = supervisor(tor_polls=[None] * 3 + [0])
+    out = capsys.readouterr().out
+    assert code == 1 and "Tor exited with code 0" in out
+    assert "now resolves to" not in out

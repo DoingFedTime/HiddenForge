@@ -411,3 +411,31 @@ def test_a_different_service_errno_or_operation_is_a_different_report(capsys):
     e._warn_publish_once("app", "read hostname", _oserror(errno.EIO))
     e._warn_publish_once("app", "write hostname", _oserror(errno.EACCES))
     assert capsys.readouterr().out.count("cannot publish") == 4
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# the gate is asked at most once per GATE_RETRY_SECONDS after a "no"
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_a_no_is_remembered_so_the_probe_is_not_run_every_second():
+    """Measured: a control connection (and a Python process under su-exec)
+    about every second for the whole pre-publication window."""
+    clock = {"t": 0.0}
+    calls = []
+    g = e._ThrottledGate(lambda: calls.append(1) or False, retry=10,
+                         clock=lambda: clock["t"])
+    for _ in range(10):                 # ten one-second ticks
+        assert g() is False
+        clock["t"] += 1
+    assert len(calls) == 1
+    assert g() is False and len(calls) == 2, "asked again once the retry elapsed"
+
+
+def test_a_yes_is_never_delayed_or_cached():
+    clock = {"t": 0.0}
+    answers = [False, True, True]
+    g = e._ThrottledGate(lambda: answers.pop(0), retry=10, clock=lambda: clock["t"])
+    assert g() is False
+    clock["t"] = 10.0
+    assert g() is True
+    assert g() is True, "a yes is not remembered in place of asking"

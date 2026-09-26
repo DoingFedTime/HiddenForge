@@ -214,8 +214,8 @@ MUTATIONS = [
     (
         "restore reports success over an archive holding no identity",
         "scripts/hiddenforge",
-        "    if not has_identity:",
-        "    if False:",
+        "    if not has_identity:\n        raise ValueError(\n            f\"this archive",
+        "    if False:\n        raise ValueError(\n            f\"this archive",
         "tests/test_backup.py -k no_identity",
     ),
     (
@@ -417,6 +417,45 @@ MUTATIONS = [
         "or entry[\"source\"] is not None:",
         "    if True:",
         "tests/test_doctor_keys.py -k with_container",
+    ),
+    (
+        "backup silently skips a service directory it cannot read (no key in it)",
+        "scripts/hiddenforge",
+        "    for root, dirs, files in os.walk(keys, onerror=fail, followlinks=False):",
+        "    for root, dirs, files in os.walk(keys, followlinks=False):",
+        "tests/test_backup.py -k cannot_read_a_service_directory",
+    ),
+    (
+        "backup writes an archive with no identity in it",
+        "scripts/hiddenforge",
+        "        if not has_identity:\n            raise ValueError(\n"
+        "                f\"no {SECRET_FILE} and no encrypted key envelope under {keys}",
+        "        if False:\n            raise ValueError(\n"
+        "                f\"no {SECRET_FILE} and no encrypted key envelope under {keys}",
+        "tests/test_backup.py -k no_identity_is_not_backed_up",
+    ),
+    (
+        "the publication gate is asked every second again",
+        "entrypoint.py",
+        "        if self._no_until is not None and now < self._no_until:",
+        "        if False:",
+        "tests/test_publication.py -k remembered",
+    ),
+    (
+        "one lookup is enough to restart over a moved backend",
+        "entrypoint.py",
+        "            if self.misses[name] >= BACKEND_MOVE_CONFIRMATIONS:",
+        "            if self.misses[name] >= 1:",
+        "tests/test_backend_watch.py -k consecutive",
+    ),
+    (
+        "a failed lookup counts as evidence of a move",
+        "entrypoint.py",
+        "            except (OSError, UnicodeError):\n                self.misses[name] = 0\n"
+        "                continue",
+        "            except (OSError, UnicodeError):\n                self.misses[name] += 1\n"
+        "                continue",
+        "tests/test_backend_watch.py -k failed_lookup",
     ),
 ]
 
