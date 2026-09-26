@@ -799,7 +799,7 @@ existing `docker compose up -d` human path is unchanged.
   `torrc` had the configuration written through it and the target transferred to the
   `tor` user. It now fails loudly instead.
 
-  Reachability is low — the tmpfs starts empty and the entrypoint runs as PID 1 —
+  Reachability is low (the tmpfs starts empty and the entrypoint runs as PID 1),
   so this is defence in depth rather than an urgent fix, but it is the same class of
   issue already closed for the hidden-service key directory.
 
@@ -814,7 +814,7 @@ existing `docker compose up -d` human path is unchanged.
 - **Two environment variables can no longer collapse into one hidden service.**
   Service names are lowercased and underscores become hyphens, so
   `MYAPP_TOR_SERVICE_HOSTS`, `myapp_TOR_SERVICE_HOSTS` and
-  `MY_APP_TOR_SERVICE_HOSTS` all resolve to the same directory — and environment
+  `MY_APP_TOR_SERVICE_HOSTS` all resolve to the same directory, and environment
   variable names are case-sensitive, so all of them can be set at once. The
   generator emitted a `HiddenServiceDir` block per variable, and Tor rejects a
   duplicated directory outright: `Another hidden service is already configured
@@ -825,12 +825,12 @@ existing `docker compose up -d` human path is unchanged.
 
 - **A failed Vanguards addon is no longer invisible.** The supervisor restarts
   Vanguards up to five times and then continues with Tor alone, printing a
-  warning to stdout — which the shipped compose file discards
+  warning to stdout, which the shipped compose file discards
   (`logging: driver: none`, so no host-side record of onion activity exists).
   The container therefore kept reporting **healthy** while bandguards and
   rendguard, both of which exist to detect an attack in progress, were gone.
   The healthcheck now also verifies the addon is alive, so the degradation shows
-  up in `docker ps` — the one channel that survives a disabled log driver.
+  up in `docker ps`: the one channel that survives a disabled log driver.
   Verified by exhausting the restart budget: 2.0.4 reports `healthy`, this
   release reports `unhealthy` with the reason.
 
@@ -860,9 +860,9 @@ existing `docker compose up -d` human path is unchanged.
   six HIGH CVEs Alpine disclosed against the version 2.0.3 shipped:
   `CVE-2026-11940`, `CVE-2026-15308`, `CVE-2026-3644`, `CVE-2026-4786`,
   `CVE-2026-6100`, `CVE-2026-7210`. None of the affected modules are on this
-  image's attack surface — it runs only the entrypoint, the healthcheck and
+  image's attack surface (it runs only the entrypoint, the healthcheck and
   Vanguards/stem, none of which parse untrusted XML or HTML, extract tarballs,
-  handle HTTP cookies, or open a browser — but a Tor hidden service should not
+  handle HTTP cookies, or open a browser), but a Tor hidden service should not
   ship a knowingly vulnerable runtime. Trivy reports the image clean at every
   severity.
 
@@ -871,13 +871,13 @@ existing `docker compose up -d` human path is unchanged.
   applies guard sets via `SETCONF`, which Tor's seccomp sandbox rejects
   (`Failed to configure rendezvous options`). vanguards-lite is therefore the
   only guard-discovery defence present, and Tor's `auto` default delegates it to
-  the `vanguards-lite-enabled` consensus parameter — placing the last line of
+  the `vanguards-lite-enabled` consensus parameter, placing the last line of
   defence against guard-discovery attacks under the directory authorities'
   control rather than the operator's. Pinning it locally removes that lever.
 
 - **Privileged startup no longer follows symlinks out of the key directory.**
   The entrypoint runs as root over the operator-supplied `./tor-keys` bind mount
-  and used `os.chown()`, which follows symlinks — an arbitrary-chown primitive
+  and used `os.chown()`, which follows symlinks: an arbitrary-chown primitive
   for anyone able to write to that volume (a restored backup, untrusted media, a
   second host user). On the previous image a symlink placed in the key directory
   transfers `/etc/tor` to the `tor` user, which would let a compromised Tor
@@ -895,7 +895,7 @@ existing `docker compose up -d` human path is unchanged.
 - **A single misconfigured service no longer takes down every other service.**
   When all of a service's port mappings failed validation, the entrypoint logged
   "Skipping invalid mapping" and still emitted a `HiddenServiceDir` with no
-  `HiddenServicePort` — a state in which Tor refuses to start at all
+  `HiddenServicePort`, a state in which Tor refuses to start at all
   (`Hidden service ... with no ports configured` → `Reading config failed`). One
   typo therefore killed every onion in the container while the logs implied
   graceful degradation. Such services are now dropped with an explicit error and
@@ -903,7 +903,7 @@ existing `docker compose up -d` human path is unchanged.
 
 - **The in-image smoke test is non-destructive.** `tests/test_torrc.py` ships in
   the image and its docstring directs you to run it inside the container, where
-  it called the privileged `generate_basic_torrc()` — overwriting the running
+  it called the privileged `generate_basic_torrc()`, overwriting the running
   `/etc/tor/torrc` and creating a stray hidden-service directory in the
   operator's key volume. It now exercises the pure `build_torrc_string()`, which
   has no filesystem side effects, and asserts that it created nothing.
@@ -943,11 +943,11 @@ existing `docker compose up -d` human path is unchanged.
   were signed with a per-project key; from 2.0.4 a single per-identity key signs
   every project. `signatures/allowed-signers` retains every key that has ever
   signed a release, so earlier releases remain independently verifiable. cosign
-  is no longer used — the ML-DSA-65 and YubiKey signatures are the attestation —
+  is no longer used (the ML-DSA-65 and YubiKey signatures are the attestation),
   and `cosign.pub` is kept so releases up to 2.0.3 stay verifiable.
 
 ### Added
-- **Operator guidance on what HiddenForge cannot protect you from** — a README
+- **Operator guidance on what HiddenForge cannot protect you from**: a README
   section on application-layer deanonymization: the backend making outbound
   clearnet requests, emitting absolute URLs or its real hostname, leaking
   framework banners and ETags matchable against a clearnet scan, serving

@@ -45,7 +45,7 @@ deliberate decision not to do (reason given).
 ## B. Vanity addresses (the biggest gap)
 
 - [x] **B1** Vendor mkp224o (CC0) and build it into the image (multi-stage,
-  static, hash-verified archive) — see `vendor/README.md`.
+  static, hash-verified archive); see `vendor/README.md`.
 - [x] **B2** `hiddenforge vanity --prefix <p> --name <n> [--threads N] [--out]`
   runs headless and writes a valid Tor key set
   (`hostname`, `hs_ed25519_public_key`, `hs_ed25519_secret_key`).
@@ -121,7 +121,7 @@ deliberate decision not to do (reason given).
 
 ## G. Docs
 
-- [x] **G1** `docs/INTEGRATION.md` — "publish any app as a .onion", minimal
+- [x] **G1** `docs/INTEGRATION.md`: "publish any app as a .onion", minimal
   merge, address retrieval, vanity, backup, JSON field reference.
 - [x] **G2** Shell + Python consumer examples.
 - [x] **G3** `CHANGELOG.md` entry.
@@ -153,7 +153,7 @@ deliberate decision not to do (reason given).
 - [-] **I1** `VanguardsLiteEnabled 1` pinning, `--disable_vanguards`, and the
   L2-only limitation stay exactly as they are; they are deliberate security
   tradeoffs with wiki documentation.
-- [-] **I2** Tor/`su-exec`/Python apk pins unchanged — bumping them is a separate,
+- [-] **I2** Tor/`su-exec`/Python apk pins unchanged; bumping them is a separate,
   CVE-driven decision.
 - [-] **I3** The existing `docker-compose.yml` human path stays byte-compatible
   in spirit (`docker compose up -d` still works); the new contract is additive.

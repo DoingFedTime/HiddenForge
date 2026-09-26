@@ -11,7 +11,7 @@ runtime image except the compiled binary produced from it.
 | Commit | `5172c0fd71740ca0b11da8149a2575dcf331d7ab` (2024-02-15) |
 | Archive | `mkp224o-5172c0fd.tar.gz` |
 | SHA256 | `1f951ed82577436fe2c160c01f7754170010137c2182eae7e47fce65f000dc8d` |
-| Licence | **CC0-1.0** (public-domain dedication) — see `COPYING.txt` inside the archive |
+| Licence | **CC0-1.0** (public-domain dedication); see `COPYING.txt` inside the archive |
 
 `mkp224o` is the vanity-address generator used by `hiddenforge vanity`. It is
 vendored rather than fetched at build time so the image builds offline and
@@ -44,7 +44,7 @@ in Tor's own on-disk format (64-byte `hs_ed25519_public_key`, 96-byte
 ### Build notes (why the Dockerfile looks the way it does)
 
 - Statically linked against `libsodium` (`libsodium-static` in the builder) so
-  the runtime image needs **no** libsodium package — the binary is the only
+  the runtime image needs **no** libsodium package: the binary is the only
   artefact that ships.
 - `CFLAGS="-O3"` is passed explicitly. Upstream's `configure` otherwise injects
   `-march=native`, which both breaks bit-for-bit reproducibility (the binary

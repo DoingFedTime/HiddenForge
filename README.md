@@ -7,7 +7,7 @@ docker pull sambent.dev/sam/hiddenforge   # the maintainer's own registry
 docker pull doingfedtime/hiddenforge      # Docker Hub
 ```
 
-Both serve the identical digest, and the same signatures verify either one — use
+Both serve the identical digest, and the same signatures verify either one; use
 whichever you prefer.
 
 > **Which version this README describes.** This README describes **2.1.0**,
@@ -66,7 +66,7 @@ ships **inside the image**.
 # 1. Emit a ready-to-merge fragment (does not touch your files)
 hiddenforge setup --backend web:80 --name myapp --out ./deploy
 
-# 2. Merge and start — your app needs no ports and no Tor code
+# 2. Merge and start: your app needs no ports and no Tor code
 docker compose -f compose.yml -f ./deploy/compose.service.yml up -d
 
 # 3. Read the .onion (also written to ./tor-keys/myapp.onion)
@@ -182,13 +182,13 @@ signed index. (The legacy index signature is SHA1-based; the practical integrity
 anchor is the signed index plus the exact-version pin, not the hash algorithm.)
 
 Be aware of the limit this has, because it is easy to overstate. `apk add
---no-cache` fetches the index from `dl-cdn.alpinelinux.org` **at build time** —
+--no-cache` fetches the index from `dl-cdn.alpinelinux.org` **at build time**,
 digest-pinning the base image does *not* freeze it. The exact-version pin
 (`=3.12.14-r0`) still makes the resolved package deterministic: apk installs that
 version or fails, never a silently newer one. But Alpine **prunes superseded
 versions** from the index, so a pin that was valid at release time stops
 resolving once a security update lands, and the build fails outright rather than
-drifting. That is the safe failure mode, and it is the intended one — but it does
+drifting. That is the safe failure mode, and it is the intended one, but it does
 mean a source build of an older tag will not necessarily reproduce, and pinned
 versions must be refreshed as Alpine moves. This has now bitten the project
 three times: `tor=0.4.9.8-r0` (fixed in 2.0.2), `python3=3.12.13-r0` (fixed in
@@ -344,7 +344,7 @@ can stop that, so it is on you:
 
 | Leak | What happens | What to do |
 |---|---|---|
-| Backend makes outbound requests | Your app fetches an avatar, a font, an update check, or sends error telemetry — **directly**, over clearnet, from the server's real IP. One request is enough. | Keep the backend on the `internal:` network (the shipped compose does). Never add an outbound route "just for updates". Verify: from inside the backend, any internet connection must fail. |
+| Backend makes outbound requests | Your app fetches an avatar, a font, an update check, or sends error telemetry: **directly**, over clearnet, from the server's real IP. One request is enough. | Keep the backend on the `internal:` network (the shipped compose does). Never add an outbound route "just for updates". Verify: from inside the backend, any internet connection must fail. |
 | Absolute URLs / configured hostname | The app emits `https://realhost.example.com/...` in a redirect, canonical tag, RSS feed, e-mail, or error page. | Configure the app's public URL as the `.onion`. Grep rendered output for the real domain before going live. |
 | Server / framework banners | `Server:`, `X-Powered-By`, ETag formats, default error pages and admin paths fingerprint the exact host, which can be matched against a clearnet scan. | Strip identifying headers; do not run the same fingerprintable stack on clearnet and onion. |
 | Same content on clearnet and onion | Trivially correlated by anyone scanning both. | If it must exist on both, do not let them share favicons, ETags, analytics IDs, TLS certs, or timestamps. |
@@ -353,7 +353,7 @@ can stop that, so it is on you:
 | The onion address itself | Publishing it beside a clearnet identity links them permanently. | Decide the linkage deliberately; it cannot be undone. |
 
 **Also outside this container's control:** the host. A hidden service is only as
-anonymous as the machine hosting it — how it was paid for, provisioned, and
+anonymous as the machine hosting it: how it was paid for, provisioned, and
 administered. Consider the [offline key generation](#offline-key-generation-recommended-for-high-risk-deployments)
 and [rootless Podman](#rootless-podman-recommended-for-high-risk-deployments)
 sections mandatory rather than optional if you are in this threat model.
@@ -402,7 +402,7 @@ $COMPOSE -p hiddenforge -f podman-compose.yml up -d
 # Read the .onion address once Tor bootstraps (first boot: a few minutes, up to ~6)
 # NOTE the `su-exec tor`: unlike the Docker file, this one drops DAC_OVERRIDE, so
 # the exec'd root user cannot traverse the 0700 tor-owned DataDirectory. Reading
-# it as the tor user is the correct way — do NOT "fix" a permission error here by
+# it as the tor user is the correct way; do NOT "fix" a permission error here by
 # adding DAC_OVERRIDE back or loosening the key directory.
 $COMPOSE -p hiddenforge -f podman-compose.yml exec tor su-exec tor cat /var/lib/tor/hidden_service/myapp/hostname
 ```
@@ -446,7 +446,7 @@ seccomp, read-only filesystem, tmpfs mounts, and Tor hardening.
 
 **What dropping `DAC_OVERRIDE` costs you, measured rather than predicted.** Tor
 writes `hostname` as `tor`, mode 0600, so the root supervisor cannot read it
-either — and reading it is how the `<name>.onion` file in your key volume gets
+either, and reading it is how the `<name>.onion` file in your key volume gets
 written. Under Podman that file is therefore never created, and because the key
 directory belongs to a subuid inside the user namespace, the host cannot read it
 directly, and `hiddenforge show` says exactly that:

@@ -31,7 +31,7 @@ unverified.
 Two independent signatures over that digest. No transparency log, no external
 service, nothing to phone home to:
 
-1. **ML-DSA-65** (FIPS 204, post-quantum) — `hiddenforge.digest.mldsa`, made
+1. **ML-DSA-65** (FIPS 204, post-quantum): `hiddenforge.digest.mldsa`, made
    with `pqsign`. Its files are a 16-byte header followed by the raw FIPS 204
    key or signature, so stock OpenSSL 3.5 or later verifies them (older OpenSSL
    has no ML-DSA):
@@ -47,7 +47,7 @@ service, nothing to phone home to:
    ```
    With `pqsign` installed, the equivalent is
    `pqsign verify --pub sambent-mldsa.pub --sig hiddenforge.digest.mldsa --in hiddenforge.digest`.
-2. **SSH-FIDO2** (YubiKey hardware key) — `hiddenforge.digest.sig`
+2. **SSH-FIDO2** (YubiKey hardware key): `hiddenforge.digest.sig`
    ```
    ssh-keygen -Y verify -f allowed-signers -I sam@sambent.com -n file \
      -s hiddenforge.digest.sig < hiddenforge.digest
@@ -72,7 +72,7 @@ docker buildx imagetools inspect sambent.dev/sam/hiddenforge:2.0.4 | head -3
 
 ## Reproducing the build
 
-This release is bit-for-bit reproducible. **Build from a fresh clone** — this is
+This release is bit-for-bit reproducible. **Build from a fresh clone**; this is
 not optional, see the warning below:
 
 ```
@@ -95,11 +95,11 @@ Two flags are load-bearing, and both were learned the hard way:
 
 **`--provenance=false` is required.** buildx puts wall-clock build timestamps in
 the SLSA provenance attestation, and that attestation lives *inside* the image
-index — so leaving it on changes the index digest on every build and makes the
+index, so leaving it on changes the index digest on every build and makes the
 published digest impossible to reproduce.
 
 **A fresh clone is required.** `rewrite-timestamp` *clamps* file mtimes to
-`SOURCE_DATE_EPOCH` (`min(mtime, epoch)`) — it does not set them equal. In a
+`SOURCE_DATE_EPOCH` (`min(mtime, epoch)`); it does not set them equal. In a
 fresh clone every file's mtime is the checkout time, which is newer than the
 commit time, so all of them clamp to the same value and the build is
 deterministic. In a working tree where files were edited at different times,
@@ -114,7 +114,7 @@ maintainer signs with a single per-identity key (currently `SHA256:wL6piZbyXpTOz
 
 `allowed-signers` retains every key that has ever signed a release, so older
 releases remain independently verifiable. A signing key changing without
-explanation is indistinguishable from a compromise — hence this note.
+explanation is indistinguishable from a compromise, hence this note.
 
 No Sigstore, no Fulcio, no Rekor, no cosign.
 

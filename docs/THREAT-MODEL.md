@@ -166,14 +166,14 @@ key-derivation parameters, read back out of a real ciphertext rather than assume
 
 `cipher 9` is AES-256 and `aead 2` is OCB, so the cipher is not the weak link.
 But `s2k 3` with `hash 10` is *iterated and salted SHA-512* at gpg's maximum
-count — iteration only, with **no memory hardness at all**. Nothing there
+count: iteration only, with **no memory hardness at all**. Nothing there
 penalises an attacker for moving the search onto GPUs or ASICs, and gpg offers
 no memory-hard S2K to switch to. So the cost of a guess is low and the number of
 guesses is the only thing standing between an attacker and the key.
 
 Choose the passphrase accordingly: it needs real, measured entropy (a long
 diceware phrase, not a memorable sentence). `--tool age` derives its key with
-scrypt instead (`-> scrypt <salt> 18`, i.e. N=2^18), which *is* memory-hard — but
+scrypt instead (`-> scrypt <salt> 18`, i.e. N=2^18), which *is* memory-hard, but
 `age -p` prompts on a TTY and cannot
 run unattended, so it is not the path a scripted backup takes. `docs/INTEGRATION.md`
 says to encrypt backups; this says why, and what the encryption does not do for you.

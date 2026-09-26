@@ -108,7 +108,7 @@ address; with it, a fetch made the moment the service reported ready succeeded,
 on a fresh key and after a restart. Any process
 that can read the mount can read it. (The service directory itself is `0700`
 owned by the container's `tor` user, so other files inside it are not readable by
-your host user — `<name>.onion` is the readable copy.)
+your host user; `<name>.onion` is the readable copy.)
 
 **B. `show --json`:**
 
@@ -129,7 +129,7 @@ hiddenforge show --keys ./tor-keys --name myapp --json
 - `--name` → a single object with `onion`, `key_path`, `name` (plus extras).
 - no `--name` → `{"addresses":[...],"address":"<first or null>"}`.
 - exit code `4` means the address is not published yet; `onion` is `null`.
-- `source` is `hostname` | `published` | `derived` — how the address was obtained,
+- `source` is `hostname` | `published` | `derived`: how the address was obtained,
   or `inconsistent` (exit `1`, no address) when `hostname` and the public key
   disagree; see Troubleshooting.
 - `derived_matches` is `true` when the address was checked against the public
@@ -438,7 +438,7 @@ print(addr["onion"], addr["key_path"])
 
 ## 9. Troubleshooting
 
-- **`show` exits 1 with `source: "inconsistent"`, `onion: null`** — the `hostname`
+- **`show` exits 1 with `source: "inconsistent"`, `onion: null`**: the `hostname`
   file and the public key in that directory describe different addresses (a
   partial restore, or files from two services in one directory). Tor rewrites
   `hostname` from the key when it starts and serves the key's address, so no
@@ -446,22 +446,22 @@ print(addr["onion"], addr["key_path"])
   `derived_onion`, and `derived_matches` is `false`. Restore the whole directory
   from one backup. `derived_matches: null` means the comparison could not be made
   (no readable public key), which is not the same as agreement.
-- **`show --json` exits 4 / `onion: null`** — the address is not available yet;
+- **`show --json` exits 4 / `onion: null`**: the address is not available yet;
   the `error` field says which case. Either Tor has not generated the key (poll
   `status --json` until `ready`; first boot can take 60–120 s), or the key exists
   but its directory is not readable from the host and the published
   `<name>.onion` has not been written yet. Under Docker that file appears once
   the service is reachable; under rootless Podman it is never written, so read
   the address inside the container (below).
-- **`status` says `container not found`** — pass `--container <your-compose-service>`;
+- **`status` says `container not found`**: pass `--container <your-compose-service>`;
   hiddenforge resolves Compose service labels automatically.
-- **The onion was reachable, then stopped after a redeploy** — the supervisor
+- **The onion was reachable, then stopped after a redeploy**: the supervisor
   follows a backend that moved to a new IP by restarting the container, which
   needs a restart policy on it (the shipped files set one). Without one the
   container stops instead of forwarding to a dead address; bring it up again
   with your usual compose `up -d`.
-- **`show` says the key volume cannot be enumerated** — that is intentional: the
+- **`show` says the key volume cannot be enumerated**: that is intentional; the
   volume is `0751` (traverse, not list). Pass `--name <service>`.
-- **rootless Podman** — use `podman-compose.yml`, and read the `.onion` with
+- **rootless Podman**: use `podman-compose.yml`, and read the `.onion` with
   `podman-compose exec tor su-exec tor cat /var/lib/tor/hidden_service/<name>/hostname`
   (the `su-exec tor` is required; see the rootless notes in the README).
