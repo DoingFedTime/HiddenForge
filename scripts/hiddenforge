@@ -47,7 +47,8 @@ import contextlib
 
 # 3.10 is the oldest version the test suite passes on (zip(strict=) is 3.10+).
 # Say so up front rather than crash half-way through a status or a restore.
-if sys.version_info < (3, 10):
+# ruff's target is the image's Python; this file also runs on the host's.
+if sys.version_info < (3, 10):  # noqa: UP036
     sys.exit("hiddenforge needs Python 3.10 or later; this is Python "
              f"{sys.version_info[0]}.{sys.version_info[1]}.")
 
@@ -2685,10 +2686,10 @@ def _der_oid(dotted: str) -> bytes:
     out = bytearray([40 * arcs[0] + arcs[1]])
     for arc in arcs[2:]:
         chunk = [arc & 0x7F]
-        arc >>= 7
-        while arc:
-            chunk.append(0x80 | (arc & 0x7F))
-            arc >>= 7
+        rest = arc >> 7
+        while rest:
+            chunk.append(0x80 | (rest & 0x7F))
+            rest >>= 7
         out += bytes(reversed(chunk))
     return _der(0x06, bytes(out))
 
