@@ -1603,10 +1603,33 @@ def render_deploy_sh(services: dict[str, list[str]], keys_dir: str,
     keys_dir_display = (keys_dir.replace("\\", "\\\\").replace('"', "'")
                         .replace("$", "\\$").replace("`", "'"))
     if runtime == "podman":
-        engine_check = ("if ! command -v podman-compose >/dev/null 2>&1; then\n"
-                        '    echo "podman-compose not installed." >&2\n'
-                        "    exit 1\nfi")
-        up = "podman-compose"
+        # Docker Compose v2 on the rootless Podman socket when it is there: it is
+        # the only way measured to apply every limit the fragment declares
+        # (podman-compose drops pids_limit before 1.1 and memswap_limit always).
+        # Only the Compose binary is needed, not the Docker engine.
+        engine_check = """COMPOSE=""
+SOCK="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/podman/podman.sock"
+for p in /usr/libexec/docker/cli-plugins/docker-compose \\
+         /usr/lib/docker/cli-plugins/docker-compose \\
+         /usr/local/lib/docker/cli-plugins/docker-compose \\
+         "$HOME/.docker/cli-plugins/docker-compose"; do
+    if [ -x "$p" ] && [ -S "$SOCK" ]; then
+        COMPOSE="$p"
+        export DOCKER_HOST="unix://$SOCK"
+        break
+    fi
+done
+if [ -z "$COMPOSE" ]; then
+    if command -v podman-compose >/dev/null 2>&1; then
+        COMPOSE=podman-compose
+        echo "note: podman-compose does not apply pids_limit (before 1.1) or" >&2
+        echo "memswap_limit; Docker Compose on the Podman socket does (README)." >&2
+    else
+        echo "Neither Docker Compose (with podman.socket) nor podman-compose found." >&2
+        exit 1
+    fi
+fi"""
+        up = '"$COMPOSE"'
     else:
         engine_check = ("if ! command -v docker >/dev/null 2>&1; then\n"
                         '    echo "docker not installed. Install Docker Engine first." >&2\n'

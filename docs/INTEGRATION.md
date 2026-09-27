@@ -58,8 +58,10 @@ name are joined: `"80:blog:80,443:blog:443"`) and a `depends_on` for each real
 backend service. Podman users add `--runtime podman`, which drops the
 Docker-only `apparmor=` option, leaves out the healthcheck (rootless Podman 4.9
 never restarts a container that has one when no systemd user session is
-reachable, and restarting is how this container recovers), and points
-`deploy.sh` at `podman-compose`.
+reachable, and restarting is how this container recovers), and has
+`deploy.sh` use Docker Compose on the rootless Podman socket when the Compose
+binary is installed (the only way every declared limit is applied), else
+`podman-compose` with a warning about the limits it skips.
 
 `setup` refuses to overwrite an existing output directory unless `--force` is
 given, so a hand-tuned fragment is not clobbered by a re-run.

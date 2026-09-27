@@ -421,7 +421,11 @@ def test_setup_podman_runtime_omits_apparmor(hf, tmp_path, capsys):
     # Podman rejects the Docker-only tmpfs options; the entrypoint chowns
     # /var/lib/tor itself, so they must not be emitted for podman.
     assert "uid=100" not in frag and "mode=0700" not in frag
-    assert "podman-compose" in (tmp_path / "deploy.sh").read_text()
+    sh = (tmp_path / "deploy.sh").read_text()
+    # Compose v2 on the Podman socket first (it applies every limit), then
+    # podman-compose as the fallback.
+    assert sh.index('export DOCKER_HOST="unix://$SOCK"') < sh.index("COMPOSE=podman-compose")
+    assert '"$COMPOSE" -f "$BASE" -f compose.service.yml up -d' in sh
 
 
 @pytest.mark.parametrize("runtime, has_healthcheck", [("docker", True), ("podman", False)])

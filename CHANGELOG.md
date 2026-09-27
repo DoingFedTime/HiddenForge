@@ -145,6 +145,13 @@ both injectable into the compose fragment and the 0755 deploy script.
   Measured on the new image: ready one second after the first upload on a fresh
   key and in the same second after a restart, and a fetch made at that moment
   returned HTTP 200 both times.
+- **`setup --runtime podman`'s deploy.sh uses Docker Compose on the Podman
+  socket when it can.** It used podman-compose unconditionally, so a generated
+  deployment silently ran without the process and swap limits. It now prefers
+  the Compose binary on the rootless Podman socket and falls back to
+  podman-compose with a warning. Measured on stock Ubuntu 24.04: the generated
+  script chose Compose, the container had pids.max 256, memory.swap.max 0,
+  restart `always`, no healthcheck; `status` ready, `doctor` clean.
 - **Podman users can now get every limit the compose file declares.** Docker
   Compose v2 on the rootless Podman socket applies `pids_limit` and
   `memswap_limit`, which podman-compose drops; it needs only the Compose binary
