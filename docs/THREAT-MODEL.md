@@ -64,7 +64,13 @@ at `0644`, contains only the public address, and is the one file a host user can
 read without entering the `0700` service directory.
 
 **The control socket.** A Unix socket inside the `0700` DataDirectory, with no
-password: file permissions are the boundary, not an authentication secret.
+password: file permissions are the boundary, not an authentication secret. Its
+clients all run as `tor`: Vanguards, the healthcheck, and the upload watcher
+(`healthcheck.py --watch-uploads`), which subscribes to `HS_DESC` events and
+records, in the tmpfs DataDirectory, each address whose descriptor this Tor
+uploaded. It accepts only a 56-character base32 address from an `UPLOADED`
+event and never writes anything else; the record only ever gates readiness in
+the safe direction (no record, not ready).
 
 **The CLI.** Every subprocess is a fixed argv list with `shell=False`. Image
 references are validated (`validate_image_ref`) because they are handed to
