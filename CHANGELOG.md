@@ -64,6 +64,16 @@ without verifying the archive, a `verify-image` that printed VERIFIED for a
 stripped post-quantum signature, and `--keys` and `--container` values that were
 both injectable into the compose fragment and the 0755 deploy script.
 
+### Fixed (audit, 2026-10-04)
+
+- **The Dockerfile could not be built from scratch.** `python3=3.12.14-r0` and
+  `openssl=3.5.8-r0` had been pruned from Alpine's v3.23 index, so a `--no-cache`
+  build failed at `apk add` (a cached build hid it, which is how it went unseen).
+  Bumped to `python3=3.12.15-r0` and `openssl=3.5.9-r0`. The old python3 also
+  carried two HIGH CVEs with fixes available (CVE-2026-19553, CVE-2026-82049);
+  `trivy --severity HIGH,CRITICAL` on the rebuilt image reports 0. `scripts/check_pins.py`
+  passes against the live index. The base image digest is unchanged.
+
 ### Fixed (found by exercising the product, 2026-09-26)
 - **`backup` could report success over an archive with no key in it.** On a
   running deployment each service directory belongs to the container's tor

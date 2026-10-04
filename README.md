@@ -155,9 +155,9 @@ software. HiddenForge pins every dependency at every layer.
 |---|---|---|
 | Alpine base image | `alpine:3.23.5@sha256:...` | Digest pinning locks the exact OS bytes. A tag like `latest` or even `3.23.5` can be silently updated on the registry |
 | `tor` apk | `0.4.9.13-r0` | A tampered Tor binary could de-anonymise every circuit |
-| `python3` apk | `3.12.14-r0` | The Python runtime executes the entrypoint and Vanguards |
+| `python3` apk | `3.12.15-r0` | The Python runtime executes the entrypoint and Vanguards |
 | `su-exec` apk | `0.3-r0` | This binary performs the privilege drop to the `tor` user |
-| `openssl` apk | `3.5.8-r0` | Pinned explicitly rather than inherited from the base image, so a known-vulnerable OpenSSL cannot ride in with it |
+| `openssl` apk | `3.5.9-r0` | Pinned explicitly rather than inherited from the base image, so a known-vulnerable OpenSSL cannot ride in with it |
 | `py3-pip` apk | `25.1.1-r1` | Build-only; pinned so it can't be updated to a version that silently ignores `--require-hashes` |
 | `mkp224o` source | commit `5172c0fd` + SHA256 | The vanity generator, vendored as a tarball the Dockerfile hash-checks before building it |
 | `vanguards` pip | `0.3.1` + SHA256 | Guard protection addon; a compromised version could leak circuit topology |
@@ -184,15 +184,16 @@ anchor is the signed index plus the exact-version pin, not the hash algorithm.)
 Be aware of the limit this has, because it is easy to overstate. `apk add
 --no-cache` fetches the index from `dl-cdn.alpinelinux.org` **at build time**,
 digest-pinning the base image does *not* freeze it. The exact-version pin
-(`=3.12.14-r0`) still makes the resolved package deterministic: apk installs that
+(`=3.12.15-r0`) still makes the resolved package deterministic: apk installs that
 version or fails, never a silently newer one. But Alpine **prunes superseded
 versions** from the index, so a pin that was valid at release time stops
 resolving once a security update lands, and the build fails outright rather than
 drifting. That is the safe failure mode, and it is the intended one, but it does
 mean a source build of an older tag will not necessarily reproduce, and pinned
 versions must be refreshed as Alpine moves. This has now bitten the project
-three times: `tor=0.4.9.8-r0` (fixed in 2.0.2), `python3=3.12.13-r0` (fixed in
-2.0.4) and `tor=0.4.9.12-r0` (fixed after 2.1.0). A scheduled CI job
+five times: `tor=0.4.9.8-r0` (fixed in 2.0.2), `python3=3.12.13-r0` (fixed in
+2.0.4), `tor=0.4.9.12-r0` (fixed after 2.1.0), and `python3=3.12.14-r0` with
+`openssl=3.5.8-r0` (fixed after 2.1.0, once a no-cache build was tried again). A scheduled CI job
 (`pin-freshness`) checks every pin against the live index so the next one is
 caught before a build needs it.
 
