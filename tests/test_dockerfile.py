@@ -56,3 +56,17 @@ def test_every_apk_pin_is_documented_with_its_exact_version():
     missing += [f"DEPENDENCIES: {p}={v}" for p, v in pins.items()
                 if f"| `{p}` | `{v}` |" not in deps]
     assert not missing, "pins not documented at their exact version: " + ", ".join(missing)
+
+
+def test_check_pins_exits_3_when_it_cannot_check():
+    """Exit 3 means "could not check", distinct from a pruned pin (2). It used to
+    be `raise SystemExit("exit 3: ...")`, which prints the text and exits 1."""
+    import subprocess
+    import sys
+
+    root = repo_root(__file__)
+    proc = subprocess.run([sys.executable, str(root / "scripts" / "check_pins.py"),
+                           "--branch", "not a branch"],
+                          capture_output=True, text=True, timeout=60, check=False)
+    assert proc.returncode == 3, (proc.returncode, proc.stderr)
+    assert "implausible --branch" in proc.stderr

@@ -27,9 +27,11 @@ import io
 import json
 import pathlib
 import re
+import sys
 import tarfile
 import urllib.error
 import urllib.request
+from typing import NoReturn
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
 DOCKERFILE = REPO / "Dockerfile"
@@ -53,6 +55,14 @@ def _version_key(v: str) -> tuple[tuple[int, int, str], ...]:
     parts = re.split(r"[.\-]", v)
     key = [(0, int(p), "") if p.isdigit() else (1, 0, p) for p in parts]
     return tuple(key)
+
+
+def _unavailable(message: str) -> NoReturn:
+    """Exit 3: the check could not be made. Never confused with a pass (0) or a
+    pruned pin (2). `raise SystemExit("...")` would print the message but exit 1,
+    which is what this replaced."""
+    print(f"check_pins: {message}", file=sys.stderr)
+    sys.exit(3)
 
 
 def parse_pins(text: str) -> dict[str, str]:
@@ -91,12 +101,12 @@ def fetch_index(branch: str, arch: str) -> dict[str, list[str]]:
             with urllib.request.urlopen(url, timeout=60) as resp:  # nosemgrep  # noqa: S310
                 blob = resp.read()
         except (urllib.error.URLError, TimeoutError) as exc:
-            raise SystemExit(f"exit 3: cannot fetch {url}: {exc}") from exc
+            _unavailable(f"cannot fetch {url}: {exc}")
         with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tar:
             member = next(m for m in tar.getmembers() if m.name == "APKINDEX")
             handle = tar.extractfile(member)
             if handle is None:
-                raise SystemExit(f"exit 3: {url} has no readable APKINDEX")
+                _unavailable(f"{url} has no readable APKINDEX")
             text = handle.read().decode("utf-8", "replace")
         name = None
         for block in text.split("\n\n"):
@@ -117,11 +127,11 @@ def main() -> int:
 
     pins = parse_pins(DOCKERFILE.read_text())
     if not pins:
-        raise SystemExit("exit 3: no pins parsed from Dockerfile (parser drift?)")
+        _unavailable("no pins parsed from Dockerfile (parser drift?)")
     if not _BRANCH_RE.fullmatch(args.branch):
-        raise SystemExit(f"exit 3: refusing implausible --branch {args.branch!r}")
+        _unavailable(f"refusing implausible --branch {args.branch!r}")
     if not _ARCH_RE.fullmatch(args.arch):
-        raise SystemExit(f"exit 3: refusing implausible --arch {args.arch!r}")
+        _unavailable(f"refusing implausible --arch {args.arch!r}")
     index = fetch_index(args.branch, args.arch)
 
     missing, stale = [], []
