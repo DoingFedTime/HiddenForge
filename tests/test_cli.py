@@ -855,33 +855,30 @@ def test_a_wrapper_unit_that_outlives_the_container_does_not_pass(hf, monkeypatc
     assert checks[RESTART]["ok"] is False
 
 
-@pytest.mark.parametrize("procs, ok", [
-    ([(CONMON, "conmon"), (900, "slirp4netns")], True),
-    ([(CONMON, "conmon"), (900, "pasta.avx2"), (901, "rootlessport")], True),
-    ([(CONMON, "conmon")], True),
-    ([(CONMON, "conmon"), (900, "slirp4netns"), (902, "tail")], False),
-    ([(CONMON, "conmon"), (903, "sh")], False),
-    ([(900, "slirp4netns")], False),
-    (None, False),
+@pytest.mark.parametrize("extra, ok", [
+    ("", True),
+    ("RemainAfterExit=no\nExitType=main\n", True),
+    ("RemainAfterExit=yes\n", False),
+    ("ExitType=cgroup\n", False),
 ])
-def test_a_unit_without_a_main_process_counts_only_if_nothing_outlives_the_container(
-        hf, monkeypatch, capsys, tmp_path, procs, ok):
-    """Measured on podman 4.9.3: a forking `podman run -d` unit on rootless
-    networking holds slirp4netns beside conmon, so systemd reports MainPID=0. It
-    still stops when the container dies, because the helper exits with the
-    container's network. Anything else in the unit (the wrapper's idle shell)
-    keeps it alive, so its Restart= never fires."""
-    monkeypatch.setattr(hf, "_unit_processes", lambda group: procs)
+def test_the_unit_must_end_when_the_container_ends(hf, monkeypatch, capsys, tmp_path,
+                                                   extra, ok):
+    """Measured by review on real podman: RemainAfterExit=yes keeps the unit
+    "active (exited)" after the container dies, so Restart= never fires."""
     checks, _ = _systemd_doctor(
         hf, monkeypatch, capsys, tmp_path, "hiddenforge.service",
-        "LoadState=loaded\nRestart=always\nUnitFileState=enabled\nMainPID=0\n"
-        "ControlGroup=/user.slice/x/hiddenforge.service\n")
+        f"LoadState=loaded\nRestart=always\nUnitFileState=enabled\nMainPID={CONMON}\n" + extra)
     assert checks[RESTART]["ok"] is ok
 
 
-@pytest.mark.parametrize("group", ["", "relative/path", "/a/../../etc"])
-def test_unit_processes_refuses_odd_control_groups(hf, group):
-    assert hf._unit_processes(group) is None
+def test_a_unit_without_a_main_process_is_not_trusted(hf, monkeypatch, capsys, tmp_path):
+    """MainPID=0 (a forking `podman run -d` beside a network helper) leaves systemd
+    with nothing to watch; judging the other processes by name was spoofable."""
+    checks, _ = _systemd_doctor(
+        hf, monkeypatch, capsys, tmp_path, "hiddenforge.service",
+        "LoadState=loaded\nRestart=always\nUnitFileState=enabled\nMainPID=0\n")
+    assert checks[RESTART]["ok"] is False
+    assert "conmon-pidfile" in checks[RESTART]["detail"]
 
 
 def test_a_container_whose_conmon_cannot_be_located_is_not_trusted(hf, monkeypatch,

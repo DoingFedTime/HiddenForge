@@ -1226,75 +1226,37 @@ def _append_in_container_key_checks(checks: list[dict], container: str | None,
 _UNIT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9@._:\\-]{0,250}\.service")
 
 
-# Podman's rootless network helpers. They live in the container's unit beside
-# conmon and exit with the container's network namespace, so they never keep a
-# unit alive after the container is gone.
-_PODMAN_NET_HELPERS = frozenset({"slirp4netns", "pasta", "pasta.avx2", "rootlessport",
-                                 "rootlessport-child"})
-
-
-def _unit_processes(control_group: str) -> list[tuple[int, str]] | None:
-    """(pid, comm) of every process in a unit's cgroup, or None if unreadable.
-
-    cgroup v2 first; on a v1 host systemd keeps its own hierarchy under
-    /sys/fs/cgroup/systemd with the same group path.
-    """
-    if not control_group.startswith("/") or ".." in control_group.split("/"):
-        return None
-    for root in ("/sys/fs/cgroup", "/sys/fs/cgroup/systemd"):
-        try:
-            text = Path(root + control_group, "cgroup.procs").read_text(encoding="utf-8")
-        except OSError:
-            continue
-        procs = []
-        for line in text.split():
-            n = _as_int(line)
-            if not n:
-                continue
-            try:
-                comm = Path(f"/proc/{n}/comm").read_text(encoding="utf-8").strip()
-            except OSError:
-                continue          # exited between the two reads
-            procs.append((n, comm))
-        return procs
-    return None
-
-
 def _systemd_unit_state(unit: str, conmon_pid: object) -> dict[str, str] | None:
-    """Restart= and UnitFileState= of the unit whose lifetime IS this container's.
+    """Restart= and UnitFileState= of the unit that systemd ties to this container.
 
-    The label naming the unit is set by whoever created the container, so it is
-    only a hint. What has to be true for the unit's Restart= to bring the
-    container back is that the unit STOPS when the container dies. That holds
-    when the unit's main process is the container's conmon, or, when systemd
-    could not pick a main process (MainPID=0, as with a forking `podman run -d`
-    that also leaves a rootless network helper beside conmon), when every
-    process in the unit is conmon or such a helper. Merely having conmon
-    somewhere in the unit is not enough (measured: a unit that starts
-    `podman run -d` and then idles stays active while the container is dead, so
-    its Restart= never fires). A label naming an unrelated unit
-    (systemd-journald.service, say) fails the same test, and it settles user
-    versus system scope: whichever scope's unit holds the container is the one.
+    For the unit's Restart= to bring the container back, the unit must END when
+    the container ends. systemd guarantees that only in one shape, so only that
+    shape is accepted: the unit's main process IS the container's conmon,
+    RemainAfterExit=no, and ExitType=main (the service ends with its main
+    process, not when its cgroup empties). Then conmon exiting ends the unit,
+    and Restart= applies.
+
+    Anything weaker is inference, and review broke every inference tried: a
+    unit that merely contains conmon (a wrapper that idles beside it), one with
+    MainPID=0 judged by the names of its other processes (any process can name
+    itself `pasta`), one with RemainAfterExit=yes (stays "active (exited)" with
+    the container dead). The label naming the unit is set by whoever made the
+    container, so it is only where to look; MainPID is the proof.
     """
     pid = _as_int(conmon_pid)
     if not _UNIT_NAME.fullmatch(unit) or not pid or pid <= 0:
         return None
     for scope in (["--user"], []):
-        r = _run(["systemctl", *scope, "show", unit,
-                  "--property=LoadState,Restart,UnitFileState,MainPID,ControlGroup"])
+        r = _run(["systemctl", *scope, "show", unit, "--property="
+                  "LoadState,Restart,UnitFileState,MainPID,RemainAfterExit,ExitType"])
         if r.returncode != 0:
             continue
         props = dict(line.split("=", 1) for line in r.stdout.splitlines() if "=" in line)
-        if props.get("LoadState") != "loaded":
-            continue
-        main = _as_int(props.get("MainPID"))
-        if main == pid:
+        if (props.get("LoadState") == "loaded"
+                and _as_int(props.get("MainPID")) == pid
+                and props.get("RemainAfterExit", "no") == "no"
+                and props.get("ExitType", "main") == "main"):
             return props
-        if main == 0:
-            procs = _unit_processes(props.get("ControlGroup", ""))
-            if (procs and any(n == pid for n, _ in procs)
-                    and all(n == pid or comm in _PODMAN_NET_HELPERS for n, comm in procs)):
-                return props
     return None
 
 
@@ -1324,10 +1286,11 @@ def _append_systemd_restart_checks(checks: list[dict], name: str, unit: str,
         checks.append(_check(False, name,
                              f"RestartPolicy=none; the container's label names systemd "
                              f"unit {unit!r}, but that unit could not be confirmed to run "
-                             "this container (the unit would outlive the container: its "
-                             "main process is not the container's conmon, or it holds "
-                             "other processes; or it could not be read). Set a restart "
-                             "policy or run it from the unit"))
+                             "this container: systemd can restart a container only when "
+                             "the unit's main process is the container's conmon (with "
+                             "RemainAfterExit=no). Give the unit PIDFile=%t/%N.pid and "
+                             "`podman run --conmon-pidfile %t/%N.pid -d ...`, or use a "
+                             "quadlet unit; or set an engine restart policy"))
         return
     restart = state.get("Restart", "")
     checks.append(_check(restart == "always", name,
