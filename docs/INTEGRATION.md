@@ -63,8 +63,9 @@ reachable, and restarting is how this container recovers), and has
 binary is installed (the only way every declared limit is applied), else
 `podman-compose` with a warning about the limits it skips.
 
-`setup` refuses to overwrite an existing output directory unless `--force` is
-given, so a hand-tuned fragment is not clobbered by a re-run.
+`setup` refuses to overwrite any of its four output files that already exist
+unless `--force` is given, so a hand-tuned fragment is not clobbered by a re-run
+(other files in the directory are left alone).
 
 ### What `--backend` produces
 
@@ -173,7 +174,7 @@ count through `healthy`. The fields:
 | `hidden_service_published` | the address file exists |
 | `vanguards` | the guard-protection addon is alive |
 
-`status --json` exits `0` when ready, `4` when not. Inside the container the same
+`status --json` exits `0` when ready, `4` when not, and `2` if the container is not found. Inside the container the same
 state is available granularly:
 
 ```bash
@@ -211,8 +212,9 @@ hiddenforge vanity --prefix myapp --bench --seconds 5 --json
 ```
 
 Expected attempts is exactly `32^length`; the time is that divided by the
-measured throughput of *this machine*. Roughly: 4 chars is seconds, 5 is a
-minute, 6 is ~40 minutes, 7 is ~20 hours, 8 is weeks.
+measured throughput of *this machine*. At the 6.2 million keys/s above: 5 chars
+takes seconds, 6 a few minutes, 7 about an hour and a half, 8 about two days;
+on a machine ten times slower, multiply by ten.
 
 **Long prefixes on a faster machine.** The generator is stateless: run the same
 image on the fast box, then copy the key directory back.
@@ -307,8 +309,10 @@ swap disabled (`MemorySwap == Memory`); no published ports; the generated torrc
 still contains every hardening directive (`ClientOnly`, `SafeLogging`,
 `VanguardsLiteEnabled`, PoW, Intro-point DoS, ...); key dir `0700`; secret key
 `0600`; and each key set's `hostname` agrees with its public key.
-`logging: none` is a warning (you may have disabled it deliberately). Exit `1` on
-any failure, `0` otherwise, `2` if the container cannot be inspected.
+A container that is not restarted when it exits also FAILs: no engine restart
+policy, and no systemd unit whose main process is the container's conmon.
+`logging: none` and `dns:` pointing at a non-loopback resolver are warnings.
+Exit `1` on any failure, `0` otherwise, `2` if the container cannot be inspected.
 
 Inside the container (no docker socket):
 
@@ -386,7 +390,7 @@ output is stable). Requires the docker engine (for its socket). Exit `0` written
 | 2 | usage, validation, or environment error |
 | 3 | a key appeared at the output path while a search was running |
 | 4 | not ready yet (`status`/`show` before the address exists) |
-| 130 | aborted at a prompt (no TTY) |
+| 130 | aborted at an interactive prompt (empty answer, end of input, or Ctrl-C) |
 
 ### Using the image directly (no host CLI)
 

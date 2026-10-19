@@ -1,6 +1,7 @@
 # Forgejo Actions CI for HiddenForge.
 #
-# Runs on the project's Forgejo instance (sambent.dev). Not GitHub, not Docker Hub.
+# Runs on the project's Forgejo instance (sambent.dev). Actions are fetched from
+# github.com and code.forgejo.org by full URL; scanner images from Docker Hub.
 # Workflows live in .forgejo/ (the Forgejo-native path; Forgejo also reads
 # .github/workflows for compatibility).
 #
@@ -23,7 +24,7 @@
 # The host is part of the pin. A short name like `actions/checkout` resolves
 # against the instance's DEFAULT_ACTIONS_URL, a value this repository cannot
 # read, so the pin would only be as reproducible as an out-of-band setting. All
-# eight are therefore written as full URLs: `actions/checkout` and
+# of them are therefore written as full URLs: `actions/checkout` and
 # `hadolint/hadolint-action` from github.com, `forgejo/upload-artifact` from
 # code.forgejo.org (it does not exist on github.com).
 name: ci

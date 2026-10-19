@@ -46,7 +46,7 @@ is network-isolated and never exposed to the internet.
 
 **What it is:** a hardened Tor hidden service container: Tor 0.4.9.14 on Alpine
 3.23 with Tor's built-in vanguards-lite pinned on, plus the Vanguards addon's
-bandguards and rendguard attack detectors. Every dependency is pinned (pip ones
+bandguards and rendguard attack detectors. Every directly installed dependency is pinned (pip ones
 by SHA256, apk ones against Alpine's signed index), the build is reproducible,
 and it is built for a state-level adversary threat model.
 

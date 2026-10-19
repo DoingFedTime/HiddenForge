@@ -105,7 +105,7 @@ EXIT_CODES = {
     "1": "refused or failed (see stderr / the --json error field)",
     "2": "usage, validation, or environment error",
     "3": "a key appeared at the output path while a search was running",
-    "4": "not ready yet (status --json: the hidden service is not published)",
+    "4": "not ready yet (status: not ready for any reason, see `reason`; show: no address yet)",
     "130": "aborted at a prompt",
 }
 
@@ -600,7 +600,7 @@ def build_manifest() -> dict:
                 "hidden_service_reachable": "established introduction circuits AND "
                                             "the descriptor uploaded to the network "
                                             "by this Tor, for every service",
-                "ready": "running AND healthy AND published - never false-positive",
+                "ready": "running AND healthy AND published AND every address present",
             },
             "poll": "Poll `hiddenforge status --json` and publish nothing until "
                     "`ready` is true. Read the address with `hiddenforge show --json`.",
@@ -3326,7 +3326,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--container", default=DEFAULT_CONTAINER)
     sp.add_argument("--runtime", choices=["docker", "podman"], default="docker")
     sp.add_argument("--force", action="store_true",
-                    help="overwrite an existing output directory")
+                    help="overwrite setup's own output files if they already exist")
     sp.add_argument("--non-interactive", action="store_true")
     _add_json(sp)
     sp.set_defaults(func=cmd_setup)

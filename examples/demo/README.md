@@ -14,7 +14,7 @@ Three commands, no file editing in the hiddenforge repo:
 # 2. Bring the merged stack up
 docker compose -f app.yml -f compose.service.yml up -d
 
-# 3. Read the address (retry until `ready` is true; first boot can take ~60-120s)
+# 3. Read the address (retry until `ready` is true; first boot takes a few minutes, up to about 6)
 ../../scripts/hiddenforge status --keys ./tor-keys --container tor --json
 ../../scripts/hiddenforge show   --keys ./tor-keys --name demo --json
 ```

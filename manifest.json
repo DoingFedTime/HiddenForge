@@ -46,7 +46,7 @@
     "130": "aborted at a prompt",
     "2": "usage, validation, or environment error",
     "3": "a key appeared at the output path while a search was running",
-    "4": "not ready yet (status --json: the hidden service is not published)"
+    "4": "not ready yet (status: not ready for any reason, see `reason`; show: no address yet)"
   },
   "health": {
     "command": "hiddenforge status --json",
@@ -67,7 +67,7 @@
       "hidden_service_published": "the address file exists",
       "hidden_service_reachable": "established introduction circuits AND the descriptor uploaded to the network by this Tor, for every service",
       "process_up": "a Tor process exists in the container",
-      "ready": "running AND healthy AND published - never false-positive",
+      "ready": "running AND healthy AND published AND every address present",
       "tor_bootstrapped": "the control socket reports bootstrap 100%"
     }
   },

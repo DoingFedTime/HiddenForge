@@ -80,8 +80,9 @@ deliberate decision not to do (reason given).
   (`rotate --confirm ROTATE`, `restore --force`, `vanity --force`).
 - [x] **D3** Docs state the key *is* the address, loss is permanent, backups must
   be encrypted.
-- [x] **D4** `backup` refuses unauthenticated tools for creation (no openssl),
-  in-memory round-trip verification (i2pforge parity).
+- [x] **D4** `backup` refuses unauthenticated tools for creation (no openssl).
+  (A round-trip check was planned for parity with i2pforge; only
+  `encrypt-key --delete-plaintext` reads its output back before deleting.)
 - [x] **D5** `encrypt-key` / `decrypt-key` with a documented at-rest envelope.
   They produce a real authenticated encrypted tar (age preferred, gpg with AEAD);
   a test asserts the blob does **not** contain tar member names (i.e. is actually
@@ -172,8 +173,8 @@ finished:
   signed with ML-DSA-65 only, because the YubiKey that holds the SSH-FIDO2 key
   was not available. The hardware signature will be made over the same digest
   and added to `signatures/` and the release, with no rebuild and no new image.
-  Until then `verify-image` reports the ML-DSA half as verified and the hardware
-  half as missing; `signatures/README.md` says so.
+  Until then `verify-image` refuses by default and accepts the ML-DSA half alone
+  with `--allow-pq-only` (reported `complete: false`); `signatures/README.md` says so.
 - **R6 (closed 2026-09-26).** The arm64 image is built in the same two-platform
   index as amd64, reproduces to the same digest, and boots in a full-system arm64
   VM (`docs/PRODUCTION-READINESS.md` R1, R6). It has not run on real ARM hardware.

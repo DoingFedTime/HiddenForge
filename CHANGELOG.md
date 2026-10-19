@@ -396,7 +396,7 @@ against the code, and scanning the whole history before anything is published.
 - **Three more writes that could land on an inode that was not theirs**, found
   by a third review pass hunting the same class. Startup's recursive chown
   followed a hardlinked file out of the service directory (it now chowns through
-  a descriptor and refuses any file with more than one link; exploitable only
+  a descriptor and declines to chown any file with more than one link, with a warning; exploitable only
   where `fs.protected_hardlinks` is off). `setup --force` wrote through a
   hardlinked output file (output is now a fresh `O_EXCL` temp renamed into
   place). And `restore`/`decrypt-key` extraction could write through a hardlink
@@ -659,7 +659,7 @@ changed and re-reproduced by a second, adversarial reviewer.
 - **`scripts/mutation_gate.py`**: reads `mutmut results` and fails unless every
   surviving mutant is in an allowlist with a written reason. Mutants are keyed on
   their diff rather than mutmut's positional name, which renumbers on any edit.
-- **A `mutation` CI job** (tag and daily schedule only, ~10 minutes) running the
+- **A `mutation` CI job** (tag and daily schedule only, twenty minutes and more) running the
   full pass and the gate, with its own hash-pinned venv
   (`requirements-mutation.txt`): mutmut pulls in thirteen packages the lint and
   unit jobs have no reason to trust.

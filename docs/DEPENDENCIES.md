@@ -1,6 +1,6 @@
 # Dependencies: pinned versions and upstream status
 
-Every dependency is pinned. A pin has a shelf life, so this file records *why*
+Every directly installed dependency is pinned (their own apk dependencies come from the same Alpine branch). A pin has a shelf life, so this file records *why*
 each one is acceptable and what happens when it moves. Statuses were checked
 directly against the registries and upstream repositories on **2026-09-12**; they
 are dated because they rot.
