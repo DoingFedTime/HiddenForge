@@ -58,8 +58,8 @@ whatever public key sits beside them, so the keys are the trust anchor and must
 match these values, which are also pinned in `scripts/hiddenforge`:
 
 ```
-ssh-keygen -lf allowed-signers   # SHA256:wL6piZbyXpTOzT7Z66f/Q+vegj0Ml0ZwVouGJ06+3Q0
-                                 # SHA256:YcUo1tBtj+Mlnpv9QpsWnJcMt77B4SipyD6OWSMjMB4
+ssh-keygen -lf allowed-signers   # SHA256:YcUo1tBtj+Mlnpv9QpsWnJcMt77B4SipyD6OWSMjMB4
+                                 # SHA256:wL6piZbyXpTOzT7Z66f/Q+vegj0Ml0ZwVouGJ06+3Q0
 sha256sum sambent-mldsa.pub      # 4ae873ade7ee596c815f55f3052c0f01020b1817f86eaf15ab67c8fc77cbfd22
 ```
 

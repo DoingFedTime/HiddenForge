@@ -165,8 +165,8 @@ undetected (AEAD authenticates it; a single flipped byte fails decryption and
 nothing is written).
 
 **The passphrase is the entire security of the backup, and the KDF does not help
-as much as an operator might assume.** The default tool is gpg, and its
-key-derivation parameters, read back out of a real ciphertext rather than assumed:
+as much as an operator might assume.** For scripted use the tool is gpg (age
+needs an interactive terminal), and its key-derivation parameters, read back out of a real ciphertext rather than assumed:
 
 ```
 :symkey enc packet: version 5, cipher 9, aead 2, s2k 3, hash 10, ...

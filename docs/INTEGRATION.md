@@ -161,7 +161,9 @@ name that did not resolve yet -- that one is added automatically once it
 resolves). It is empty when everything was accepted. Check it after any config change: a typo that
 silently removed a service shows up here instead of disappearing.
 
-Publish nothing until **`ready` is true**. It is the AND of:
+Publish nothing until **`ready` is true**. It is `running` AND `healthy` AND
+`hidden_service_published` AND every address present; bootstrap and Vanguards
+count through `healthy`. The fields:
 
 | field | meaning |
 |---|---|
@@ -244,9 +246,11 @@ hiddenforge rotate  --keys ./tor-keys --confirm ROTATE --json     # DESTRUCTIVE
   `<name>.onion`. Measured working: `sudo hiddenforge backup ...` under Docker,
   and `podman unshare hiddenforge backup ...` under rootless Podman. A volume
   with no key in it is refused too.
-- `backup` prefers `age`, then `gpg`; both are authenticated. **`openssl` is
-  refused** for creation (it has no authentication). gpg uses AEAD (OCB) when the
-  local gpg supports it.
+- `backup` picks the tool from the output file's extension (`.age`, `.gpg`) or
+  `--tool`; otherwise `gpg` when there is no terminal (scriptable with
+  `--passphrase-file`) and `age` on an interactive one. **`openssl` is refused**
+  for creation (it has no authentication). gpg uses AEAD (OCB) when the local gpg
+  supports it, else CFB with MDC unless `--require-aead` refuses that.
 - `restore` refuses to overwrite existing files unless `--force`; with `--force`
   the replaced files are archived, not deleted.
 - `rotate` refuses without the literal `--confirm ROTATE` and archives, never
@@ -453,7 +457,7 @@ print(addr["onion"], addr["key_path"])
   (no readable public key), which is not the same as agreement.
 - **`show --json` exits 4 / `onion: null`**: the address is not available yet;
   the `error` field says which case. Either Tor has not generated the key (poll
-  `status --json` until `ready`; first boot can take 60–120 s), or the key exists
+  `status --json` until `ready`; first boot takes a few minutes, up to about 6), or the key exists
   but its directory is not readable from the host and the published
   `<name>.onion` has not been written yet. Under Docker that file appears once
   the service is reachable; under rootless Podman it is never written, so read

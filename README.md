@@ -132,10 +132,10 @@ The only two lines you need to edit are flagged with `<-- EDIT`.
 > containers in no particular order) is watched the same way: its service is left
 > out, and once the name resolves the container restarts and configures it
 > (measured: restarted 39 seconds after the backend came up, then served it).
-> Until then `hiddenforge status` lists the mapping in `dropped_mappings` (and is
-> not ready if it is the container's only service: `ready` means at least one
-> service is reachable, so a multi-service deployment must also check that
-> `dropped_mappings` is empty).
+> Until then `hiddenforge status` lists the mapping in `dropped_mappings`. `ready`
+> means every service Tor is configured with is reachable, and a dropped mapping
+> is not configured, so with other services up the container can be `ready`
+> while one is missing: check that `dropped_mappings` is empty as well.
 > This relies on a restart policy, which both shipped compose files set
 > (`restart: unless-stopped`; `always` in the Podman file, see below).
 
@@ -168,9 +168,11 @@ just starts Tor. The full list of changes is in the [CHANGELOG](CHANGELOG.md).
 
 Recent supply chain attacks (xz-utils, PyPI package hijacks, compromised npm
 packages) have made dependency pinning essential for any security-sensitive
-software. HiddenForge pins every package that ships in the image. (The
-throwaway stage that compiles the vanity generator installs its compilers
-unpinned; only the hash-checked, statically linked binary it produces is kept.)
+software. HiddenForge pins the base image by digest and every package it
+installs directly by exact version; their own apk dependencies resolve from the
+same Alpine branch at build time. (The throwaway stage that compiles the vanity
+generator installs its compilers unpinned; only the hash-checked, statically
+linked binary it produces is kept.)
 
 **What is pinned and why:**
 
@@ -544,7 +546,7 @@ podman info --format '{{.Host.Security.Rootless}}'
 | No relay/exit | `ClientOnly 1`, `ExitPolicy reject *:*` |
 | No telemetry | pip/setuptools/urllib3 stripped from final image (Python stdlib remains) |
 | Input validation | All env vars validated before torrc write |
-| Supply chain | Every shipped package pinned by exact version; pip packages and the vendored generator source also by SHA256 |
+| Supply chain | Base image by digest; every directly installed apk package by exact version; pip packages and the vendored generator source by SHA256 |
 | Base image | Alpine 3.23.5 digest-pinned |
 | Host isolation (optional) | Rootless Podman: container escape = host user, not real root |
 

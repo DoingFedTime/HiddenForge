@@ -65,8 +65,8 @@ deliberate decision not to do (reason given).
 - [x] **C1** Healthcheck distinguishes *process up* → *Tor bootstrapped* →
   *hidden service published (address file exists)*, with bounded timeouts.
 - [x] **C2** Never report ready before the address exists.
-- [x] **C3** `status --json` exposes `running`, `healthy`, `bootstrapped`,
-  `published`, `ready`, `address(es)`, `restarts`; documented fields to poll.
+- [x] **C3** `status --json` exposes `running`, `healthy`, `tor_bootstrapped`,
+  `hidden_service_published`, `ready`, `address(es)`, `restarts`; documented fields to poll.
 - [x] **C4** Address file is written by the entrypoint once Tor publishes it, so
   a consumer can read it from the mount without docker exec.
 - [x] **C5** Degraded Vanguards is surfaced (2.0.5 already; kept and extended to
@@ -136,8 +136,9 @@ deliberate decision not to do (reason given).
 - [x] **H2** Sanitise the "Service hosts:" startup echo (control characters from
   env could inject into logs/terminals).
 - [-] **H3** Service-name collisions were already handled in `entrypoint.py`
-  (2.0.5) and the CLI's `setup` is single-service by construction; no extra
-  rejection needed.
+  (2.0.5), so no extra rejection was added. (`setup` was single-service when this
+  was written; it has since gained `--service`/`--services`, and the entrypoint's
+  handling still covers collisions.)
 - [x] **H4** The hardening directive set is documented in one place in the CLI
   (`HARDENING_DIRECTIVES`) and asserted by the generator tests/smoke test.
 - [x] **H5** `pyproject.toml`'s coverage comment no longer states a measured

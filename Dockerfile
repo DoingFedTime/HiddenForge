@@ -11,7 +11,7 @@ WORKDIR /src
 COPY vendor/mkp224o-5172c0fd.tar.gz /tmp/mkp224o.tar.gz
 # DL3018: these are BUILD-ONLY dependencies and are deliberately not
 # version-pinned. Alpine prunes superseded versions from its index (which has
-# already broken this image twice for pinned runtime packages), and none of them
+# repeatedly broken this image's pinned runtime packages), and none of them
 # ship in the final image -- the static mkp224o binary is the only artefact that
 # does. The runtime stage's apk add IS pinned, because those packages ship.
 # hadolint ignore=DL3018
