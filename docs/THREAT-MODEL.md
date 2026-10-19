@@ -139,9 +139,10 @@ identity. The README has the operational version of this list.
   is shared with other containers; a low limit makes `su-exec` fail `setuid()`
   with `EAGAIN`. `pids_limit` is the correct per-container cap, and the compose
   files carry a comment so the ulimit is not re-added.
-- **Multi-arch.** The base digest is the multi-arch index and every pinned apk
-  version exists for aarch64, but a full arm64 build was not executed in this
-  environment (no qemu/builder). See `docs/PRODUCTION-READINESS.md`.
+- **Multi-arch.** The image is one two-platform index (amd64 and arm64). The
+  arm64 half is built under qemu emulation, reproduces to the same index digest,
+  and boots in a full-system arm64 VM, but it has not run on real ARM hardware.
+  See `docs/PRODUCTION-READINESS.md` R1 and R6.
 - **Host-mode CI runner.** Jobs run as the operator on the workstation, so the
   workflow guards against fork pull requests (fail-closed). A compromised
   collaborator with push rights could still run code on the host.
