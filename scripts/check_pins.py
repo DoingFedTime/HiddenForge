@@ -118,14 +118,18 @@ def fetch_index(branch: str, arch: str) -> dict[str, list[str]]:
         except (tarfile.TarError, EOFError, OSError, zlib.error) as exc:
             _unavailable(f"{url} is not a readable index archive: {exc}")
         name = None
+        listed = 0
         for block in text.split("\n\n"):
             for line in block.splitlines():
                 if line.startswith("P:"):
                     name = line[2:].strip()
                 elif line.startswith("V:") and name:
                     index.setdefault(name, []).append(line[2:].strip())
-    if not index:
-        _unavailable(f"the {branch}/{arch} index listed no packages")
+                    listed += 1
+        # Checked per repository: an empty main or community index would
+        # otherwise report every pin that lives there as gone (exit 2).
+        if not listed:
+            _unavailable(f"{url} listed no packages")
     return index
 
 

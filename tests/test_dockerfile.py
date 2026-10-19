@@ -132,3 +132,40 @@ def test_check_pins_usage_errors_are_not_mistaken_for_a_pruned_pin():
                            "--no-such-option"], capture_output=True, text=True, timeout=60,
                           check=False)
     assert proc.returncode == 3, (proc.returncode, proc.stderr)
+
+
+
+def test_check_pins_an_empty_community_index_is_not_a_pruned_pin(monkeypatch):
+    """main lists packages, community comes back as a valid but empty index:
+    that is "could not check" (3), not "every community pin is gone" (2)."""
+    import gzip  # noqa: F401
+    import io
+    import tarfile
+
+    from loader import load_file
+
+    cp = load_file(repo_root(__file__) / "scripts" / "check_pins.py", "hf_check_pins_repo")
+
+    def index(text):
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+            data = text.encode()
+            info = tarfile.TarInfo("APKINDEX")
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+        return buf.getvalue()
+
+    class Resp(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def fake(url, timeout):
+        return Resp(index("P:tor\nV:0.4.9.14-r0\n\n" if "/main/" in url else ""))
+
+    monkeypatch.setattr(cp.urllib.request, "urlopen", fake)
+    with pytest.raises(SystemExit) as exc:
+        cp.fetch_index("v3.23", "x86_64")
+    assert exc.value.code == 3

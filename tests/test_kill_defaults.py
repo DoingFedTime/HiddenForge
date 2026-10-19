@@ -34,9 +34,20 @@ def _fake_clock(monkeypatch, module, start=1000.0):
     return clock
 
 
-def test_chmod_dir_nofollow_applies_the_mode_unless_told_to_check_ownership(tmp_path):
+def test_chmod_dir_nofollow_applies_the_mode_unless_told_to_check_ownership(
+        tmp_path, monkeypatch):
     """By default the mode is applied whoever owns the directory; the
-    root-ownership guard is opt-in."""
+    root-ownership guard is opt-in. The directory is reported as owned by a
+    non-root uid, so the test holds whichever user runs it."""
+    real_fstat = os.fstat
+
+    def fstat(fd):
+        st = real_fstat(fd)
+        return os.stat_result((st.st_mode, st.st_ino, st.st_dev, st.st_nlink, 4242,
+                               st.st_gid, st.st_size, st.st_atime, st.st_mtime,
+                               st.st_ctime))
+
+    monkeypatch.setattr(e.os, "fstat", fstat)
     d = tmp_path / "d"
     d.mkdir()
     os.chmod(d, 0o755)  # noqa: S103 - the state under test

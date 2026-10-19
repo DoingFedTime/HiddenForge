@@ -147,10 +147,10 @@ def test_a_non_ascii_byte_in_an_event_does_not_lose_the_stream(hc, tmp_path):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def test_a_runaway_line_is_dropped_so_the_next_event_is_still_read(hc, tmp_path):
-    """Junk that has no CRLF yet is capped at 1 MiB: past the cap it is thrown
-    away, so the event after it (which arrives in a later read) still parses.
-    Without the cap the junk survives in the buffer and is prepended to that
-    event, which is then no longer recognised as `650 ...`."""
+    """More than 1 MiB of junk followed by a line break is one long line that is
+    skipped; the event in the next read still parses. (The 1 MiB cap itself is
+    pinned in test_kill_healthcheck__leftovers.py: here the CRLF ends the junk
+    line, so this input parses the same with or without the cap.)"""
     good = _events(one=ONION)["one"]
     out = tmp_path / "hs-uploaded"
     sock_path = _fake_tor(tmp_path, [
