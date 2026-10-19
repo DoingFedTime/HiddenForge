@@ -300,8 +300,8 @@ MUTATIONS = [
     (
         "doctor accepts a systemd unit that does not always restart the container",
         "scripts/hiddenforge",
-        "    checks.append(_check(restart == \"always\", name,",
-        "    checks.append(_check(True, name,",
+        "    if restart != \"always\":",
+        "    if False:",
         "tests/test_cli.py -k systemd",
     ),
     (
