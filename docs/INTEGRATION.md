@@ -61,7 +61,11 @@ never restarts a container that has one when no systemd user session is
 reachable, and restarting is how this container recovers), and has
 `deploy.sh` use Docker Compose on the rootless Podman socket when the Compose
 binary is installed (the only way every declared limit is applied), else
-`podman-compose` with a warning about the limits it skips.
+`podman-compose` with a warning about the limits it skips. It keeps all five
+capabilities: setup cannot tell a rootless engine from a rootful one, and the
+three-capability set of the shipped `podman-compose.yml` breaks a rootful first
+boot. On rootless Podman you may drop `DAC_OVERRIDE` and `FOWNER` from the
+fragment, as the shipped file does.
 
 `setup` refuses to overwrite any of its four output files that already exist
 unless `--force` is given, so a hand-tuned fragment is not clobbered by a re-run

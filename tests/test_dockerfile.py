@@ -134,11 +134,9 @@ def test_check_pins_usage_errors_are_not_mistaken_for_a_pruned_pin():
     assert proc.returncode == 3, (proc.returncode, proc.stderr)
 
 
-
 def test_check_pins_an_empty_community_index_is_not_a_pruned_pin(monkeypatch):
     """main lists packages, community comes back as a valid but empty index:
     that is "could not check" (3), not "every community pin is gone" (2)."""
-    import gzip  # noqa: F401
     import io
     import tarfile
 

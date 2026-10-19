@@ -489,7 +489,9 @@ Podman often cannot load the `docker-default` profile and applies its own.
 **What dropping `DAC_OVERRIDE` costs you, measured rather than predicted.** Tor
 writes `hostname` as `tor`, mode 0600, so the root supervisor cannot read it
 either, and reading it is how the `<name>.onion` file in your key volume gets
-written. Under Podman that file is therefore never created, and because the key
+written. Under the shipped Podman file that file is therefore never created (a
+fragment from `hiddenforge setup --runtime podman` keeps all five capabilities,
+so there it is), and because the key
 directory belongs to a subuid inside the user namespace, the host cannot read it
 directly, and `hiddenforge show` says exactly that:
 
