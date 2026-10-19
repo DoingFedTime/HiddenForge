@@ -47,7 +47,7 @@ docker compose exec tor cat /var/lib/tor/hidden_service/myapp/hostname
 All security flags are pre-configured in the compose file. The backend service
 is network-isolated and never exposed to the internet.
 
-**What it is:** a hardened Tor hidden service container: Tor 0.4.9.13 on Alpine
+**What it is:** a hardened Tor hidden service container: Tor 0.4.9.14 on Alpine
 3.23 with Tor's built-in vanguards-lite pinned on, plus the Vanguards addon's
 bandguards and rendguard attack detectors. Every dependency is pinned (pip ones
 by SHA256, apk ones against Alpine's signed index), the build is reproducible,
@@ -154,7 +154,7 @@ software. HiddenForge pins every dependency at every layer.
 | Dependency | Pinned to | Why it matters |
 |---|---|---|
 | Alpine base image | `alpine:3.23.5@sha256:...` | Digest pinning locks the exact OS bytes. A tag like `latest` or even `3.23.5` can be silently updated on the registry |
-| `tor` apk | `0.4.9.13-r0` | A tampered Tor binary could de-anonymise every circuit |
+| `tor` apk | `0.4.9.14-r0` | A tampered Tor binary could de-anonymise every circuit |
 | `python3` apk | `3.12.15-r0` | The Python runtime executes the entrypoint and Vanguards |
 | `su-exec` apk | `0.3-r0` | This binary performs the privilege drop to the `tor` user |
 | `openssl` apk | `3.5.9-r0` | Pinned explicitly rather than inherited from the base image, so a known-vulnerable OpenSSL cannot ride in with it |
@@ -190,10 +190,11 @@ versions** from the index, so a pin that was valid at release time stops
 resolving once a security update lands, and the build fails outright rather than
 drifting. That is the safe failure mode, and it is the intended one, but it does
 mean a source build of an older tag will not necessarily reproduce, and pinned
-versions must be refreshed as Alpine moves. This has now bitten the project
-five times: `tor=0.4.9.8-r0` (fixed in 2.0.2), `python3=3.12.13-r0` (fixed in
-2.0.4), `tor=0.4.9.12-r0` (fixed after 2.1.0), and `python3=3.12.14-r0` with
-`openssl=3.5.8-r0` (fixed after 2.1.0, once a no-cache build was tried again). A scheduled CI job
+versions must be refreshed as Alpine moves. This has bitten the project
+repeatedly: `tor=0.4.9.8-r0` (fixed in 2.0.2), `python3=3.12.13-r0` (fixed in
+2.0.4), and during 2.1.0 development `tor=0.4.9.11-r0`, `tor=0.4.9.12-r0`, and
+then `tor=0.4.9.13-r0`, `python3=3.12.14-r0` and `openssl=3.5.8-r0` together
+(all fixed in 2.1.0). A scheduled CI job
 (`pin-freshness`) checks every pin against the live index so the next one is
 caught before a build needs it.
 
@@ -509,4 +510,4 @@ podman info --format '{{.Host.Security.Rootless}}'
 | Base image | Alpine 3.23.5 digest-pinned |
 | Host isolation (optional) | Rootless Podman: container escape = host user, not real root |
 
-**Tor version: 0.4.9.13** (2.1.0; the published 2.0.4 image runs 0.4.9.11)
+**Tor version: 0.4.9.14** (2.1.0; the published 2.0.4 image runs 0.4.9.11)

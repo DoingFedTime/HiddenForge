@@ -64,15 +64,20 @@ without verifying the archive, a `verify-image` that printed VERIFIED for a
 stripped post-quantum signature, and `--keys` and `--container` values that were
 both injectable into the compose fragment and the 0755 deploy script.
 
-### Fixed (audit, 2026-10-04)
+### Fixed (pin refresh, 2026-10-04 and 2026-10-19)
 
-- **The Dockerfile could not be built from scratch.** `python3=3.12.14-r0` and
-  `openssl=3.5.8-r0` had been pruned from Alpine's v3.23 index, so a `--no-cache`
-  build failed at `apk add` (a cached build hid it, which is how it went unseen).
-  Bumped to `python3=3.12.15-r0` and `openssl=3.5.9-r0`. The old python3 also
-  carried two HIGH CVEs with fixes available (CVE-2026-19553, CVE-2026-82049);
-  `trivy --severity HIGH,CRITICAL` on the rebuilt image reports 0. `scripts/check_pins.py`
-  passes against the live index. The base image digest is unchanged.
+- **The Dockerfile could not be built from scratch.** `tor=0.4.9.13-r0`,
+  `python3=3.12.14-r0` and `openssl=3.5.8-r0` had been pruned from Alpine's v3.23
+  index, so a `--no-cache` build failed at `apk add` (a cached build hid it, which
+  is how it went unseen). Bumped to `tor=0.4.9.14-r0`, `python3=3.12.15-r0` and
+  `openssl=3.5.9-r0`. The old python3 also carried HIGH CVEs with fixes available
+  (CVE-2026-19445, CVE-2026-19553, CVE-2026-82049); `trivy --severity HIGH,CRITICAL`
+  on the rebuilt image reports 0. `scripts/check_pins.py` passes against the live
+  index. The base image digest is unchanged.
+- **The CLI advertised a Tor version the image no longer installed.**
+  `TOR_VERSION` (shown by `info` and recorded in `manifest.json`) was a separate
+  constant that nothing compared with the Dockerfile's apk pin. A test now fails
+  if the two differ.
 
 ### Fixed (found by exercising the product, 2026-09-26)
 - **`backup` could report success over an archive with no key in it.** On a
@@ -702,7 +707,8 @@ existing `docker compose up -d` human path is unchanged.
   coverage floor, and a build job that runs the in-container torrc test, the CLI
   contract checks, a vanity smoke test, and the live acceptance suite. It targets
   the self-hosted runner labelled `docker` (compute is local). Publishing the image to
-  `sambent.dev` and signing it remain separate local steps.
+  `sambent.dev` and signing it remain separate local steps as deliberate
+  local steps.
 - **A working self-hosted runner**: Forgejo runner v13.1.0, SHA256-verified,
   registered to `sambent.dev` with host-mode labels `docker`/`ubuntu-latest`,
   so a push actually executes the CI. Actions are enabled for the repository.

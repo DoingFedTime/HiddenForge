@@ -75,7 +75,7 @@ ENV PIP_DISABLE_PIP_VERSION_CHECK=1
 # of other OpenSSL issues). Pin the fix so the image
 # does not silently depend on whichever OpenSSL the base happens to contain.
 RUN apk add --no-cache \
-    tor=0.4.9.13-r0 \
+    tor=0.4.9.14-r0 \
     python3=3.12.15-r0 \
     su-exec=0.3-r0 \
     py3-pip=25.1.1-r1 \

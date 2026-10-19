@@ -117,7 +117,7 @@
       "size": "64m"
     }
   ],
-  "tor_version": "0.4.9.13",
+  "tor_version": "0.4.9.14",
   "version": "2.1.0",
   "volumes": [
     {

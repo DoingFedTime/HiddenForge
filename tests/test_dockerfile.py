@@ -23,3 +23,16 @@ def test_every_tolerated_failure_is_grouped():
         if tolerated and not grouped:
             bare.append(f"{n}: {line.strip()}")
     assert not bare, "an ungrouped tolerated failure can excuse earlier steps:\n" + "\n".join(bare)
+
+
+def test_cli_tor_version_matches_the_dockerfile_pin():
+    """The CLI reports TOR_VERSION in `info` and manifest.json, but nothing tied it
+    to the apk pin the image actually installs. When Alpine pruned 0.4.9.13 and
+    the pin moved, the CLI kept advertising the old version. Read both and compare.
+    """
+    from loader import load_file
+
+    pins = re.findall(r"^\s*tor=([0-9.]+)-r\d+\b", DOCKERFILE.read_text(), re.M)
+    assert len(pins) == 1, f"expected exactly one tor apk pin, found {pins}"
+    cli = load_file(repo_root(__file__) / "scripts" / "hiddenforge", "hf_cli_torpin")
+    assert pins[0] == cli.TOR_VERSION
