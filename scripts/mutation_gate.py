@@ -172,10 +172,6 @@ ACCEPTED: dict[tuple[str, str, str], str] = {
      'vanguards_next_attempt = 1.0'):
         'An initialiser for a monotonic-clock comparison. time.monotonic() is far larger than any of these constants, so they all compare the same way.',
     ('entrypoint.main',
-     'vanguards_given_up    = False',
-     'vanguards_given_up    = None'):
-        'None and False are both falsy, and the value is only ever tested.',
-    ('entrypoint.main',
      'vanguards_next_attempt = 0.0',
      'vanguards_next_attempt = None'):
         'Two assignments share this text. At startup the mutant IS killed (a failed first start compares against it on the next tick). This survivor is the reset after a successful restart: it is never compared, because the next exit either gives up or assigns now + VANGUARDS_RETRY_DELAY before the comparison runs.',
@@ -363,6 +359,12 @@ DOCUMENTED_HANGS: dict[tuple[str, str, str], str] = {
      'if chunk:'):
         'The read loop ends on the empty chunk that means the control socket closed. '
         'Inverting it ends on the first byte instead and spins forever at EOF.',
+    ('healthcheck._read_address_file',
+     'fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)',
+     'fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW & os.O_NONBLOCK)'):
+        'O_NOFOLLOW & O_NONBLOCK is 0, so the open loses O_NONBLOCK (and O_NOFOLLOW). '
+        'The FIFO test then blocks in open() waiting for a writer that never comes; '
+        'that hang is the detection.',
     ('vanity._unique_archive_path',
      'n += 1',
      'n = 1'):
