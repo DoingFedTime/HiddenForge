@@ -78,14 +78,6 @@ ACCEPTED: dict[tuple[str, str, str], str] = {
      'for root, dirs, files in os.walk(path, followlinks=False):',
      'for root, dirs, files in os.walk(path, ):'):
         "False IS os.walk's default for followlinks, so the mutant asks for the behaviour that was already in force. The mutant that sets it to True is killed by tests/test_privileged_fs.py.",
-    ('entrypoint._chmod_dir_nofollow',
-     '',
-     ''):
-        'Docstring text. No code changed.',
-    ('entrypoint._kill_proc',
-     '',
-     ''):
-        'Docstring text. No code changed.',
     ('entrypoint.signal_handler',
      '_kill_proc(_tor_process,       "Tor",       timeout=10)',
      '_kill_proc(_tor_process,       "Tor",       )'):
@@ -146,10 +138,6 @@ ACCEPTED: dict[tuple[str, str, str], str] = {
      "fh.write(onion.encode('ascii') + b'\\n')",
      "fh.write(onion.encode('ASCII') + b'\\n')"):
         'Codec names are normalised case-insensitively; this is the same codec.',
-    ('entrypoint.wait_for_socket',
-     '',
-     ''):
-        'Docstring text. No code changed.',
     ('entrypoint._permitted_capabilities',
      'header = _CapHeader(_LINUX_CAPABILITY_VERSION_3, 0)',
      'header = _CapHeader(_LINUX_CAPABILITY_VERSION_3, )'):
@@ -163,10 +151,6 @@ ACCEPTED: dict[tuple[str, str, str], str] = {
      'data[0].inheritable = 0',
      'data[1].inheritable = 0'):
         "data[0].inheritable is already zero from the array's zero-initialisation, and data[1].inheritable is set to 0 on the next line regardless.",
-    ('entrypoint._assert_process_dropped',
-     '',
-     ''):
-        'Docstring text. No code changed.',
     ('entrypoint._assert_process_dropped',
      "status = Path(f'/proc/{proc.pid}/status').read_text(encoding='ascii')",
      "status = Path(f'/proc/{proc.pid}/status').read_text(encoding=None)"):
@@ -273,10 +257,6 @@ ACCEPTED: dict[tuple[str, str, str], str] = {
      'archived = None',
      'archived = ""'):
         'Empty string and None are both falsy, and the value is only ever tested.',
-    ('vanity._run_mkp224o',
-     '',
-     ''):
-        'Docstring text. No code changed.',
     ('vanity.benchmark',
      'while time.monotonic() < deadline:',
      'while time.monotonic() <= deadline:'):
@@ -323,10 +303,6 @@ ACCEPTED: dict[tuple[str, str, str], str] = {
      'os.chown(path, uid, gid, follow_symlinks=False)',
      'os.chown(path, uid, gid, follow_symlinks=None)'):
         "os.chown parses follow_symlinks as a truth value and None is falsy, so the call is still an lchown. Measured on a symlink: with follow_symlinks=None the link's ctime changed and its target's did not, exactly as with False.",
-    ('entrypoint._name_from_status',
-     "match = re.search(r'^Name:\\s+(\\S+)', status_text, re.M)",
-     "match = re.search(r'^Name:\\s+(\\S+)', status_text, )"):
-        '/proc/<pid>/status always begins with its Name: line (checked: `head -1 /proc/self/status`), so ^ matches at the start of the text with or without re.M.',
     ('entrypoint._publish_addresses',
      'created = False',
      'created = None'):
@@ -343,14 +319,6 @@ ACCEPTED: dict[tuple[str, str, str], str] = {
      'return data.decode("ascii").strip()',
      'return data.decode("ASCII").strip()'):
         "Codec names are case-insensitive: 'ASCII' and 'ascii' are the same codec.",
-    ('healthcheck._read_address_file',
-     '',
-     ''):
-        'Docstring text. No code changed.',
-    ('healthcheck.watch_uploads',
-     '',
-     ''):
-        'Docstring text. No code changed.',
     ('healthcheck.watch_uploads',
      'chunk = s.recv(65536)',
      'chunk = s.recv(65537)'):
@@ -513,10 +481,14 @@ class _Source:
 
     def body(self, name: str) -> list[str]:
         node = self.funcs[name]
-        # The def line differs between orig and mutant by name alone; blank it so
-        # the diff is the body.
-        body = self.lines[node.lineno - 1:node.end_lineno]
-        return ["", *body[1:]]
+        # The def line differs between orig and mutant by its NAME, so the name is
+        # normalised -- but only the name. This used to blank the whole def line,
+        # which also hid every mutation of a default argument (`timeout=10` ->
+        # `timeout=11`): such a mutant produced an empty diff and was accepted
+        # under the ('', '') "docstring" key without anyone seeing it.
+        lines = self.lines[node.lineno - 1:node.end_lineno]
+        first = lines[0].replace(f"def {name}(", "def _(", 1)
+        return [first, *lines[1:]]
 
     def diff(self, mutant: str) -> tuple[str, str]:
         base = mutant.rsplit("__mutmut_", 1)[0]

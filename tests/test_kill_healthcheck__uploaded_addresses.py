@@ -44,7 +44,7 @@ def _records_cap(hc):
 def test_a_uploads_file_over_the_size_cap_is_nothing_uploaded(hc, tmp_path):
     """The cap is passed through: a 200 KiB uploads file exceeds
     UPLOADS_MAX_BYTES and _read_address_file answers None, so no address is
-    believed uploaded. Dropping the cap argument makes the read succeed."""
+    believed uploaded."""
     path = tmp_path / "hs-uploaded"
     # Random ASCII, no newlines: a truncated prefix cannot accidentally contain
     # an address, so only the cap determines the answer.

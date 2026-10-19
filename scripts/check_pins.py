@@ -122,11 +122,16 @@ def fetch_index(branch: str, arch: str) -> dict[str, list[str]]:
                     name = line[2:].strip()
                 elif line.startswith("V:") and name:
                     index.setdefault(name, []).append(line[2:].strip())
+    if not index:
+        _unavailable(f"the {branch}/{arch} index listed no packages")
     return index
 
 
 def main() -> int:
+    # exit_on_error alone does not cover unknown options, so usage errors are
+    # mapped here: exit 2 means "a pin is gone" and must not mean "bad flag".
     ap = argparse.ArgumentParser(description=__doc__)
+    ap.error = lambda message: _unavailable(f"usage: {message}")  # type: ignore[method-assign]
     ap.add_argument("--branch", default="v3.23")
     ap.add_argument("--arch", default="x86_64")
     ap.add_argument("--json", action="store_true")

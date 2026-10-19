@@ -4,6 +4,7 @@ These pin what an operator relies on: the uploaded-address file is written with
 exactly 0600 permissions, a symlink planted at the temp path is never followed,
 and the file content is sorted ASCII with one address per line.
 """
+import codecs
 import os
 
 import pytest
@@ -104,7 +105,7 @@ def _strict_open(wants):
 
 def test_the_temp_file_is_opened_with_wronly_create_excl_and_no_follow(
         hc, tmp_path, monkeypatch):
-    """All four safety flags must reach os.open, and no others are invented.
+    """All four safety flags must reach os.open.
 
     (Dropping O_NOFOLLOW by AND-ing it with O_EXCL cannot be seen by any file
     operation -- O_EXCL already refuses a symlink or an existing path -- so this
@@ -161,13 +162,10 @@ def test_a_non_ascii_locale_cannot_change_what_is_written(hc, tmp_path, monkeypa
     assert p.read_text() == f"{OTHER}\n"
 
 
-def test_the_encoding_passed_to_fdopen_is_exactly_the_name_ascii(hc, tmp_path):
-    """Encoding names are resolved by string identity, not case-insensitively.
-
-    'ASCII' is a *different* lookup key from 'ascii', and no encoding at all
-    means the locale is consulted -- so the name actually requested is what
-    decides which codec (and which bytes, under a non-ascii locale) is used.
-    """
+def test_the_file_is_written_with_the_ascii_codec(hc, tmp_path):
+    """No encoding at all would mean the locale decides which bytes are written.
+    The codec is compared, not the spelling: codec names are case-insensitive,
+    so "ASCII" and "ascii" are the same codec."""
     real_fdopen = os.fdopen
     requested = []
 
@@ -180,4 +178,5 @@ def test_the_encoding_passed_to_fdopen_is_exactly_the_name_ascii(hc, tmp_path):
         hc._write_uploaded(str(tmp_path / "hs-uploaded"), {ONION})
     finally:
         hc.os.fdopen = real_fdopen
-    assert requested == ["ascii"]
+    assert len(requested) == 1 and requested[0] is not None
+    assert codecs.lookup(requested[0]).name == "ascii"

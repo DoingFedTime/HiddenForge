@@ -75,7 +75,7 @@ def test_check_pins_exits_3_when_it_cannot_check():
 
 
 
-@pytest.mark.parametrize("failure", ["reset", "partial", "junk", "no-index"])
+@pytest.mark.parametrize("failure", ["reset", "partial", "junk", "no-index", "empty-index"])
 def test_check_pins_never_mistakes_a_bad_download_for_an_answer(failure, monkeypatch, capsys):
     """Every way of not getting the index is exit 3, not a traceback (exit 1)."""
     import gzip
@@ -107,9 +107,28 @@ def test_check_pins_never_mistakes_a_bad_download_for_an_answer(failure, monkeyp
             raise http.client.IncompleteRead(b"x")
         if failure == "junk":
             return Resp(gzip.compress(b"not a tar"))
+        if failure == "empty-index":
+            buf = io.BytesIO()
+            with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+                info = tarfile.TarInfo("APKINDEX")
+                info.size = 0
+                tar.addfile(info, io.BytesIO(b""))
+            return Resp(buf.getvalue())
         return Resp(empty_tar())
 
     monkeypatch.setattr(cp.urllib.request, "urlopen", fake)
     with pytest.raises(SystemExit) as exc:
         cp.fetch_index("v3.23", "x86_64")
     assert exc.value.code == 3
+
+
+
+def test_check_pins_usage_errors_are_not_mistaken_for_a_pruned_pin():
+    """argparse exits 2 on a bad option, which is also "a pin is gone"."""
+    import subprocess
+    import sys
+
+    proc = subprocess.run([sys.executable, str(repo_root(__file__) / "scripts" / "check_pins.py"),
+                           "--no-such-option"], capture_output=True, text=True, timeout=60,
+                          check=False)
+    assert proc.returncode == 3, (proc.returncode, proc.stderr)

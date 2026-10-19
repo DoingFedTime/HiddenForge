@@ -81,7 +81,6 @@ class Harness:
 
 def make_supervisor(monkeypatch, tmp_path):
     """Run main() headless. Returns (exit_code, harness)."""
-    """Run main() headless. Returns (exit_code, harness)."""
 
     def run(tor_polls=(0,), vanguards_polls=(1,), *, vanguards_lives=None,
             hs_dirs=("/keys/app",),

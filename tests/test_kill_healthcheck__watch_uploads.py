@@ -1,8 +1,10 @@
 """Kill the surviving mutants of healthcheck.watch_uploads.
 
-Same style as tests/test_healthcheck.py: the control socket is a real AF_UNIX
-server that speaks Tor's control protocol back, and the clock is monkeypatched
-so no test ever sleeps for real.
+The control socket is SCRIPTED: each recv() returns exactly the chunk a test
+lists. A real AF_UNIX socket may merge two sends into one read, which made the
+split-line tests pass without ever splitting anything (measured: a "split"
+event really arrived split in 306 of 400 runs). The clock is monkeypatched so
+no test sleeps for real.
 
 The line-length tests are deliberately shaped around how the watcher drains the
 socket. The watcher is a line reader that appends every chunk and, once it has
@@ -13,9 +15,6 @@ merged "line" then never starts with `650`. That is what makes the 1 MiB cap
 observable -- with the cap in place the junk is thrown away and the next event
 parses; with the cap loosened (or removed) the junk stays and swallows it.
 """
-import socket
-import threading
-
 import pytest
 
 from loader import load_file, source_path
@@ -34,27 +33,53 @@ ONION = "atdorl67o6q7anir2qm3sly4expi3ywvs2ltw3wl53zezgycohzi2zqd"
 OTHER = "b" * 56
 
 
+_SCRIPTS: dict[str, tuple[list, list]] = {}
+
+
+class _ScriptedSocket:
+    """Connects only to a path _fake_tor registered; recv() replays its chunks
+    one per call, then b"" (Tor closing the connection)."""
+
+    def __init__(self, *a, **k):
+        self.chunks: list = []
+        self.received: list = []
+
+    def connect(self, path):
+        if path not in _SCRIPTS:
+            raise FileNotFoundError(2, "No such file or directory", path)
+        chunks, self.received = _SCRIPTS[path]
+        self.chunks = list(chunks)
+
+    def sendall(self, data):
+        self.received.append(data)
+
+    def recv(self, n):
+        return self.chunks.pop(0) if self.chunks else b""
+
+    def close(self):
+        return None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+@pytest.fixture(autouse=True)
+def _scripted_control_socket(hc, monkeypatch):
+    _SCRIPTS.clear()
+    monkeypatch.setattr(hc.socket, "socket", _ScriptedSocket)
+    yield
+    _SCRIPTS.clear()
+
+
 def _fake_tor(tmp_path, chunks, received=None):
-    """A control socket that answers with `chunks`, then closes (Tor exiting)."""
+    """Register a control socket that answers with `chunks`, then closes."""
     if received is None:
         received = []
     sock_path = str(tmp_path / "control.sock")
-    srv = socket.socket(socket.AF_UNIX)
-    srv.bind(sock_path)
-    srv.listen(1)
-
-    def serve():
-        conn, _ = srv.accept()
-        received.append(conn.recv(4096))
-        for c in chunks:
-            try:
-                conn.sendall(c)
-            except OSError:                 # the watcher walked away; fine
-                break
-        conn.close()
-        srv.close()
-
-    threading.Thread(target=serve, daemon=True).start()
+    _SCRIPTS[sock_path] = (list(chunks), received)
     return sock_path
 
 
