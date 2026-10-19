@@ -77,6 +77,15 @@ for, on any module that stopped being graded, and on any mutant that hangs
 without a written reason. It was itself checked for the opposite failure on each
 of those paths by removing an entry and confirming it goes red.
 
+Re-run on the release tree (2026-10-19): **2,724 mutants, 2,647 killed (97.2%),
+73 survived, every one explained**, 4 documented hangs. Getting there fixed two
+defects in the measurement itself. Two healthcheck test files loaded the module
+under another name, and mutmut picks mutants by `__name__`, so those tests never
+saw a mutant. And the gate blanked each function's `def` line before diffing,
+which hid every mutation of a default argument; seven allowlist entries existed
+only because of that, and are gone. The defaults that decide timing and limits
+are now pinned by `tests/test_kill_defaults.py`.
+
 Three things this work had left unmeasured are now measured rather than argued:
 the `mutation` CI job was executed end to end with `forgejo-runner exec` and
 reproduced the result from a clean hash-pinned venv (`Job succeeded`); the live
