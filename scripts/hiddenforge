@@ -3131,8 +3131,19 @@ def cmd_verify_image(args) -> int:
             failures.append(f"could not resolve registry digest: {reg_err}")
         elif not digest_match:
             failures.append("registry digest does not match the signed digest")
-        if ssh_ok is not True:
+        if ssh_ok is False:
             failures.append(f"SSH-FIDO2 signature: {ssh_detail}")
+        elif ssh_ok is None:
+            # Missing, or no ssh-keygen to check it: the same "not checked" state
+            # as the ML-DSA half below, refused by default for the same reason.
+            # A release can carry the ML-DSA signature before the hardware key is
+            # available to make the SSH-FIDO2 one; accepting that is explicit.
+            unchecked.append(f"SSH-FIDO2 signature: {ssh_detail}")
+            if not args.allow_pq_only:
+                failures.append(
+                    f"SSH-FIDO2 signature was not verified ({ssh_detail}); half a "
+                    "hybrid signature is not a verified image. Pass "
+                    "--allow-pq-only to accept the ML-DSA signature alone")
         if pq_ok is False:
             failures.append(f"ML-DSA signature: {pq_detail}")
         elif pq_ok is None:
@@ -3148,10 +3159,13 @@ def cmd_verify_image(args) -> int:
                     f"ML-DSA signature was not verified ({pq_detail}); half a "
                     "hybrid signature is not a verified image. Pass "
                     "--allow-classical-only to accept the SSH-FIDO2 signature alone")
+        if ssh_ok is not True and pq_ok is not True:
+            # Both opt-outs together must not add up to accepting nothing.
+            failures.append("neither signature was verified")
         ok = not failures
         # `ok`: nothing refused the image. `complete`: nothing was left unrun.
         # They differ only when the operator opted out of a check explicitly
-        # (--skip-registry, --allow-classical-only).
+        # (--skip-registry, --allow-classical-only, --allow-pq-only).
         complete = ok and not unchecked
 
         doc = {
@@ -3355,6 +3369,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--allow-classical-only", action="store_true",
                     help="accept the image when the ML-DSA half could not be checked "
                          "(reported as complete: false)")
+    sp.add_argument("--allow-pq-only", action="store_true",
+                    help="accept the image when the SSH-FIDO2 half is missing or could "
+                         "not be checked (reported as complete: false)")
     sp.add_argument("--allowed-signers", default=None,
                     help="trust this ssh allowed_signers file instead of the pinned "
                          "release keys (for images you or someone else signed)")

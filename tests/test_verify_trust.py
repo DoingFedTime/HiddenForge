@@ -211,3 +211,63 @@ def test_a_digest_changed_by_one_byte_fails_with_openssl(hf):
     verdict, detail = hf._verify_mldsa_signature(
         SIGNATURES, (SIGNATURES / "hiddenforge.digest").read_bytes() + b" ")
     assert verdict is False, detail
+
+
+# ── The SSH-FIDO2 half missing (a release signed before the hardware key) ───
+
+def _without_hardware_sig(tmp_path: Path) -> Path:
+    d = tmp_path / "sig"
+    shutil.copytree(SIGNATURES, d)
+    (d / "hiddenforge.digest.sig").unlink()
+    return d
+
+
+def _mldsa_verified(monkeypatch, hf, verdict=True):
+    monkeypatch.setattr(hf, "_verify_mldsa_signature",
+                        lambda d, b, t=None: (verdict, "ML-DSA-65 via test"))
+
+
+def test_a_missing_hardware_signature_is_refused_by_default(hf, tmp_path, capsys,
+                                                             monkeypatch):
+    """Deleting the .sig must not quietly reduce the hybrid to one signature."""
+    _mldsa_verified(monkeypatch, hf)
+    rc, doc = _verify(hf, capsys, _without_hardware_sig(tmp_path))
+    assert rc == hf.EXIT_FAIL
+    assert doc["ssh_fido2"] is None
+    assert any("--allow-pq-only" in f for f in doc["failures"])
+
+
+def test_allow_pq_only_accepts_the_ml_dsa_signature_alone(hf, tmp_path, capsys,
+                                                           monkeypatch):
+    _mldsa_verified(monkeypatch, hf)
+    rc, doc = _verify(hf, capsys, _without_hardware_sig(tmp_path), "--allow-pq-only")
+    assert rc == 0
+    assert doc["mldsa"] is True and doc["ssh_fido2"] is None
+    assert doc["complete"] is False
+    assert any(u.startswith("SSH-FIDO2 signature:") for u in doc["unchecked"])
+
+
+def test_allow_pq_only_does_not_excuse_a_bad_hardware_signature(hf, tmp_path, capsys,
+                                                                 monkeypatch):
+    """The flag covers a MISSING half, never a wrong one."""
+    _mldsa_verified(monkeypatch, hf)
+    d = _forged_set(tmp_path, keep_real_signers=False)
+    rc, doc = _verify(hf, capsys, d, "--allow-pq-only")
+    assert rc == hf.EXIT_FAIL and doc["ssh_fido2"] is False
+
+
+def test_allow_pq_only_does_not_excuse_a_failed_ml_dsa_signature(hf, tmp_path, capsys,
+                                                                  monkeypatch):
+    _mldsa_verified(monkeypatch, hf, verdict=False)
+    rc, doc = _verify(hf, capsys, _without_hardware_sig(tmp_path), "--allow-pq-only")
+    assert rc == hf.EXIT_FAIL and doc["mldsa"] is False
+
+
+def test_both_opt_outs_together_never_accept_an_unsigned_image(hf, tmp_path, capsys,
+                                                                monkeypatch):
+    """Each flag accepts one missing half. Passing both must not accept zero."""
+    _mldsa_verified(monkeypatch, hf, verdict=None)
+    rc, doc = _verify(hf, capsys, _without_hardware_sig(tmp_path),
+                      "--allow-pq-only", "--allow-classical-only")
+    assert rc == hf.EXIT_FAIL
+    assert "neither signature was verified" in doc["failures"]

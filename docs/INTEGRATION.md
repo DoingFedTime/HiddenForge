@@ -350,7 +350,10 @@ A hybrid signature with one half unexamined is **not verified**: if the ML-DSA
 signature is missing from the set, or neither OpenSSL 3.5+ nor `pqsign` is
 available to check it, the command
 fails (exit 1). `--allow-classical-only` accepts the SSH-FIDO2 signature alone,
-and the result then reports `complete: false`. `--skip-registry` verifies the
+and `--allow-pq-only` accepts the ML-DSA signature alone when the SSH-FIDO2 one
+is missing (a release signed before the hardware key was available); either
+way the result reports `complete: false`, and an image with neither signature
+verified is refused even with both flags. `--skip-registry` verifies the
 signatures without comparing the registry, and is likewise reported as
 `complete: false`. Result fields: `registry_digest`, `signed_digest`,
 `digest_match`, `ssh_fido2`, `mldsa`, `trust_anchor`, `failures`, `unchecked`,

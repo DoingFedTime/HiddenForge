@@ -85,7 +85,9 @@ bytes.
 the signature directory it is checking: before this was fixed, a directory with a
 substituted key and a matching signature verified as `VERIFIED`, complete. Both
 halves of the hybrid signature are required unless the operator passes
-`--allow-classical-only`. The limit, stated plainly: a pin in the CLI protects
+`--allow-classical-only` or `--allow-pq-only` to accept one half missing; a
+present-but-wrong signature is never excused, and both flags together still
+refuse an image with no verified signature. The limit, stated plainly: a pin in the CLI protects
 against a tampered signature directory, not against a tampered CLI. If both came
 from the same compromised clone, the pin is compromised with them, so the key
 fingerprints in `signatures/README.md` should also be checked against a copy

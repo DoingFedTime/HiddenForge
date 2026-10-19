@@ -279,8 +279,9 @@ tooling, and the ML-DSA + hardware pair is the attestation.
 
 The CLI wraps the digest check and both signature checks in one command. It
 verifies against the pinned keys, never against keys found in the signature
-directory, and it refuses (exit 1) when the ML-DSA half cannot be checked unless
-you pass `--allow-classical-only`. It reads the signatures from `./signatures`,
+directory, and it refuses (exit 1) when either half of the signature cannot be
+checked, unless you accept that half's absence explicitly: `--allow-classical-only`
+when the ML-DSA half is missing, `--allow-pq-only` when the SSH-FIDO2 half is. It reads the signatures from `./signatures`,
 so run it from the root of this repository or pass `--sigdir`:
 
 ```bash
