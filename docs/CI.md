@@ -23,13 +23,15 @@ All jobs use `runs-on: docker` / `ubuntu-latest`, both mapped to **host mode** o
 the runner, so job steps execute directly on that machine and have `docker`, `git` and
 `python3` available.
 
-Publishing the image to `sambent.dev` and signing the digest are **not** in the
-workflow. They are deliberate local steps:
+Publishing the image and signing its digest are **not** in the workflow. They
+are deliberate local steps on the maintainer's machine:
 
-- build, scan, make the SBOM and push the image
-- sign the pushed digest (ML-DSA-65, and SSH-FIDO2 on a hardware key)
+- build the release from a clean checkout of the tag with the reproducible
+  recipe in `signatures/README.md`, scan it, and push the same digest to
+  `sambent.dev` and Docker Hub
+- sign the index digest: ML-DSA-65, and SSH-FIDO2 on a hardware key
 
-Signing needs the physical key, so it can never run in CI.
+The hardware signature needs the physical key, so it can never run in CI.
 
 ### A tag is the release gate
 

@@ -1,12 +1,13 @@
 # HiddenForge branch record: 2.1.0
 
-> **Superseded in three places (2026-09-25).** This record is kept as written,
-> but these lines are no longer true and the code wins: **E4**, the CLI now
-> reads the secret key's bytes in `backup` and `encrypt-key`, to encrypt them,
-> and never prints them; **C4**, the address file is written only once the
-> service is reachable, not as soon as Tor writes the key; and **R6 in OPEN**,
-> the arm64 image has since been built twice under qemu with identical digests
-> and passes the in-image checks (see `docs/PRODUCTION-READINESS.md`).
+> **Superseded in five places (2026-09-25 and 2026-10-19).** This record is
+> kept as written, but these lines are no longer true and the code wins: **E4**,
+> the CLI now reads the secret key's bytes in `backup` and `encrypt-key`, to
+> encrypt them, and never prints them; **C4**, the address file is written only
+> once the service is reachable, not as soon as Tor writes the key; **I2**, the
+> apk pins did move (tor, python3, openssl, zlib; see the CHANGELOG); **I3**, the
+> compose file changed in ways an operator must act on (see "Upgrading from
+> 2.0.4" in the README); and **R6 in OPEN**, now closed below.
 
 **Closed 2026-09-12 at commit `7913514`.** This is a record of what this branch
 changed and why, not a promise of future work. Sections A to I are the completed
@@ -27,7 +28,7 @@ deliberate decision not to do (reason given).
 
 - [x] **A1** Host CLI `scripts/hiddenforge`, stdlib-only, subcommands
   `setup · info · version · show · status · doctor · vanity · backup · restore ·
-  rotate · encrypt-key · decrypt-key`.
+  rotate · encrypt-key · decrypt-key`, later joined by `verify-image · sbom`.
 - [x] **A2** `setup` emits a mergeable `compose.service.yml` (service, both
   networks, key volume, caps, read-only/tmpfs/security-opt, env, healthcheck) so
   a consumer runs `docker compose -f their.yml -f compose.service.yml up -d`
@@ -115,9 +116,9 @@ deliberate decision not to do (reason given).
 - [x] **F2** New Python is stdlib-only (no new pip deps, no new attack surface).
 - [x] **F3** New files covered by `.dockerignore` whitelist (no accidental
   context bloat, no secrets in layers).
-- [ ] **F4** Regenerate release signatures/SBOM for the new image digest. OPEN
-  (needs the signing hardware; this branch is built and verified but not signed).
-  See OPEN below.
+- [ ] **F4** Regenerate release signatures/SBOM for the new image digest. The
+  2.1.0 digest is signed with ML-DSA-65 and the SBOM ships with the release; the
+  hardware (SSH-FIDO2) signature is still to come. See OPEN below.
 
 ## G. Docs
 
@@ -166,17 +167,15 @@ These are the only items in this document that are not DONE or a deliberate
 non-change. Each is open for a stated reason, and none is silently implied to be
 finished:
 
-- **F4: sign the 2.1.0 digest.** The branch is built, scanned, E2E-tested
-  and reproducible (`docs/PRODUCTION-READINESS.md`), and the evidence bundle is
-  ready (`scripts/collect_evidence.py`). It is **not signed and not pushed**: that
-  needs the YubiKey and the ML-DSA key, which are hardware-local and are never
-  brought into CI. `signatures/README.md` states plainly that `2.1.0` is unsigned,
-  so a digest mismatch reads as "not yet signed", not "tampered with".
-- **R6: arm64 is unverified.** No arm64 builder is available to this environment
-  (no qemu `binfmt_misc`, no engine that runs arm64). The base index and every pinned
-  apk were checked to exist for aarch64, but the arm64 image has never been built.
-  Run `docker buildx build --platform linux/arm64,linux/amd64 .` on a builder that
-  can, then record the arm64 manifest digest.
+- **F4: the hardware half of the 2.1.0 signature.** 2.1.0 was released
+  signed with ML-DSA-65 only, because the YubiKey that holds the SSH-FIDO2 key
+  was not available. The hardware signature will be made over the same digest
+  and added to `signatures/` and the release, with no rebuild and no new image.
+  Until then `verify-image` reports the ML-DSA half as verified and the hardware
+  half as missing; `signatures/README.md` says so.
+- **R6 (closed 2026-09-26).** The arm64 image is built in the same two-platform
+  index as amd64, reproduces to the same digest, and boots in a full-system arm64
+  VM (`docs/PRODUCTION-READINESS.md` R1, R6). It has not run on real ARM hardware.
 - **Continuous pin-freshness (`scripts/check_pins.py`).** Pins are CVE-driven by
   hand today; the scheduled job reports when a pinned apk disappears from the
   Alpine index or a newer one exists, but bumping remains a reviewed decision.

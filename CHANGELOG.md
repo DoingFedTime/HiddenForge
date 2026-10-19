@@ -2,14 +2,68 @@
 
 All notable changes to HiddenForge are documented here.
 
-**What is published:** the latest released image is **2.0.4**
-(`sha256:063d824c...`, signed; see `signatures/`). Everything under 2.1.0 below
-is in this tree but not yet tagged, published or signed, and `v2.0.5` is a git
-tag with no image of its own: its changes ship with 2.1.0.
+The latest release is **2.1.0**; its image digest and signatures are in
+`signatures/`. `v2.0.5` is a git tag with no image of its own: its changes ship
+with 2.1.0.
 
 ---
 
-## [2.1.0] - unreleased
+## [2.1.0] - 2026-10-19
+
+### Summary
+
+- **A host CLI and a machine contract.** `hiddenforge setup`, `show`, `status`,
+  `doctor`, `verify-image`, `sbom`, `backup`/`restore`, `encrypt-key`, `rotate`,
+  `vanity` and more, plus `version --json` / `info --json` and `manifest.json`,
+  so another program can adopt HiddenForge without reading the source. 2.0.4 had
+  none of this.
+- **Readiness means reachable.** `ready` is reported only after this Tor has
+  uploaded the onion service descriptor, so a client can connect the moment it
+  is reported.
+- **It heals itself.** A backend that changes IP, comes up late, or is missing
+  at boot is followed automatically; Vanguards is paused and retried rather than
+  given up; Tor dying restarts the container with the same address.
+- **Rootless Podman is supported end to end**, including real reboots.
+- **Reproducible two-platform image** (amd64 and arm64): two independent builds
+  from a clean checkout produce the same index digest.
+- **Security fixes** (below), including the end of `seccomp=unconfined`.
+
+### Security
+
+- **`seccomp=unconfined` removed from both compose files.** It was justified by
+  a claim that Tor's `Sandbox 1` needs it, which was false: Tor's sandbox is an
+  in-process filter that stacks on the runtime's profile. Running unconfined
+  left the root Python supervisor and Vanguards with no syscall filter at all.
+  The engine's default profile now applies, and `doctor` fails a container that
+  still sets `unconfined`.
+- **Pinned packages refreshed:** `tor` 0.4.9.11 to 0.4.9.14, `python3` to
+  3.12.15 (clears CVE-2026-19445, CVE-2026-19553, CVE-2026-82049), `openssl`
+  pinned explicitly at 3.5.9 instead of the base image's vulnerable 3.5.7
+  (CVE-2026-14456 and others), `zlib` pinned at 1.3.2-r1 (CVE-2026-85091, a heap
+  overflow on data Tor receives from relays). `trivy` reports no known
+  vulnerability in the image at any severity.
+- **pip:** `setuptools` 82.0.1 to 84.0.0 (CVE-2026-59890; build-only, removed
+  from the final image), and the unused Python 2 `ipaddress` backport removed so
+  it no longer shadows a stdlib module.
+- `ulimits.nproc` removed: it is counted per host uid, so on a busy host it
+  stopped Tor from starting at all. `pids_limit` remains the cap.
+- No DNS query leaves the tor container (`dns: 127.0.0.1`).
+
+### Upgrading from 2.0.4
+
+Keys, the key volume layout and `*_TOR_SERVICE_HOSTS` are unchanged, and an
+upgrade followed by a rollback keeps the same onion address. A compose file
+copied from 2.0.4 needs these changes: remove `seccomp=unconfined` and
+`ulimits.nproc`; add `dns: 127.0.0.1`; keep a restart policy (it is now
+required, because the container exits on purpose to pick up a moved backend).
+`ready` arrives later than before, and a key volume with a symlinked service
+directory or hard-linked key files is now refused at startup. The README section
+"Upgrading from 2.0.4" has the table.
+
+### Detailed record
+
+Everything below is the full record of the 2.1.0 work, newest first within each
+round, including defects that were found and fixed before release.
 
 Mutation testing works, and the code it found wrong is fixed. The previous
 artifact recorded 787 generated mutants and **0 checked**. A full run now reports
@@ -711,8 +765,7 @@ existing `docker compose up -d` human path is unchanged.
   coverage floor, and a build job that runs the in-container torrc test, the CLI
   contract checks, a vanity smoke test, and the live acceptance suite. It targets
   the self-hosted runner labelled `docker` (compute is local). Publishing the image to
-  `sambent.dev` and signing it remain separate local steps as deliberate
-  local steps.
+  `sambent.dev` and signing it remain separate, deliberate local steps.
 - **A working self-hosted runner**: Forgejo runner v13.1.0, SHA256-verified,
   registered to `sambent.dev` with host-mode labels `docker`/`ubuntu-latest`,
   so a push actually executes the CI. Actions are enabled for the repository.

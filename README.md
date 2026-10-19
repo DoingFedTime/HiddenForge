@@ -10,12 +10,9 @@ docker pull doingfedtime/hiddenforge      # Docker Hub
 Both serve the identical digest, and the same signatures verify either one; use
 whichever you prefer.
 
-> **Which version this README describes.** This README describes **2.1.0**,
-> which is not yet published. `:latest` on both registries is **2.0.4** (Tor
-> 0.4.9.11, signed). 2.0.4 runs the onion service from the compose file, but it
-> has no `hiddenforge` CLI: `setup`, `show`, `status`, `doctor`, `verify-image`,
-> the in-image `version` / `info` commands and `manifest.json` all arrive with
-> 2.1.0. On 2.0.4, `docker run <image> version --json` just starts Tor.
+> **Upgrading from 2.0.4?** Your keys and onion address carry over, but the
+> compose file changed in ways a copy of the 2.0.4 file will not pick up. Read
+> [Upgrading from 2.0.4](#upgrading-from-204) first.
 
 **Verify what you pulled** (signatures + reproducible build): the [verification guide](https://sambent.dev/sam/HiddenForge/wiki/Verifying-the-Image).
 
@@ -142,6 +139,27 @@ The only two lines you need to edit are flagged with `<-- EDIT`.
 - `TOR_SANDBOX` set to `0` disables `Sandbox 1` (default: `1`)
 
 ---
+
+## Upgrading from 2.0.4
+
+Your key directory and `*_TOR_SERVICE_HOSTS` lines carry over unchanged, and the
+onion address stays the same: upgrading a 2.0.4 deployment to 2.1.0 and rolling
+it back were both tested with the same key. What changed is the compose file
+around them. If you wrote your own compose file from the 2.0.4 one, make these
+changes:
+
+| Change in 2.1.0 | What to do |
+|---|---|
+| `seccomp=unconfined` is gone; the engine's default seccomp profile now applies, stacked under Tor's own sandbox | Remove it. `hiddenforge doctor` fails a container that still sets it |
+| `ulimits.nproc` is gone | Remove it. It counts every process of uid 100 on the host, so on a busy host Tor could not start. `pids_limit: 256` is the cap |
+| `dns: 127.0.0.1` on the tor service | Add it, so an unresolved backend name never reaches an outside resolver. Name the backend by its compose service name; an external hostname will no longer resolve |
+| A restart policy is required | Keep `restart: unless-stopped` (Docker) or `always` (Podman). The container exits on purpose when a backend changes IP and relies on the restart to pick up the new address |
+| Readiness is stricter | `ready` now waits until Tor has uploaded the service descriptor, so it arrives later than in 2.0.4, and a container with no service configured never reports ready |
+| Startup refuses an unsafe key volume | A symlinked service directory, or key files with more than one hard link, stop the container with an error naming the path |
+| Podman uses `restart: always` and no healthcheck | Use the shipped `podman-compose.yml`; see [Rootless Podman](#rootless-podman-recommended-for-high-risk-deployments) |
+
+2.0.4 has no `hiddenforge` CLI: on 2.0.4, `docker run <image> version --json`
+just starts Tor. The full list of changes is in the [CHANGELOG](CHANGELOG.md).
 
 ## Supply Chain Security
 
@@ -444,8 +462,12 @@ declares no healthcheck. `hiddenforge status` runs the same check itself.
 | `CHOWN` | Required | Required |
 | `SETUID` / `SETGID` | Required | Required |
 
-The `podman-compose.yml` is otherwise identical to `docker-compose.yml`: same
-seccomp, read-only filesystem, tmpfs mounts, and Tor hardening.
+Otherwise `podman-compose.yml` carries the same hardening as `docker-compose.yml`
+(read-only filesystem, tmpfs mounts, the engine's default seccomp profile under
+Tor's own sandbox, the same Tor settings), with these differences: `restart:
+always` instead of `unless-stopped`, no healthcheck (above), three capabilities
+instead of five (above), and no explicit `apparmor=` option, because rootless
+Podman often cannot load the `docker-default` profile and applies its own.
 
 **What dropping `DAC_OVERRIDE` costs you, measured rather than predicted.** Tor
 writes `hostname` as `tor`, mode 0600, so the root supervisor cannot read it
