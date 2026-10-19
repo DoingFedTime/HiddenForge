@@ -17,7 +17,10 @@ HELP_TEXT = "record descriptor uploads until Tor exits (run by the entrypoint)"
 
 @pytest.fixture
 def hc():
-    return load_file(HEALTHCHECK_PATH, "healthcheck_leftovers")
+    # The module MUST be loaded as "healthcheck": mutmut's trampoline picks the
+    # mutant to run from the module's __name__, so under any other name these
+    # tests silently run the original code and kill nothing.
+    return load_file(HEALTHCHECK_PATH, "healthcheck")
 
 
 class ScriptedSocket:

@@ -13,7 +13,10 @@ HEALTHCHECK_PATH = source_path(__file__, "healthcheck.py")
 
 @pytest.fixture
 def hc():
-    return load_file(HEALTHCHECK_PATH, "healthcheck_main_flag")
+    # The module MUST be loaded as "healthcheck": mutmut's trampoline picks the
+    # mutant to run from the module's __name__, so under any other name these
+    # tests silently run the original code and kill nothing.
+    return load_file(HEALTHCHECK_PATH, "healthcheck")
 
 
 def test_watch_uploads_is_a_valueless_flag(hc, monkeypatch, capsys):
