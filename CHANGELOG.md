@@ -193,7 +193,10 @@ both injectable into the compose fragment and the 0755 deploy script.
   brought them back ready with the same address. The Podman files now use
   `always`, the README says to enable linger and the boot service, and
   `doctor` checks all three (and fails a container with no restart policy on
-  any engine, since the container heals by exiting and being restarted). On
+  any engine, since the container heals by exiting and being restarted; a
+  container run by a systemd unit whose main process is its conmon is a
+  warning to verify instead, since doctor cannot prove the unit recreates
+  it). On
   Docker, three real reboots each came back on their own with the same address.
 - **The generated `deploy.sh` misled.** It printed the address the moment Tor
   wrote the key (before it worked), told the operator to "check the container

@@ -391,7 +391,7 @@ output is stable). Requires the docker engine (for its socket). Exit `0` written
 | 1 | refused or failed (see stderr / the `error` field) |
 | 2 | usage, validation, or environment error |
 | 3 | a key appeared at the output path while a search was running |
-| 4 | not ready yet (`status`: not ready for any reason, see `reason`; `show`: no address yet) |
+| 4 | not ready yet (`status`: the container exists but is not ready, see `reason`; `show`: no address yet) |
 | 130 | aborted at an interactive prompt (empty answer, end of input, or Ctrl-C) |
 
 ### Using the image directly (no host CLI)

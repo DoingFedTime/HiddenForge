@@ -12,7 +12,9 @@ the exact version still exists in the pinned Alpine branch:
 
   - a pin whose exact version is GONE          -> exit 2 (the build will fail)
   - a pin with a newer version available       -> reported, exit 0 (a decision)
-  - the index cannot be fetched                -> exit 3 (never a false pass)
+  - the check could not be made                -> exit 3 (never a false pass):
+    the index could not be fetched, was empty or unreadable, or the
+    arguments were bad
 
 Exit 0 means every pinned version still exists. It does not mean they are current;
 that is a human call, and the report names what a human should look at.
