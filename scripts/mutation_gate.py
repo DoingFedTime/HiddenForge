@@ -317,6 +317,56 @@ ACCEPTED: dict[tuple[str, str, str], str] = {
      'return _emit(0, False, payload, "\\n".join(out))',
      'return _emit(0, False, None, "\\n".join(out))'):
         'In human mode _emit prints the prepared text and never looks at the payload.',
+    # Equivalent mutants found by the 2026-10-19 release run; every other
+    # survivor of that run is killed by a tests/test_kill_*.py test.
+    ('entrypoint._chown_one',
+     'os.chown(path, uid, gid, follow_symlinks=False)',
+     'os.chown(path, uid, gid, follow_symlinks=None)'):
+        "os.chown parses follow_symlinks as a truth value and None is falsy, so the call is still an lchown. Measured on a symlink: with follow_symlinks=None the link's ctime changed and its target's did not, exactly as with False.",
+    ('entrypoint._name_from_status',
+     "match = re.search(r'^Name:\\s+(\\S+)', status_text, re.M)",
+     "match = re.search(r'^Name:\\s+(\\S+)', status_text, )"):
+        '/proc/<pid>/status always begins with its Name: line (checked: `head -1 /proc/self/status`), so ^ matches at the start of the text with or without re.M.',
+    ('entrypoint._publish_addresses',
+     'created = False',
+     'created = None'):
+        '`created` is only ever tested for truth (`if created:`), and None is falsy like False.',
+    ('entrypoint._read_small_regular_file',
+     'data = os.read(fd, max_bytes + 1)',
+     'data = os.read(fd, max_bytes + 2)'):
+        'The read only has to return MORE than max_bytes for an oversized file to be refused; asking for max_bytes+1 or max_bytes+2 both do, and a file within the limit is returned whole either way.',
+    ('healthcheck._read_address_file',
+     'data = os.read(fd, max_bytes + 1)',
+     'data = os.read(fd, max_bytes + 2)'):
+        'The read only has to return MORE than max_bytes for an oversized file to be refused; asking for max_bytes+1 or max_bytes+2 both do, and a file within the limit is returned whole either way.',
+    ('healthcheck._read_address_file',
+     'return data.decode("ascii").strip()',
+     'return data.decode("ASCII").strip()'):
+        "Codec names are case-insensitive: 'ASCII' and 'ascii' are the same codec.",
+    ('healthcheck._read_address_file',
+     '',
+     ''):
+        'Docstring text. No code changed.',
+    ('healthcheck.watch_uploads',
+     '',
+     ''):
+        'Docstring text. No code changed.',
+    ('healthcheck.watch_uploads',
+     'chunk = s.recv(65536)',
+     'chunk = s.recv(65537)'):
+        "recv's size only decides where the byte stream is cut. Lines are reassembled from the buffer (tests/test_kill_healthcheck__leftovers.py proves a line split across reads is joined), so 65536 and 65537 record the same events.",
+    ('healthcheck.watch_uploads',
+     'fields = line.decode("ascii", "replace").split()',
+     'fields = line.decode("ASCII", "replace").split()'):
+        "Codec names are case-insensitive: 'ASCII' and 'ascii' are the same codec.",
+    ('entrypoint.main',
+     '_kill_proc(_tor_process, "Tor", timeout=10)',
+     '_kill_proc(_tor_process, "Tor", )'):
+        "The omitted keyword's default is the same 10 seconds.",
+    ('entrypoint.main',
+     'upload_watcher_next = 0.0',
+     'upload_watcher_next = 1.0'):
+        'upload_watcher_next is compared with time.monotonic(), which counts seconds since boot and is far above 1.0 by the time the supervisor loop runs, so the first restart attempt is due immediately with either starting value.',
 }
 
 # Mutants that really do remove a loop's exit condition. A hang IS detection, but

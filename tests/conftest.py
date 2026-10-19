@@ -86,3 +86,10 @@ def mock_dns(monkeypatch):
 
     monkeypatch.setattr(socket, "gethostbyname", fake_gethostbyname)
     return calls
+
+
+@pytest.fixture
+def supervisor(monkeypatch, tmp_path):
+    """Run entrypoint.main() headless; see tests/supervisor_harness.py."""
+    from supervisor_harness import make_supervisor
+    return make_supervisor(monkeypatch, tmp_path)
