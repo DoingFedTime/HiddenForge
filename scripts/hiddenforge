@@ -1212,7 +1212,72 @@ def _append_in_container_key_checks(checks: list[dict], container: str | None,
                 "key modes were not verified"))
 
 
-def _append_restart_checks(checks: list[dict], hc: dict) -> None:
+# A systemd unit name as `systemctl` accepts it. The name comes from a container
+# label, which anyone who can create a container controls, so it is checked
+# before it reaches argv: a value beginning with "-" would be read as an option.
+_UNIT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9@._:\\-]{0,250}\.service")
+
+
+def _systemd_unit_state(unit: str) -> dict[str, str] | None:
+    """Restart= and UnitFileState= of a loaded unit, user scope first, else None."""
+    if not _UNIT_NAME.fullmatch(unit):
+        return None
+    for scope in (["--user"], []):
+        r = _run(["systemctl", *scope, "show", unit,
+                  "--property=LoadState,Restart,UnitFileState"])
+        if r.returncode != 0:
+            continue
+        props = dict(line.split("=", 1) for line in r.stdout.splitlines() if "=" in line)
+        if props.get("LoadState") == "loaded":
+            return props
+    return None
+
+
+def _append_linger_check(checks: list[dict]) -> None:
+    user = os.environ.get("USER") or ""
+    linger = _run(["loginctl", "show-user", user, "--property=Linger"]) if user else None
+    checks.append(_check(bool(linger and linger.stdout.strip() == "Linger=yes"),
+                         "user services run without a login session (linger)",
+                         (linger.stdout.strip() or linger.stderr.strip()) if linger
+                         else "USER not set; run `loginctl enable-linger $USER`",
+                         severity="warn"))
+
+
+def _append_systemd_restart_checks(checks: list[dict], name: str, unit: str) -> None:
+    """The container has no engine restart policy because a systemd unit runs it.
+
+    Podman labels a container started by a unit with PODMAN_SYSTEMD_UNIT, and
+    there the unit's Restart= does the engine's job: when the container exits,
+    the unit's main process exits and systemd starts it again. So check the unit
+    rather than fail a deployment that heals correctly.
+    """
+    state = _systemd_unit_state(unit)
+    if state is None:
+        checks.append(_check(False, name,
+                             f"RestartPolicy=none; the container says systemd unit "
+                             f"{unit!r} runs it, but that unit could not be read. Set "
+                             "a restart policy or check the unit"))
+        return
+    restart = state.get("Restart", "")
+    checks.append(_check(restart == "always", name,
+                         f"RestartPolicy=none; run by systemd unit {unit} with "
+                         f"Restart={restart or 'no'}"
+                         + ("" if restart == "always" else
+                            "; set Restart=always in the unit")))
+    enabled = state.get("UnitFileState", "")
+    checks.append(_check(enabled == "enabled",
+                         "the container comes back after a reboot (its systemd unit "
+                         "is enabled)",
+                         f"{unit}: UnitFileState={enabled or 'unknown'}"
+                         + ("" if enabled == "enabled" else
+                            f"; run `systemctl --user enable {unit}`"),
+                         severity="warn"))
+    if _engine() == "podman":
+        _append_linger_check(checks)
+
+
+def _append_restart_checks(checks: list[dict], hc: dict,
+                           labels: dict | None = None) -> None:
     """The restart policy is how this container heals, so check it.
 
     It exits on purpose -- when Tor dies, when a backend moves, when a backend
@@ -1227,6 +1292,10 @@ def _append_restart_checks(checks: list[dict], hc: dict) -> None:
     policy = str(((hc.get("RestartPolicy") or {}).get("Name")) or "")
     name = "the container is restarted when it exits (restart policy)"
     if policy in ("", "no"):
+        unit = str((labels or {}).get("PODMAN_SYSTEMD_UNIT") or "")
+        if unit:
+            _append_systemd_restart_checks(checks, name, unit)
+            return
         checks.append(_check(False, name, f"RestartPolicy={policy or 'none'}; set "
                              "`restart: " + ("always" if eng == "podman" else
                                              "unless-stopped") + "`"))
@@ -1240,20 +1309,37 @@ def _append_restart_checks(checks: list[dict], hc: dict) -> None:
                          f"RestartPolicy={policy}" + ("" if policy == "always" else
                                                       "; set `restart: always`"),
                          severity="warn"))
-    user = os.environ.get("USER") or ""
-    linger = _run(["loginctl", "show-user", user, "--property=Linger"]) if user else None
-    checks.append(_check(bool(linger and linger.stdout.strip() == "Linger=yes"),
-                         "user services run without a login session (linger)",
-                         (linger.stdout.strip() or linger.stderr.strip()) if linger
-                         else "USER not set; run `loginctl enable-linger $USER`",
-                         severity="warn"))
-    unit = _run(["systemctl", "--user", "is-enabled", "podman-restart.service"])
-    checks.append(_check(unit.stdout.strip() == "enabled",
+    _append_linger_check(checks)
+    boot = _run(["systemctl", "--user", "is-enabled", "podman-restart.service"])
+    checks.append(_check(boot.stdout.strip() == "enabled",
                          "podman-restart.service is enabled (starts containers at boot)",
-                         (unit.stdout.strip() or unit.stderr.strip() or "unknown")
-                         + ("" if unit.stdout.strip() == "enabled" else
+                         (boot.stdout.strip() or boot.stderr.strip() or "unknown")
+                         + ("" if boot.stdout.strip() == "enabled" else
                             "; run `systemctl --user enable podman-restart.service`"),
                          severity="warn"))
+
+
+def _backend_names(env: list | None) -> set[str]:
+    """Backend hosts in *_TOR_SERVICE_HOSTS that would need a DNS lookup.
+
+    Mirrors the entrypoint's parsing: a `port:host:port` mapping names a host; a
+    `port:port` mapping targets 127.0.0.1. IP literals and `localhost` resolve
+    without DNS.
+    """
+    names: set[str] = set()
+    for item in env or []:
+        key, _, value = str(item).partition("=")
+        if not key.endswith("_TOR_SERVICE_HOSTS"):
+            continue
+        for mapping in value.split(","):
+            parts = mapping.strip().split(":")
+            if len(parts) != 3 or not parts[1] or parts[1].lower() == "localhost":
+                continue
+            try:
+                ipaddress.ip_address(parts[1])
+            except ValueError:
+                names.add(parts[1])
+    return names
 
 
 def cmd_doctor(args) -> int:
@@ -1389,7 +1475,7 @@ def cmd_doctor(args) -> int:
     checks.append(_check(logdriver == "none", "logging driver is 'none' (no host log)",
                          f"LogConfig.Type={logdriver!r}", severity="warn"))
 
-    _append_restart_checks(checks, hc)
+    _append_restart_checks(checks, hc, (info.get("Config") or {}).get("Labels"))
 
     # Without a loopback DNS server the engine's resolver forwards any name it
     # cannot answer -- a backend that is down or not up yet -- to the host's
@@ -1403,11 +1489,25 @@ def cmd_doctor(args) -> int:
             return ipaddress.ip_address(addr).is_loopback
         except ValueError:
             return False
-    checks.append(_check(bool(dns) and all(_loopback(d) for d in dns),
-                         "no DNS query leaves the container",
-                         f"Dns={dns!r}" + ("" if dns and all(_loopback(d) for d in dns)
-                                           else "; set `dns: 127.0.0.1` on the service"),
-                         severity="warn"))
+    if str(hc.get("NetworkMode") or "") == "host":
+        # A host-network container uses the host's resolver and cannot be given
+        # `dns:` at all. What matters is whether any backend is a NAME: an IP or
+        # `localhost` (answered from /etc/hosts) is never looked up.
+        named = _backend_names((info.get("Config") or {}).get("Env"))
+        checks.append(_check(not named, "no DNS query leaves the container",
+                             "NetworkMode=host, so the host's resolver is used and "
+                             "`dns:` cannot be set; "
+                             + ("every backend is an IP or localhost, so no name is "
+                                "looked up" if not named else
+                                f"these backend names are looked up through it: "
+                                f"{sorted(named)}; give them as an IP or localhost"),
+                             severity="warn"))
+    else:
+        checks.append(_check(bool(dns) and all(_loopback(d) for d in dns),
+                             "no DNS query leaves the container",
+                             f"Dns={dns!r}" + ("" if dns and all(_loopback(d) for d in dns)
+                                               else "; set `dns: 127.0.0.1` on the service"),
+                             severity="warn"))
 
     # The generated torrc must still carry every hardening directive. Docker
     # flags do not prove the Tor config was not weakened, and a compromised or

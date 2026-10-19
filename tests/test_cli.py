@@ -740,6 +740,118 @@ def test_podman_boot_prerequisites_are_checked(hf, monkeypatch, capsys, tmp_path
         assert "systemctl --user enable podman-restart.service" in unit_check["detail"]
 
 
+def _systemd_doctor(hf, monkeypatch, capsys, tmp_path, label, show_out, engine="podman"):
+    """doctor against a container with no engine restart policy, run by a unit."""
+    os.chmod(tmp_path, 0o700)
+    info = _fake_inspect()
+    info["HostConfig"]["RestartPolicy"] = {"Name": "no"}
+    info["Config"] = {"Labels": {"PODMAN_SYSTEMD_UNIT": label}}
+    monkeypatch.setattr(hf, "_docker_inspect", lambda c: (info, None))
+    monkeypatch.setattr(hf, "_resolve_container", lambda c: "cid")
+    monkeypatch.setattr(hf, "_docker_exec_text", lambda c, a: None)
+    monkeypatch.setattr(hf, "_engine", lambda: engine)
+    monkeypatch.setattr(hf, "_is_rootless", lambda: engine == "podman")
+    monkeypatch.setenv("USER", "someone")
+    calls = []
+
+    def run(cmd, **kw):
+        calls.append(cmd)
+        if cmd[0] == "loginctl":
+            return subprocess.CompletedProcess(cmd, 0, "Linger=yes\n", "")
+        if cmd[0] == "systemctl" and "show" in cmd:
+            if show_out is None:
+                return subprocess.CompletedProcess(cmd, 1, "", "not found")
+            return subprocess.CompletedProcess(cmd, 0, show_out, "")
+        return subprocess.CompletedProcess(cmd, 1, "", "")
+
+    monkeypatch.setattr(hf, "_run", run)
+    hf.main(["doctor", "--container", "tor", "--keys", str(tmp_path), "--json"])
+    doc = json.loads(capsys.readouterr().out)
+    return {c["check"]: c for c in doc["checks"]}, calls
+
+
+RESTART = "the container is restarted when it exits (restart policy)"
+UNIT_BOOT = "the container comes back after a reboot (its systemd unit is enabled)"
+
+
+def test_a_systemd_unit_with_restart_always_is_a_restart_policy(hf, monkeypatch,
+                                                                capsys, tmp_path):
+    """A container run by a systemd unit (the forge deployment) has no engine
+    policy; the unit restarts it. doctor used to FAIL that working setup."""
+    checks, _ = _systemd_doctor(
+        hf, monkeypatch, capsys, tmp_path, "hiddenforge.service",
+        "LoadState=loaded\nRestart=always\nUnitFileState=enabled\n")
+    assert checks[RESTART]["ok"] is True
+    assert "hiddenforge.service" in checks[RESTART]["detail"]
+    assert checks[UNIT_BOOT]["ok"] is True
+
+
+@pytest.mark.parametrize("restart", ["no", "on-failure", "on-success", ""])
+def test_a_systemd_unit_that_does_not_always_restart_fails(hf, monkeypatch, capsys,
+                                                          tmp_path, restart):
+    checks, _ = _systemd_doctor(
+        hf, monkeypatch, capsys, tmp_path, "hiddenforge.service",
+        f"LoadState=loaded\nRestart={restart}\nUnitFileState=enabled\n")
+    assert checks[RESTART]["ok"] is False and checks[RESTART]["severity"] == "fail"
+    assert "Restart=always" in checks[RESTART]["detail"]
+
+
+def test_a_disabled_systemd_unit_warns_about_reboots(hf, monkeypatch, capsys, tmp_path):
+    checks, _ = _systemd_doctor(
+        hf, monkeypatch, capsys, tmp_path, "hiddenforge.service",
+        "LoadState=loaded\nRestart=always\nUnitFileState=disabled\n")
+    assert checks[UNIT_BOOT]["ok"] is False and checks[UNIT_BOOT]["severity"] == "warn"
+
+
+def test_an_unreadable_systemd_unit_is_not_trusted(hf, monkeypatch, capsys, tmp_path):
+    checks, _ = _systemd_doctor(hf, monkeypatch, capsys, tmp_path,
+                                "gone.service", None)
+    assert checks[RESTART]["ok"] is False and checks[RESTART]["severity"] == "fail"
+
+
+@pytest.mark.parametrize("label", ["--user=evil.service", "-H x.service", "a b.service",
+                                   "noservice", "x.service\n"])
+def test_a_hostile_unit_label_never_reaches_systemctl(hf, monkeypatch, capsys,
+                                                      tmp_path, label):
+    """The label is set by whoever created the container. A value starting with
+    '-' would be parsed by systemctl as an option."""
+    checks, calls = _systemd_doctor(
+        hf, monkeypatch, capsys, tmp_path, label,
+        "LoadState=loaded\nRestart=always\nUnitFileState=enabled\n")
+    assert not any(c[0] == "systemctl" and "show" in c for c in calls)
+    assert checks[RESTART]["ok"] is False
+
+
+@pytest.mark.parametrize("env, ok, named", [
+    (["FORGEJO_TOR_SERVICE_HOSTS=80:localhost:3000"], True, []),
+    (["A_TOR_SERVICE_HOSTS=80:127.0.0.1:8080,443:[::1]:443"], True, []),
+    (["A_TOR_SERVICE_HOSTS=80:8080"], True, []),
+    (["A_TOR_SERVICE_HOSTS=80:web:80", "B_TOR_SERVICE_HOSTS=80:LOCALHOST:81"], False, ["web"]),
+    (["PATH=/usr/bin", "A_TOR_SERVICE_HOSTS=80:db.internal:5432,81:10.0.0.2:81"],
+     False, ["db.internal"]),
+])
+def test_host_network_dns_check_looks_at_backend_names(hf, tmp_path, capsys, monkeypatch,
+                                                       env, ok, named):
+    """`dns:` cannot be set on a host-network container, so telling the operator
+    to set it was advice they could not follow. What decides whether a query
+    leaves is whether any backend is a name."""
+    os.chmod(tmp_path, 0o700)
+    info = _fake_inspect()
+    info["HostConfig"]["NetworkMode"] = "host"
+    info["HostConfig"]["Dns"] = []
+    info["Config"] = {"Env": env}
+    monkeypatch.setattr(hf, "_docker_inspect", lambda c: (info, None))
+    monkeypatch.setattr(hf, "_resolve_container", lambda c: "cid")
+    monkeypatch.setattr(hf, "_docker_exec_text", lambda c, a: None)
+    hf.main(["doctor", "--container", "tor", "--keys", str(tmp_path), "--json"])
+    doc = json.loads(capsys.readouterr().out)
+    check = next(c for c in doc["checks"] if c["check"] == "no DNS query leaves the container")
+    assert check["ok"] is ok and check["severity"] == "warn"
+    assert "dns: 127.0.0.1" not in check["detail"]
+    for n in named:
+        assert n in check["detail"]
+
+
 def test_doctor_flags_missing_torrc_directive(hf, tmp_path, capsys, monkeypatch):
     os.chmod(tmp_path, 0o700)
     monkeypatch.setattr(hf, "_docker_inspect", lambda c: (_fake_inspect(), None))
