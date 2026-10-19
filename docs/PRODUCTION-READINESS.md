@@ -1,8 +1,12 @@
 # Production-readiness checklist
 
-Every row was re-run against **commit `8d66c4d`** on **2026-09-26** (the last
-image change is `2f3c03f`, the CLI's Podman deploy script). Where a row could not be re-run, it says so and gives
-the date and commit of the result it does quote.
+Every image-bearing row was re-run against **commit `66dc20f`** on **2026-10-19**,
+after the package pin refresh (tor 0.4.9.14, python3 3.12.15, openssl 3.5.9,
+zlib 1.3.2-r1). `entrypoint.py`, `healthcheck.py` and both compose files are
+unchanged since the previous full pass on `8d66c4d` (2026-09-26), so the reboot
+and rootless rows (R13-R15) are carried forward from it and say so. Where a row
+could not be re-run, it says so and gives the date and commit of the result it
+does quote.
 
 The raw output of the automatable rows is captured by `scripts/collect_evidence.py`
 into the release **evidence bundle** (`signatures/README.md`), which is signed
@@ -12,22 +16,22 @@ result rather than reproducing.
 
 | # | Claim | Command | Result |
 |---|---|---|---|
-| R1 | The image builds bit-for-bit reproducibly | two fresh clones, `--no-cache`, `buildx --platform linux/amd64,linux/arm64 --output type=oci`, compare `index.json` digests; plus CI `reproducibility` (amd64) | **pass** (`8d66c4d`) - both two-platform builds `sha256:7b22bf6b91665171cb8ad22ced20c48212234bb249aee0559c10e6415948f3cd`; CI job passed |
-| R2 | Two onions from one container | the committed `docker-compose.yml` plus a second `*_TOR_SERVICE_HOSTS`; `status` and `show` for each | **pass** (`8d66c4d`) - both ready after recreate; `show` agrees for each |
-| R3 | The committed `docker-compose.yml` boots | `docker compose up -d` with only the image (and, on this host, the subnets) overridden | **pass** (`8d66c4d`) - `status` ready and `healthy` in 21s; host-side `doctor` ok, no failures; one warning, correct: a retired service's kept key directory (see "Findings") |
-| R4 | `sbom` emits a valid SPDX document | `hiddenforge sbom --image ...` | **pass** (`8d66c4d`) - SPDX-2.3, 43 packages |
-| R5 | `verify-image` verifies a published release | run without `--skip-registry` against `sambent.dev`, with stock tools only (Alpine 3.23: OpenSSL 3.5.8, ssh-keygen, skopeo; no pqsign) | **pass (2.0.4)** - registry digest equals the signed digest; SSH-FIDO2 and ML-DSA-65 both verify against the pinned keys; `VERIFIED`, exit 0. `7c21c04` is not pushed or signed |
-| R6 | The arm64 image runs on an arm64 kernel | full-system arm64 VM (QEMU `virt`, Debian 13 arm64, real aarch64 kernel 6.12; emulated CPU), the shipped compose file | **pass** (`e23eca8`; entrypoint and healthcheck unchanged since) - ready, descriptor uploaded, HTTP 200 over Tor; Tor at uid 100 with `Seccomp: 2`, `Seccomp_filters: 2` (runtime profile + `Sandbox 1`, same as amd64); Tor killed, restarted with the same address; `doctor` no failures, no warnings. Not real ARM hardware |
-| R7 | The built image is clean | CI `security`: trivy image (HIGH/CRITICAL, fixable), trivy fs, semgrep, gitleaks over every commit | **pass** (`8d66c4d`) - every scan step passed, no leaks. Run locally with `forgejo-runner exec`, where the final artifact-upload step cannot run (no artifact server); that step is the only one that failed |
-| R8 | Every in-image CLI subcommand works | CI `build-and-test` plus the documented `docker run <image> ...` forms | **pass** (`8d66c4d`) - `version`/`info` contract, in-image `vanity` (also with `--network none`), `setup` writes its four files; live E2E 5/5 |
-| R9 | Image contents are what they should be | inspect the built image | **pass** (`8d66c4d`) - 40 apk packages; no pip/gcc/cc/make/curl/sshd (BusyBox's `wget` applet is present, as in every Alpine image); no `hs_ed25519*` or `.onion` baked in; `setuptools` absent |
-| R10 | Tor accepts the generated torrc | `tests/test_torrc.py` in the image | **pass** (`8d66c4d`) - 17/17 checks, Tor 0.4.9.13; arm64 17/17 on `d32e236` |
-| R11 | Untrusted parsers survive fuzzing | `fuzz/fuzz_parsers.py` under atheris (now both runtimes' `setup` files) | **pass** (`8d66c4d`) - 142,923 runs in 600s, no crash (and 279,948 in 900s on `7f0287d`). The previous run, on `7c21c04`, found a command injection in a `deploy.sh` line added that day (see Findings) |
-| R12 | The service is stable over time | 90s sample on the final image; plus a soak of several hours on earlier images of the same runtime code, with the backend moved to a new IP 20 times | **pass** (`8d66c4d`): memory flat ~199 MiB, PIDs 39, 0 restarts. Soak: every backend move followed (torrc IP == backend IP in 42/42 samples), 0 unexplained restarts, memory flat |
-| R13 | A real host reboot brings the onion back (Docker) | Debian 13 VM, Docker 26, the shipped compose file; `systemctl reboot` three times, each proven by a new `boot_id` | **pass** - back on its own every time, same address, backend mapping correct, ready 27-252s after boot (the slow one: a fresh directory fetch over emulated networking) |
-| R14 | A real host reboot brings the onion back (rootless Podman) | Ubuntu 24.04 VM, Podman 4.9.3, linger + `podman-restart.service` enabled, real reboots | **pass with `restart: always`** (now shipped) - back ready with the same address. With the old `unless-stopped` both containers stayed Exited |
-| R15 | Rootless Podman applies every declared limit | Docker Compose v2 (Ubuntu's `docker-compose-v2`, no Docker engine) on the rootless Podman socket, the shipped `podman-compose.yml` | **pass** - `pids.max` 256, `memory.swap.max` 0, DNS isolated; Tor killed, restarted, same address, HTTP 200; `doctor` no failures, no warnings |
-| R16 | "Ready" means clients can reach it | fresh key and restart; compare Tor's HS_DESC UPLOADED events with the moment of ready, fetch at that moment | **pass** (`8fa1c26`; unchanged since) - ready 1s after the first upload (fresh) and in the same second (restart); the fetch returned HTTP 200 both times. Before the fix, ready came ~45s before the upload |
+| R1 | The image builds bit-for-bit reproducibly | two fresh clones, `--no-cache`, `buildx --platform linux/amd64,linux/arm64 --output type=oci`, compare `index.json` digests; plus CI `reproducibility` (amd64) | **pass** (`66dc20f`) - both two-platform builds `sha256:91910832e67486ce1f287ffaab02c956087871e86db7108357a5a8bc6613e638` (buildx v0.19.3, BuildKit v0.30.0). The digest moves with each commit's `SOURCE_DATE_EPOCH`, so the release tag's own pair of builds is compared again at publish time |
+| R2 | Two onions from one container | the committed `docker-compose.yml` plus a second `*_TOR_SERVICE_HOSTS`; `status` and `show` for each | **pass** (`66dc20f`) - both ready after recreate; `show` agrees for each; both return HTTP 200 over Tor |
+| R3 | The committed `docker-compose.yml` boots | `docker compose up -d` with only the image (and, on this host, the subnets) overridden | **pass** (`66dc20f`) - `status` ready 19s after `up` (fresh key); host-side `doctor` ok, 16 checks, no failures, no warnings |
+| R4 | `sbom` emits a valid SPDX document | `hiddenforge sbom --image ...` | **pass** (`66dc20f`) - SPDX-2.3, 43 packages |
+| R5 | `verify-image` verifies a published release | run without `--skip-registry` against `sambent.dev`, with stock tools only (Alpine 3.23: OpenSSL, ssh-keygen, skopeo; no pqsign) | **pass (2.0.4)** - registry digest equals the signed digest; SSH-FIDO2 and ML-DSA-65 both verify against the pinned keys; `VERIFIED`, exit 0. Re-run against 2.1.0 once it is published |
+| R6 | The arm64 image runs on an arm64 kernel | full-system arm64 VM (QEMU `virt`, Debian 13 arm64, real aarch64 kernel 6.12; emulated CPU), the shipped compose file | **pass** (`66dc20f`, Debian 13 arm64, kernel 6.12.113) - ready in 333s on the emulated CPU, descriptor uploaded, HTTP 200 over Tor (fetched from the host's Tor client, and from a fresh client inside the VM in 69s); Tor at uid 100 with `Seccomp: 2`, `Seccomp_filters: 2` (runtime profile + `Sandbox 1`, same as amd64); Tor killed, container restarted (restarts=1) with the same address and ready again; `doctor` no failures, no warnings. The VM's long-running system Tor client failed its first fetches (`No more HSDir available to query`) after slow circuit builds through one guard, and kept that failure cached; the host and a fresh in-VM client both reached the service. Not real ARM hardware |
+| R7 | The built image is clean | CI `security`: trivy image (HIGH/CRITICAL, fixable), trivy fs, semgrep, gitleaks over every commit | **pass** - trivy on the `66dc20f` image: 0 vulnerabilities at any severity (pinned `aquasec/trivy@sha256:ab70a022...`, the CI image). The full CI `security` job on `8d66c4d`: every scan step passed, no leaks. Run locally with `forgejo-runner exec`, where the final artifact-upload step cannot run (no artifact server); that step is the only one that failed |
+| R8 | Every in-image CLI subcommand works | CI `build-and-test` plus the documented `docker run <image> ...` forms | **pass** (`66dc20f`) - `version`/`info` contract (2.1.0, Tor 0.4.9.14), in-image `vanity` (also with `--network none`), `setup` writes its four files; live E2E 5/5 in 110s |
+| R9 | Image contents are what they should be | inspect the built image | **pass** (`66dc20f`) - 40 apk packages (tor 0.4.9.14-r0, python3 3.12.15-r0, openssl 3.5.9-r0, zlib 1.3.2-r1, su-exec 0.3-r0); no pip/gcc/cc/make/curl/sshd (BusyBox's `wget` applet is present, as in every Alpine image); no `hs_ed25519*` or `.onion` baked in; `setuptools` absent |
+| R10 | Tor accepts the generated torrc | `tests/test_torrc.py` in the image | **pass** (`66dc20f`) - 17/17 checks, Tor 0.4.9.14, on amd64 and arm64 |
+| R11 | Untrusted parsers survive fuzzing | `fuzz/fuzz_parsers.py` under atheris (now both runtimes' `setup` files) | **pass** (`66dc20f`) - 168,320 runs in 600s, no crash (and 279,948 in 900s on `7f0287d`). The previous run, on `7c21c04`, found a command injection in a `deploy.sh` line added that day (see Findings) |
+| R12 | The service is stable over time | 90s sample on the final image; plus a soak of several hours on earlier images of the same runtime code, with the backend moved to a new IP 20 times | **pass** (`66dc20f`): two services, memory flat 179-180 MiB, PIDs 39, 0 restarts, healthy. Soak: every backend move followed (torrc IP == backend IP in 42/42 samples), 0 unexplained restarts, memory flat |
+| R13 | A real host reboot brings the onion back (Docker) | Debian 13 VM, Docker 26, the shipped compose file; `systemctl reboot` three times, each proven by a new `boot_id` | **pass** (earlier image, same runtime code and compose file) - back on its own every time, same address, backend mapping correct, ready 27-252s after boot (the slow one: a fresh directory fetch over emulated networking) |
+| R14 | A real host reboot brings the onion back (rootless Podman) | Ubuntu 24.04 VM, Podman 4.9.3, linger + `podman-restart.service` enabled, real reboots | **pass with `restart: always`** (earlier image, same runtime code and compose file) (now shipped) - back ready with the same address. With the old `unless-stopped` both containers stayed Exited |
+| R15 | Rootless Podman applies every declared limit | Docker Compose v2 (Ubuntu's `docker-compose-v2`, no Docker engine) on the rootless Podman socket, the shipped `podman-compose.yml` | **pass** (earlier image, same compose file) - `pids.max` 256, `memory.swap.max` 0, DNS isolated; Tor killed, restarted, same address, HTTP 200; `doctor` no failures, no warnings |
+| R16 | "Ready" means clients can reach it | fresh key and restart; compare Tor's HS_DESC UPLOADED events with the moment of ready, fetch at that moment | **pass** (`66dc20f`) - ready 1s after the first upload (fresh) and in the same second (restart, fetched by a Tor client that had never seen the address); the fetch returned HTTP 200 both times. A client that fetched the descriptor *before* the restart holds stale introduction points: its first fetch at the ready moment timed out and its retry succeeded after 67s. That is the client's cache, not readiness, and it heals without action. Before the fix, ready came ~45s before the upload |
 
 CI on `8d66c4d`: lint, unit (98.91% coverage, mutation spot-check
 57/57, and a new property test over every accepted key path), pin-freshness,
@@ -47,7 +51,7 @@ tree can generate. Reproduce from a pristine checkout (see `signatures/README.md
 
 ## R5: this commit is not the signed release
 
-The published, signed digest is **2.0.4**. `7c21c04` is built, tested and
+The published, signed digest is **2.0.4**. `66dc20f` is built, tested and
 reproducible here but not pushed and not signed. A digest mismatch against
 `hiddenforge.digest` therefore means "not yet signed", not "tampered with".
 
