@@ -3,7 +3,9 @@
 All notable changes to HiddenForge are documented here.
 
 The latest release is **2.1.0**; its image digest and signatures are in
-`signatures/`. `v2.0.5` is a git tag with no image of its own: its changes ship
+`signatures/` on master (a release's signatures are committed after its tag).
+2.1.0 is signed with ML-DSA-65; the hardware SSH-FIDO2 signature over the same
+digest follows, without a new image. `v2.0.5` is a git tag with no image of its own: its changes ship
 with 2.1.0.
 
 ---
@@ -56,8 +58,9 @@ upgrade followed by a rollback keeps the same onion address. A compose file
 copied from 2.0.4 needs these changes: remove `seccomp=unconfined` and
 `ulimits.nproc`; add `dns: 127.0.0.1`; keep a restart policy (it is now
 required, because the container exits on purpose to pick up a moved backend).
-`ready` arrives later than before, and a key volume with a symlinked service
-directory or hard-linked key files is now refused at startup. The README section
+`ready` arrives later than before. A symlinked service directory in the key
+volume now stops the container with an error; a hard-linked key file is left
+alone with a warning instead of being taken over. The README section
 "Upgrading from 2.0.4" has the table.
 
 ### Detailed record

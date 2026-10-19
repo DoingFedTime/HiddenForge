@@ -98,7 +98,8 @@ chown the operator's key mount and then `su-exec` to `tor`. It probes
 `su-exec tor true` first and fails with a named error if it cannot, rather than
 looping. See "Residual risks" for why root is not removed.
 
-**The build.** Base image pinned by digest; apk pinned by exact version; pip
+**The build.** Base image pinned by digest; runtime apk packages pinned by exact
+version (the throwaway compiler stage that builds mkp224o is not); pip
 hash-pinned with `--require-hashes`; mkp224o vendored as a deterministic tarball
 whose SHA256 the Dockerfile verifies before extraction. The build is bit-for-bit
 reproducible (two `buildx` builds with the same `SOURCE_DATE_EPOCH` produce an

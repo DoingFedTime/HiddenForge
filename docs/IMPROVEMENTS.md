@@ -47,7 +47,7 @@ deliberate decision not to do (reason given).
 
 - [x] **B1** Vendor mkp224o (CC0) and build it into the image (multi-stage,
   static, hash-verified archive); see `vendor/README.md`.
-- [x] **B2** `hiddenforge vanity --prefix <p> --name <n> [--threads N] [--out]`
+- [x] **B2** `hiddenforge vanity --prefix <p> --name <n> [--threads N] [--keys DIR]`
   runs headless and writes a valid Tor key set
   (`hostname`, `hs_ed25519_public_key`, `hs_ed25519_secret_key`).
 - [x] **B3** Refuses to overwrite an existing key without `--force`; never

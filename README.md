@@ -132,7 +132,10 @@ The only two lines you need to edit are flagged with `<-- EDIT`.
 > containers in no particular order) is watched the same way: its service is left
 > out, and once the name resolves the container restarts and configures it
 > (measured: restarted 39 seconds after the backend came up, then served it).
-> Until then `hiddenforge status` is not ready and lists the mapping as dropped.
+> Until then `hiddenforge status` lists the mapping in `dropped_mappings` (and is
+> not ready if it is the container's only service: `ready` means at least one
+> service is reachable, so a multi-service deployment must also check that
+> `dropped_mappings` is empty).
 > This relies on a restart policy, which both shipped compose files set
 > (`restart: unless-stopped`; `always` in the Podman file, see below).
 
@@ -155,7 +158,7 @@ changes:
 | `dns: 127.0.0.1` on the tor service | Add it, so an unresolved backend name never reaches an outside resolver. Name the backend by its compose service name; an external hostname will no longer resolve |
 | A restart policy is required | Keep `restart: unless-stopped` (Docker) or `always` (Podman). The container exits on purpose when a backend changes IP and relies on the restart to pick up the new address |
 | Readiness is stricter | `ready` now waits until Tor has uploaded the service descriptor, so it arrives later than in 2.0.4, and a container with no service configured never reports ready |
-| Startup refuses an unsafe key volume | A symlinked service directory, or key files with more than one hard link, stop the container with an error naming the path |
+| Startup is stricter about the key volume | A symlinked service directory stops the container with an error naming the path. A key file with more than one hard link is not taken over (a warning names it), so Tor usually cannot read it: remove the extra links |
 | Podman uses `restart: always` and no healthcheck | Use the shipped `podman-compose.yml`; see [Rootless Podman](#rootless-podman-recommended-for-high-risk-deployments) |
 
 2.0.4 has no `hiddenforge` CLI: on 2.0.4, `docker run <image> version --json`
@@ -165,7 +168,9 @@ just starts Tor. The full list of changes is in the [CHANGELOG](CHANGELOG.md).
 
 Recent supply chain attacks (xz-utils, PyPI package hijacks, compromised npm
 packages) have made dependency pinning essential for any security-sensitive
-software. HiddenForge pins every dependency at every layer.
+software. HiddenForge pins every package that ships in the image. (The
+throwaway stage that compiles the vanity generator installs its compilers
+unpinned; only the hash-checked, statically linked binary it produces is kept.)
 
 **What is pinned and why:**
 
@@ -241,7 +246,15 @@ builds let you verify the image you *pull*.
 Released images are signed two independent ways over the image digest, with no
 dependency on any external service or transparency log: a **post-quantum
 ML-DSA-65** signature (FIPS 204) and a **hardware YubiKey** (SSH-FIDO2)
-signature. The verification files live in `signatures/`. The build is also
+signature. The verification files live in `signatures/`.
+
+> **2.1.0 is signed with ML-DSA-65 only, for now.** The hardware key was not
+> available at release; its signature will be made over the same digest and
+> added to `signatures/` without a new image. Until then the `ssh-keygen` line
+> below has no `.sig` to check, and `hiddenforge verify-image` needs
+> `--allow-pq-only` (it reports `complete: false`).
+
+The build is also
 **reproducible**, so you can rebuild from source and confirm you get a
 byte-for-byte identical image.
 
@@ -258,7 +271,8 @@ openssl pkeyutl -verify -pubin -keyform DER -inkey /tmp/mldsa.der \
 ssh-keygen -Y verify -f allowed-signers -I sam@sambent.com -n file \
   -s hiddenforge.digest.sig < hiddenforge.digest
 
-# confirm that digest is what the registry actually serves
+# confirm that digest is what the registry actually serves (sha256sum prints
+# the bare hex; the file holds it with a sha256: prefix)
 skopeo inspect --raw docker://sambent.dev/sam/hiddenforge:latest | sha256sum
 ```
 
@@ -267,8 +281,8 @@ whatever public key sits beside them, so the keys are the trust anchor and must
 match these values, which are also pinned in `scripts/hiddenforge`:
 
 ```
-ssh-keygen -lf allowed-signers   # SHA256:wL6piZbyXpTOzT7Z66f/Q+vegj0Ml0ZwVouGJ06+3Q0
-                                 # SHA256:YcUo1tBtj+Mlnpv9QpsWnJcMt77B4SipyD6OWSMjMB4
+ssh-keygen -lf allowed-signers   # SHA256:YcUo1tBtj+Mlnpv9QpsWnJcMt77B4SipyD6OWSMjMB4
+                                 # SHA256:wL6piZbyXpTOzT7Z66f/Q+vegj0Ml0ZwVouGJ06+3Q0
 sha256sum sambent-mldsa.pub      # 4ae873ade7ee596c815f55f3052c0f01020b1817f86eaf15ab67c8fc77cbfd22
 ```
 
@@ -530,7 +544,7 @@ podman info --format '{{.Host.Security.Rootless}}'
 | No relay/exit | `ClientOnly 1`, `ExitPolicy reject *:*` |
 | No telemetry | pip/setuptools/urllib3 stripped from final image (Python stdlib remains) |
 | Input validation | All env vars validated before torrc write |
-| Supply chain | Every dependency pinned by exact version; pip packages and the vendored generator also by SHA256 |
+| Supply chain | Every shipped package pinned by exact version; pip packages and the vendored generator source also by SHA256 |
 | Base image | Alpine 3.23.5 digest-pinned |
 | Host isolation (optional) | Rootless Podman: container escape = host user, not real root |
 

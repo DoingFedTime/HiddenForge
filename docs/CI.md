@@ -1,7 +1,8 @@
 # CI
 
-HiddenForge's CI runs on **Forgejo Actions** on `sambent.dev`. GitHub is not in
-the loop.
+HiddenForge's CI runs on **Forgejo Actions** on `sambent.dev`; nothing runs on
+GitHub. The workflow does fetch two pinned actions from github.com
+(`actions/checkout`, `hadolint-action`) and its scanner images from Docker Hub.
 The workflow runs on a self-hosted runner, which is where the build and the
 tests happen.
 
@@ -16,10 +17,10 @@ tests happen.
 | `mutation` | a full `mutmut run` over `entrypoint.py`, `healthcheck.py` and `vanity.py`, then `scripts/mutation_gate.py`: every mutant that survives must be explained in the gate's allowlist or the job fails. The gate also re-runs each mutant mutmut recorded as a `timeout` on its own, because that label is a wall-clock bound rather than a verdict and has been measured hiding live survivors; a mutant that really hangs must be named in `DOCUMENTED_HANGS`. Tag/schedule only -- the run takes twenty minutes and more, of which the timeout re-grade is the slow half. See `review/MUTATION-2026-09-18.md` |
 | `build-and-test` | `docker build`, the in-container torrc test, the CLI contract checks, a vanity smoke test, and the live acceptance suite (`HIDDENFORGE_E2E=1`) |
 | `security` | trivy (image + fs), semgrep (security-audit + dockerfile), gitleaks over every commit and the working tree; runs on a daily schedule so an advisory published after the last commit is still caught. Accepted findings live in `.trivyignore`/`.gitleaks.toml` |
-| `reproducibility` | builds the same tree twice under the documented flags and fails if the OCI index digests differ |
+| `reproducibility` | builds the same tree twice under the documented flags, for `linux/amd64` only, and fails if the OCI index digests differ (the two-platform release digest is reproduced by hand before signing) |
 | `pin-freshness` | `scripts/check_pins.py` against the Alpine index: fails if a pinned apk version has disappeared, reports (does not auto-bump) a newer one. Schedule/dispatch only |
 
-All jobs use `runs-on: docker` / `ubuntu-latest`, both mapped to **host mode** on
+All jobs use `runs-on: docker`, mapped to **host mode** on
 the runner, so job steps execute directly on that machine and have `docker`, `git` and
 `python3` available.
 
