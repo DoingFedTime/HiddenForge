@@ -331,6 +331,38 @@ ACCEPTED: dict[tuple[str, str, str], str] = {
      'upload_watcher_next = 0.0',
      'upload_watcher_next = 1.0'):
         'upload_watcher_next is compared with time.monotonic(), which counts seconds since boot and is far above 1.0 by the time the supervisor loop runs, so the first restart attempt is due immediately with either starting value.',
+    ('entrypoint._assert_process_dropped',
+     'def _(proc, name, timeout=5):',
+     'def _(proc, name, timeout=6):'):
+        'mutmut 3.5 keeps the ORIGINAL signature on the wrapper it generates and passes every parameter explicitly (e.g. `args = [path, max_bytes]`), so a mutated default is never used and no test can observe it. The default itself is pinned by tests/test_kill_defaults.py (or the existing vanity tests), which fail when the change is made to the source.',
+    ('entrypoint._chmod_dir_nofollow',
+     'def _(path, mode, only_if_root_owned=False):',
+     'def _(path, mode, only_if_root_owned=True):'):
+        'mutmut 3.5 keeps the ORIGINAL signature on the wrapper it generates and passes every parameter explicitly (e.g. `args = [path, max_bytes]`), so a mutated default is never used and no test can observe it. The default itself is pinned by tests/test_kill_defaults.py (or the existing vanity tests), which fail when the change is made to the source.',
+    ('entrypoint._kill_proc',
+     'def _(proc, name, timeout=10):',
+     'def _(proc, name, timeout=11):'):
+        'mutmut 3.5 keeps the ORIGINAL signature on the wrapper it generates and passes every parameter explicitly (e.g. `args = [path, max_bytes]`), so a mutated default is never used and no test can observe it. The default itself is pinned by tests/test_kill_defaults.py (or the existing vanity tests), which fail when the change is made to the source.',
+    ('entrypoint.wait_for_socket',
+     'def _(timeout=120, tor=None):',
+     'def _(timeout=121, tor=None):'):
+        'mutmut 3.5 keeps the ORIGINAL signature on the wrapper it generates and passes every parameter explicitly (e.g. `args = [path, max_bytes]`), so a mutated default is never used and no test can observe it. The default itself is pinned by tests/test_kill_defaults.py (or the existing vanity tests), which fail when the change is made to the source.',
+    ('healthcheck._read_address_file',
+     'def _(path, max_bytes=256):',
+     'def _(path, max_bytes=257):'):
+        'mutmut 3.5 keeps the ORIGINAL signature on the wrapper it generates and passes every parameter explicitly (e.g. `args = [path, max_bytes]`), so a mutated default is never used and no test can observe it. The default itself is pinned by tests/test_kill_defaults.py (or the existing vanity tests), which fail when the change is made to the source.',
+    ('healthcheck._write_uploaded',
+     'with os.fdopen(fd, "w", encoding="ascii") as fh:',
+     'with os.fdopen(fd, "w", encoding="ASCII") as fh:'):
+        "Codec names are case-insensitive: 'ASCII' and 'ascii' are the same codec.",
+    ('healthcheck.watch_uploads',
+     'def _(path=UPLOADS_FILE, sock_path=CONTROL_SOCKET, connect_timeout=60):',
+     'def _(path=UPLOADS_FILE, sock_path=CONTROL_SOCKET, connect_timeout=61):'):
+        'mutmut 3.5 keeps the ORIGINAL signature on the wrapper it generates and passes every parameter explicitly (e.g. `args = [path, max_bytes]`), so a mutated default is never used and no test can observe it. The default itself is pinned by tests/test_kill_defaults.py (or the existing vanity tests), which fail when the change is made to the source.',
+    ('vanity._run_mkp224o',
+     'def _(prefix: str, outbase: Path, threads: int, count: int = 1,',
+     'def _(prefix: str, outbase: Path, threads: int, count: int = 2,'):
+        "Every caller of _run_mkp224o passes count explicitly (vanity.py and the tests), so the default is never used; mutmut 3.5's wrapper would also pass the original default regardless.",
 }
 
 # Mutants that really do remove a loop's exit condition. A hang IS detection, but

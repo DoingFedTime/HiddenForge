@@ -107,3 +107,13 @@ def test_the_junk_cap_applies_above_one_mebibyte_not_at_it(hc, monkeypatch, tmp_
     rc, out = _run(hc, monkeypatch, tmp_path, [at_cap, EVENT])
     assert rc == 0
     assert not out.exists()
+
+
+def test_a_big_read_that_ends_a_line_is_parsed_not_dropped(hc, monkeypatch, tmp_path):
+    """The over-long rule is "more than 1 MiB AND no line break". One read that
+    brings more than 1 MiB but does contain CRLF is ordinary input: the long
+    line is skipped and the event after it is recorded."""
+    big = b"x" * ((1 << 20) + 1) + b"\r\n" + EVENT
+    rc, out = _run(hc, monkeypatch, tmp_path, [big])
+    assert rc == 0
+    assert out.read_text() == f"{ONION}\n"
