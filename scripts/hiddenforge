@@ -105,7 +105,8 @@ EXIT_CODES = {
     "1": "refused or failed (see stderr / the --json error field)",
     "2": "usage, validation, or environment error",
     "3": "a key appeared at the output path while a search was running",
-    "4": "not ready yet (status: not ready for any reason, see `reason`; show: no address yet)",
+    "4": ("not ready yet (status: the container exists but is not ready, see `reason`; "
+          "show: no address yet)"),
     "130": "aborted at a prompt",
 }
 
@@ -1275,11 +1276,18 @@ def _append_systemd_restart_checks(checks: list[dict], name: str, unit: str,
     """The container has no engine restart policy because a systemd unit runs it.
 
     Podman labels a container started by a unit with PODMAN_SYSTEMD_UNIT, and
-    there the unit's Restart= does the engine's job: when the container exits,
-    the unit's main process exits and systemd starts it again. Measured with a
-    replica of the forge deployment (rootless, host network): the container was
-    killed, systemd recreated it 7s later, same onion address, HTTP 200 over
-    Tor. So check the unit rather than fail a deployment that heals correctly.
+    there the unit's Restart= can do the engine's job: when the container
+    exits, the unit's main process exits and systemd starts the unit again.
+    Measured on a replica of the forge deployment (rootless, host network): the
+    container was killed, systemd recreated it 7s later, same onion address.
+
+    But whether a unit really brings the container back depends on more than
+    doctor can read with confidence: its ExecStart must recreate a container
+    that still exists (`--replace`), and RestartPreventExitStatus=, the start
+    limits and RestartSec= must not stop it. Review found each of those passing
+    a static check while the container stayed dead. So a unit in the right shape
+    is reported as a WARNING that says what to verify, never as a pass, and a
+    unit in the wrong shape still fails.
     """
     state = _systemd_unit_state(unit, conmon_pid)
     if state is None:
@@ -1289,15 +1297,23 @@ def _append_systemd_restart_checks(checks: list[dict], name: str, unit: str,
                              "this container: systemd can restart a container only when "
                              "the unit's main process is the container's conmon (with "
                              "RemainAfterExit=no). Give a Type=forking unit PIDFile=%t/%N.pid and "
-                             "`podman run --conmon-pidfile %t/%N.pid -d ...`, or use a "
-                             "quadlet unit; or set an engine restart policy"))
+                             "`podman run --replace --conmon-pidfile %t/%N.pid -d ...`, or "
+                             "use a quadlet unit; or set an engine restart policy"))
         return
     restart = state.get("Restart", "")
-    checks.append(_check(restart == "always", name,
-                         f"RestartPolicy=none; run by systemd unit {unit} with "
-                         f"Restart={restart or 'no'}"
-                         + ("" if restart == "always" else
-                            "; set Restart=always in the unit")))
+    if restart != "always":
+        checks.append(_check(False, name,
+                             f"RestartPolicy=none; run by systemd unit {unit} with "
+                             f"Restart={restart or 'no'}; set Restart=always in the unit"))
+    else:
+        checks.append(_check(False, name,
+                             f"RestartPolicy=none; run by systemd unit {unit} (Restart=always, "
+                             "main process = this container's conmon). doctor cannot prove "
+                             "the unit recreates the container: its ExecStart must use "
+                             "`podman run --replace`, and RestartPreventExitStatus=, "
+                             "StartLimit*= and RestartSec= must not stop it. Verify once: "
+                             f"`podman kill <container>` and confirm {unit} starts it again",
+                             severity="warn"))
     enabled = state.get("UnitFileState", "")
     if enabled == "generated":
         # Podman quadlet units are written by a generator and cannot be

@@ -792,8 +792,11 @@ def test_a_systemd_unit_with_restart_always_is_a_restart_policy(hf, monkeypatch,
     checks, _ = _systemd_doctor(
         hf, monkeypatch, capsys, tmp_path, "hiddenforge.service",
         f"LoadState=loaded\nRestart=always\nUnitFileState=enabled\nMainPID={CONMON}\n")
-    assert checks[RESTART]["ok"] is True
+    # A unit in the right shape is a WARNING, not a pass: doctor cannot prove
+    # the unit recreates the container (see _append_systemd_restart_checks).
+    assert checks[RESTART]["ok"] is False and checks[RESTART]["severity"] == "warn"
     assert "hiddenforge.service" in checks[RESTART]["detail"]
+    assert "podman kill" in checks[RESTART]["detail"]
     assert checks[UNIT_BOOT]["ok"] is True
 
 
@@ -838,10 +841,10 @@ def test_the_system_scope_counts_only_when_it_runs_the_container(hf, monkeypatch
     elsewhere = "LoadState=loaded\nRestart=always\nUnitFileState=enabled\nMainPID=777\n"
     checks, _ = _systemd_doctor(hf, monkeypatch, capsys, tmp_path, "hiddenforge.service",
                                 elsewhere, user_show=None)
-    assert checks[RESTART]["ok"] is False
+    assert checks[RESTART]["severity"] == "fail"
     checks, _ = _systemd_doctor(hf, monkeypatch, capsys, tmp_path, "hiddenforge.service",
                                 elsewhere, conmon_pid=777)
-    assert checks[RESTART]["ok"] is True
+    assert checks[RESTART]["severity"] == "warn"
 
 
 def test_a_wrapper_unit_that_outlives_the_container_does_not_pass(hf, monkeypatch,
@@ -868,7 +871,9 @@ def test_the_unit_must_end_when_the_container_ends(hf, monkeypatch, capsys, tmp_
     checks, _ = _systemd_doctor(
         hf, monkeypatch, capsys, tmp_path, "hiddenforge.service",
         f"LoadState=loaded\nRestart=always\nUnitFileState=enabled\nMainPID={CONMON}\n" + extra)
-    assert checks[RESTART]["ok"] is ok
+    # recognised shape -> warning; anything else -> failure
+    assert checks[RESTART]["ok"] is False
+    assert (checks[RESTART]["severity"] == "warn") is ok
 
 
 def test_a_unit_without_a_main_process_is_not_trusted(hf, monkeypatch, capsys, tmp_path):

@@ -46,7 +46,7 @@
     "130": "aborted at a prompt",
     "2": "usage, validation, or environment error",
     "3": "a key appeared at the output path while a search was running",
-    "4": "not ready yet (status: not ready for any reason, see `reason`; show: no address yet)"
+    "4": "not ready yet (status: the container exists but is not ready, see `reason`; show: no address yet)"
   },
   "health": {
     "command": "hiddenforge status --json",
