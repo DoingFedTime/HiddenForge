@@ -1288,7 +1288,7 @@ def _append_systemd_restart_checks(checks: list[dict], name: str, unit: str,
                              f"unit {unit!r}, but that unit could not be confirmed to run "
                              "this container: systemd can restart a container only when "
                              "the unit's main process is the container's conmon (with "
-                             "RemainAfterExit=no). Give the unit PIDFile=%t/%N.pid and "
+                             "RemainAfterExit=no). Give a Type=forking unit PIDFile=%t/%N.pid and "
                              "`podman run --conmon-pidfile %t/%N.pid -d ...`, or use a "
                              "quadlet unit; or set an engine restart policy"))
         return
@@ -1681,7 +1681,7 @@ def render_compose_fragment(services: dict[str, list[str]], image: str, keys: st
                    '      retries: 3\n')
     example = sorted(services)[0]
     header = (f"# hiddenforge compose fragment "
-              f"(contract v{HIDDENFORGE_VERSION}, contract {CONTRACT_VERSION}).")
+              f"(hiddenforge v{HIDDENFORGE_VERSION}, contract {CONTRACT_VERSION}).")
     # json.dumps produces a double-quoted scalar that YAML parses as one string,
     # so a path cannot open a new key (`privileged: true`) or a second volume.
     keys_mount = _yaml_double_quoted(f"{keys}:/var/lib/tor/hidden_service")
@@ -2047,7 +2047,7 @@ def cmd_setup(args) -> int:
         return EXIT_OK
     except (ValueError, EOFError, OSError) as exc:
         if isinstance(exc, EOFError):
-            return emit_json(EXIT_ABORTED, error="aborted at prompt (no TTY)")
+            return emit_json(EXIT_ABORTED, error="aborted at prompt")
         if isinstance(exc, OSError):
             # The machine contract: one JSON document and a stable exit code,
             # never a traceback, whatever the filesystem does.

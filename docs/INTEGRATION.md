@@ -171,7 +171,7 @@ count through `healthy`. The fields:
 | `running` | the container is up |
 | `healthy` | the healthcheck passes: bootstrapped, a circuit established, every service holding established introduction points with its descriptor uploaded to the network by this Tor, and Vanguards alive. Under Podman no engine healthcheck is set (rootless Podman 4.9 does not restart a container that has one when no systemd user session is reachable), so `health_status` is empty and `status` runs the same check itself |
 | `tor_bootstrapped` | Tor reports `PROGRESS=100` |
-| `hidden_service_published` | the address file exists |
+| `hidden_service_published` | every configured service has a valid `hostname` (on rootless Podman `<name>.onion` is not written, and this is still true) |
 | `vanguards` | the guard-protection addon is alive |
 
 `status --json` exits `0` when ready, `4` when not, and `2` if the container is not found. Inside the container the same
@@ -311,7 +311,7 @@ still contains every hardening directive (`ClientOnly`, `SafeLogging`,
 `0600`; and each key set's `hostname` agrees with its public key.
 A container that is not restarted when it exits also FAILs: no engine restart
 policy, and no systemd unit whose main process is the container's conmon.
-`logging: none` and `dns:` pointing at a non-loopback resolver are warnings.
+A log driver other than `none`, and `dns:` unset or not loopback, are warnings.
 Exit `1` on any failure, `0` otherwise, `2` if the container cannot be inspected.
 
 Inside the container (no docker socket):
@@ -389,7 +389,7 @@ output is stable). Requires the docker engine (for its socket). Exit `0` written
 | 1 | refused or failed (see stderr / the `error` field) |
 | 2 | usage, validation, or environment error |
 | 3 | a key appeared at the output path while a search was running |
-| 4 | not ready yet (`status`/`show` before the address exists) |
+| 4 | not ready yet (`status`: not ready for any reason, see `reason`; `show`: no address yet) |
 | 130 | aborted at an interactive prompt (empty answer, end of input, or Ctrl-C) |
 
 ### Using the image directly (no host CLI)
