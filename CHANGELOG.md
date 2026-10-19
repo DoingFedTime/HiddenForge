@@ -74,6 +74,10 @@ both injectable into the compose fragment and the 0755 deploy script.
   (CVE-2026-19445, CVE-2026-19553, CVE-2026-82049); `trivy --severity HIGH,CRITICAL`
   on the rebuilt image reports 0. `scripts/check_pins.py` passes against the live
   index. The base image digest is unchanged.
+- **zlib is now pinned to `1.3.2-r1`.** The base image's `1.3.2-r0` carries
+  CVE-2026-85091 (heap buffer overflow, MEDIUM). Tor links zlib to decompress
+  directory documents it receives from relays, so it is pinned explicitly like
+  `openssl` instead of being inherited from the base.
 - **The CLI advertised a Tor version the image no longer installed.**
   `TOR_VERSION` (shown by `info` and recorded in `manifest.json`) was a separate
   constant that nothing compared with the Dockerfile's apk pin. A test now fails

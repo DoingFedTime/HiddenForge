@@ -158,6 +158,7 @@ software. HiddenForge pins every dependency at every layer.
 | `python3` apk | `3.12.15-r0` | The Python runtime executes the entrypoint and Vanguards |
 | `su-exec` apk | `0.3-r0` | This binary performs the privilege drop to the `tor` user |
 | `openssl` apk | `3.5.9-r0` | Pinned explicitly rather than inherited from the base image, so a known-vulnerable OpenSSL cannot ride in with it |
+| `zlib` apk | `1.3.2-r1` | Pinned explicitly for the same reason: the base's `1.3.2-r0` has a heap overflow (CVE-2026-85091) in code Tor runs on data from relays |
 | `py3-pip` apk | `25.1.1-r1` | Build-only; pinned so it can't be updated to a version that silently ignores `--require-hashes` |
 | `mkp224o` source | commit `5172c0fd` + SHA256 | The vanity generator, vendored as a tarball the Dockerfile hash-checks before building it |
 | `vanguards` pip | `0.3.1` + SHA256 | Guard protection addon; a compromised version could leak circuit topology |

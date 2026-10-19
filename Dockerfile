@@ -74,12 +74,16 @@ ENV PIP_DISABLE_PIP_VERSION_CHECK=1
 # (3.5.8-r0 was pruned; it was the first pin here for CVE-2026-14456 and a batch
 # of other OpenSSL issues). Pin the fix so the image
 # does not silently depend on whichever OpenSSL the base happens to contain.
+# zlib is pinned for the same reason: the base ships 1.3.2-r0, which carries
+# CVE-2026-85091 (heap buffer overflow), and Tor links it to decompress directory
+# documents it receives from relays, so the bug is reachable from the network.
 RUN apk add --no-cache \
     tor=0.4.9.14-r0 \
     python3=3.12.15-r0 \
     su-exec=0.3-r0 \
     py3-pip=25.1.1-r1 \
-    openssl=3.5.9-r0 && \
+    openssl=3.5.9-r0 \
+    zlib=1.3.2-r1 && \
     rm -f /var/log/apk.log && \
     # apk stamps a new account's shadow "last-change" field with the current day
     # (days since 1970) when it creates the tor user. Pin every account's field
