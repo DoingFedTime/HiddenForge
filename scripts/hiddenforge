@@ -626,7 +626,10 @@ def build_manifest() -> dict:
             "public": {"path": "/var/lib/tor/hidden_service/<name>/hs_ed25519_public_key",
                        "format": "64 bytes: 32-byte tag + 32-byte Ed25519 public key",
                        "mode": "0600"},
-            "hostname": {"format": "one line, <56-char base32>.onion", "mode": "0644"},
+            "hostname": {"path": "/var/lib/tor/hidden_service/<name>/hostname",
+                         "format": "one line, <56-char base32>.onion",
+                         "mode": "0600 (written by Tor; the readable copy is "
+                                 "<keys>/<name>.onion, mode 0644)"},
             "warning": "The key IS the .onion address. Losing it loses the address "
                        "permanently; there is no recovery and no reset. Encrypt backups.",
         },

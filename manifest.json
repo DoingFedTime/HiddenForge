@@ -76,7 +76,8 @@
   "key": {
     "hostname": {
       "format": "one line, <56-char base32>.onion",
-      "mode": "0644"
+      "mode": "0600 (written by Tor; the readable copy is <keys>/<name>.onion, mode 0644)",
+      "path": "/var/lib/tor/hidden_service/<name>/hostname"
     },
     "public": {
       "format": "64 bytes: 32-byte tag + 32-byte Ed25519 public key",
