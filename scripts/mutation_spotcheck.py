@@ -279,9 +279,16 @@ MUTATIONS = [
     (
         "doctor trusts a unit whose main process is not the container's conmon",
         "scripts/hiddenforge",
-        ' and _as_int(props.get("MainPID")) == pid:',
-        ":",
+        "        if main == pid:",
+        "        if main is not None:",
         "tests/test_cli.py -k \"unrelated_unit or wrapper_unit\"",
+    ),
+    (
+        "doctor accepts a unit that holds a process other than conmon and net helpers",
+        "scripts/hiddenforge",
+        "all(n == pid or comm in _PODMAN_NET_HELPERS for n, comm in procs)",
+        "True",
+        "tests/test_cli.py -k outlives_the_container",
     ),
     (
         "doctor passes an unvalidated container label to systemctl",
