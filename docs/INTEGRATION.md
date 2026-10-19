@@ -310,7 +310,9 @@ still contains every hardening directive (`ClientOnly`, `SafeLogging`,
 `VanguardsLiteEnabled`, PoW, Intro-point DoS, ...); key dir `0700`; secret key
 `0600`; and each key set's `hostname` agrees with its public key.
 A container that is not restarted when it exits also FAILs: no engine restart
-policy, and no systemd unit whose main process is the container's conmon.
+policy and no systemd unit running it. A systemd unit whose main process is the
+container's conmon, with `Restart=always`, is a warning rather than a pass:
+doctor cannot prove the unit recreates the container, and says how to check.
 A log driver other than `none`, and `dns:` unset or not loopback, are warnings.
 Exit `1` on any failure, `0` otherwise, `2` if the container cannot be inspected.
 
