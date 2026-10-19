@@ -468,7 +468,10 @@ def _run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
 
     A hung docker/skopeo/syft call must not hang the CLI forever; on timeout we
     return rc 124 with a marker in stderr, which the callers already treat as
-    failure (they check returncode and surface stderr).
+    failure (they check returncode and surface stderr). A program that is not
+    installed (systemctl on a host without systemd, loginctl in a minimal
+    image) returns rc 127 the same way, instead of a traceback from the middle
+    of a report.
     """
     kw.setdefault("capture_output", True)
     kw.setdefault("text", True)
@@ -482,6 +485,8 @@ def _run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
         err = (exc.stderr if isinstance(exc.stderr, str)
                else (exc.stderr or b"").decode(errors="replace"))
         return subprocess.CompletedProcess(cmd, 124, out, err + f" (timed out after {timeout}s)")
+    except OSError as exc:
+        return subprocess.CompletedProcess(cmd, 127, "", f"{cmd[0]}: {exc.strerror or exc}")
 
 
 def _engine() -> str | None:
@@ -1218,17 +1223,42 @@ def _append_in_container_key_checks(checks: list[dict], container: str | None,
 _UNIT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9@._:\\-]{0,250}\.service")
 
 
-def _systemd_unit_state(unit: str) -> dict[str, str] | None:
-    """Restart= and UnitFileState= of a loaded unit, user scope first, else None."""
-    if not _UNIT_NAME.fullmatch(unit):
+def _cgroup_of(pid: object) -> str | None:
+    """The cgroup v2 path of a process, or None if it cannot be read."""
+    n = _as_int(pid)
+    if not n or n <= 0:
+        return None
+    try:
+        text = Path(f"/proc/{n}/cgroup").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    for line in text.splitlines():
+        if line.startswith("0::"):
+            return line[3:].strip() or None
+    return None
+
+
+def _systemd_unit_state(unit: str, cgroup: str | None) -> dict[str, str] | None:
+    """Restart= and UnitFileState= of the unit that really runs this container.
+
+    The label naming the unit is set by whoever created the container, so it is
+    only a hint. The unit counts only if the container's conmon process sits in
+    that unit's own cgroup: a label naming some unrelated unit with
+    Restart=always (systemd-journald.service, say) proves nothing about this
+    container and must not pass the check. That also settles user versus system
+    scope: whichever scope's unit actually contains the process is the one.
+    """
+    if not _UNIT_NAME.fullmatch(unit) or not cgroup:
         return None
     for scope in (["--user"], []):
         r = _run(["systemctl", *scope, "show", unit,
-                  "--property=LoadState,Restart,UnitFileState"])
+                  "--property=LoadState,Restart,UnitFileState,ControlGroup"])
         if r.returncode != 0:
             continue
         props = dict(line.split("=", 1) for line in r.stdout.splitlines() if "=" in line)
-        if props.get("LoadState") == "loaded":
+        group = props.get("ControlGroup", "")
+        if (props.get("LoadState") == "loaded" and group
+                and (cgroup == group or cgroup.startswith(group.rstrip("/") + "/"))):
             return props
     return None
 
@@ -1243,20 +1273,25 @@ def _append_linger_check(checks: list[dict]) -> None:
                          severity="warn"))
 
 
-def _append_systemd_restart_checks(checks: list[dict], name: str, unit: str) -> None:
+def _append_systemd_restart_checks(checks: list[dict], name: str, unit: str,
+                                   cgroup: str | None) -> None:
     """The container has no engine restart policy because a systemd unit runs it.
 
     Podman labels a container started by a unit with PODMAN_SYSTEMD_UNIT, and
     there the unit's Restart= does the engine's job: when the container exits,
-    the unit's main process exits and systemd starts it again. So check the unit
-    rather than fail a deployment that heals correctly.
+    the unit's main process exits and systemd starts it again. Measured with a
+    replica of the forge deployment (rootless, host network): the container was
+    killed, systemd recreated it 7s later, same onion address, HTTP 200 over
+    Tor. So check the unit rather than fail a deployment that heals correctly.
     """
-    state = _systemd_unit_state(unit)
+    state = _systemd_unit_state(unit, cgroup)
     if state is None:
         checks.append(_check(False, name,
-                             f"RestartPolicy=none; the container says systemd unit "
-                             f"{unit!r} runs it, but that unit could not be read. Set "
-                             "a restart policy or check the unit"))
+                             f"RestartPolicy=none; the container's label names systemd "
+                             f"unit {unit!r}, but that unit could not be confirmed to run "
+                             "this container (its conmon process is not in the unit's "
+                             "cgroup, or the unit could not be read). Set a restart "
+                             "policy or run it from the unit"))
         return
     restart = state.get("Restart", "")
     checks.append(_check(restart == "always", name,
@@ -1265,19 +1300,27 @@ def _append_systemd_restart_checks(checks: list[dict], name: str, unit: str) -> 
                          + ("" if restart == "always" else
                             "; set Restart=always in the unit")))
     enabled = state.get("UnitFileState", "")
+    if enabled == "generated":
+        # Podman quadlet units are written by a generator and cannot be
+        # `enable`d; whether they start at boot is their [Install] section.
+        hint = ("; generated (a quadlet?): it starts at boot only if its [Install] "
+                "section says so")
+    elif enabled != "enabled":
+        hint = f"; run `systemctl --user enable {unit}`"
+    else:
+        hint = ""
     checks.append(_check(enabled == "enabled",
                          "the container comes back after a reboot (its systemd unit "
                          "is enabled)",
-                         f"{unit}: UnitFileState={enabled or 'unknown'}"
-                         + ("" if enabled == "enabled" else
-                            f"; run `systemctl --user enable {unit}`"),
+                         f"{unit}: UnitFileState={enabled or 'unknown'}" + hint,
                          severity="warn"))
     if _engine() == "podman":
         _append_linger_check(checks)
 
 
 def _append_restart_checks(checks: list[dict], hc: dict,
-                           labels: dict | None = None) -> None:
+                           labels: dict | None = None,
+                           conmon_pid: object = None) -> None:
     """The restart policy is how this container heals, so check it.
 
     It exits on purpose -- when Tor dies, when a backend moves, when a backend
@@ -1294,7 +1337,7 @@ def _append_restart_checks(checks: list[dict], hc: dict,
     if policy in ("", "no"):
         unit = str((labels or {}).get("PODMAN_SYSTEMD_UNIT") or "")
         if unit:
-            _append_systemd_restart_checks(checks, name, unit)
+            _append_systemd_restart_checks(checks, name, unit, _cgroup_of(conmon_pid))
             return
         checks.append(_check(False, name, f"RestartPolicy={policy or 'none'}; set "
                              "`restart: " + ("always" if eng == "podman" else
@@ -1475,7 +1518,8 @@ def cmd_doctor(args) -> int:
     checks.append(_check(logdriver == "none", "logging driver is 'none' (no host log)",
                          f"LogConfig.Type={logdriver!r}", severity="warn"))
 
-    _append_restart_checks(checks, hc, (info.get("Config") or {}).get("Labels"))
+    _append_restart_checks(checks, hc, (info.get("Config") or {}).get("Labels"),
+                           (info.get("State") or {}).get("ConmonPid"))
 
     # Without a loopback DNS server the engine's resolver forwards any name it
     # cannot answer -- a backend that is down or not up yet -- to the host's
@@ -2934,10 +2978,13 @@ def _verify_ssh_signature(sigdir: Path, identity: str, digest_bytes: bytes,
     with tempfile.TemporaryDirectory(prefix="hf-verify-") as tmp:
         allowed = Path(tmp) / "allowed-signers"
         _write_text_nofollow(allowed, allowed_signers, 0o600)
-        proc = subprocess.run(
-            ["ssh-keygen", "-Y", "verify", "-f", str(allowed), "-I", identity,
-             "-n", "file", "-s", str(sig)],
-            input=digest_bytes, capture_output=True, timeout=60, check=False)
+        try:
+            proc = subprocess.run(
+                ["ssh-keygen", "-Y", "verify", "-f", str(allowed), "-I", identity,
+                 "-n", "file", "-s", str(sig)],
+                input=digest_bytes, capture_output=True, timeout=60, check=False)
+        except subprocess.TimeoutExpired:
+            return None, "ssh-keygen did not finish within 60s, so it was NOT checked"
     detail = (proc.stderr or proc.stdout).decode(errors="replace").strip()
     return proc.returncode == 0, detail
 

@@ -271,3 +271,16 @@ def test_both_opt_outs_together_never_accept_an_unsigned_image(hf, tmp_path, cap
                       "--allow-pq-only", "--allow-classical-only")
     assert rc == hf.EXIT_FAIL
     assert "neither signature was verified" in doc["failures"]
+
+
+def test_an_ssh_keygen_that_hangs_is_not_checked_rather_than_a_crash(hf, tmp_path,
+                                                                     monkeypatch):
+    d = tmp_path / "sig"
+    shutil.copytree(SIGNATURES, d)
+
+    def hang(*a, **kw):
+        raise subprocess.TimeoutExpired(a[0] if a else "ssh-keygen", 60)
+    monkeypatch.setattr(hf.subprocess, "run", hang)
+    verdict, detail = hf._verify_ssh_signature(
+        d, "sam@sambent.com", (d / "hiddenforge.digest").read_bytes(), "")
+    assert verdict is None and "NOT checked" in detail

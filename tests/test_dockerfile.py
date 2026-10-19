@@ -36,3 +36,23 @@ def test_cli_tor_version_matches_the_dockerfile_pin():
     assert len(pins) == 1, f"expected exactly one tor apk pin, found {pins}"
     cli = load_file(repo_root(__file__) / "scripts" / "hiddenforge", "hf_cli_torpin")
     assert pins[0] == cli.TOR_VERSION
+
+
+def test_every_apk_pin_is_documented_with_its_exact_version():
+    """The README pin table and docs/DEPENDENCIES.md quote each pinned version.
+    A pin bump that forgets either one leaves the published docs naming a package
+    the image no longer installs, so read the pins the way check_pins.py does
+    and require each one, version included, in both tables."""
+    from loader import load_file
+
+    root = repo_root(__file__)
+    pins = load_file(root / "scripts" / "check_pins.py", "hf_check_pins").parse_pins(
+        DOCKERFILE.read_text())
+    assert {"tor", "python3", "openssl", "zlib", "su-exec", "py3-pip"} <= set(pins)
+    readme = (root / "README.md").read_text()
+    deps = (root / "docs" / "DEPENDENCIES.md").read_text()
+    missing = [f"README: {p}={v}" for p, v in pins.items()
+               if f"| `{p}` apk | `{v}` |" not in readme]
+    missing += [f"DEPENDENCIES: {p}={v}" for p, v in pins.items()
+                if f"| `{p}` | `{v}` |" not in deps]
+    assert not missing, "pins not documented at their exact version: " + ", ".join(missing)

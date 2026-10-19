@@ -740,12 +740,24 @@ def test_podman_boot_prerequisites_are_checked(hf, monkeypatch, capsys, tmp_path
         assert "systemctl --user enable podman-restart.service" in unit_check["detail"]
 
 
-def _systemd_doctor(hf, monkeypatch, capsys, tmp_path, label, show_out, engine="podman"):
-    """doctor against a container with no engine restart policy, run by a unit."""
+UNIT_CGROUP = "/user.slice/user-1000.slice/user@1000.service/app.slice/hiddenforge.service"
+
+
+def _systemd_doctor(hf, monkeypatch, capsys, tmp_path, label, show_out, engine="podman",
+                    conmon_cgroup=UNIT_CGROUP, user_show=None):
+    """doctor against a container with no engine restart policy, run by a unit.
+
+    `show_out` answers `systemctl show` (both scopes unless `user_show` gives the
+    --user answer separately); `conmon_cgroup` is where the container's conmon
+    process lives.
+    """
     os.chmod(tmp_path, 0o700)
     info = _fake_inspect()
     info["HostConfig"]["RestartPolicy"] = {"Name": "no"}
     info["Config"] = {"Labels": {"PODMAN_SYSTEMD_UNIT": label}}
+    info["State"]["ConmonPid"] = 4242
+    monkeypatch.setattr(hf, "_cgroup_of",
+                        lambda pid: conmon_cgroup if pid == 4242 else None)
     monkeypatch.setattr(hf, "_docker_inspect", lambda c: (info, None))
     monkeypatch.setattr(hf, "_resolve_container", lambda c: "cid")
     monkeypatch.setattr(hf, "_docker_exec_text", lambda c, a: None)
@@ -759,9 +771,10 @@ def _systemd_doctor(hf, monkeypatch, capsys, tmp_path, label, show_out, engine="
         if cmd[0] == "loginctl":
             return subprocess.CompletedProcess(cmd, 0, "Linger=yes\n", "")
         if cmd[0] == "systemctl" and "show" in cmd:
-            if show_out is None:
+            out = user_show if ("--user" in cmd and user_show is not None) else show_out
+            if out is None:
                 return subprocess.CompletedProcess(cmd, 1, "", "not found")
-            return subprocess.CompletedProcess(cmd, 0, show_out, "")
+            return subprocess.CompletedProcess(cmd, 0, out, "")
         return subprocess.CompletedProcess(cmd, 1, "", "")
 
     monkeypatch.setattr(hf, "_run", run)
@@ -780,7 +793,7 @@ def test_a_systemd_unit_with_restart_always_is_a_restart_policy(hf, monkeypatch,
     policy; the unit restarts it. doctor used to FAIL that working setup."""
     checks, _ = _systemd_doctor(
         hf, monkeypatch, capsys, tmp_path, "hiddenforge.service",
-        "LoadState=loaded\nRestart=always\nUnitFileState=enabled\n")
+        f"LoadState=loaded\nRestart=always\nUnitFileState=enabled\nControlGroup={UNIT_CGROUP}\n")
     assert checks[RESTART]["ok"] is True
     assert "hiddenforge.service" in checks[RESTART]["detail"]
     assert checks[UNIT_BOOT]["ok"] is True
@@ -791,7 +804,7 @@ def test_a_systemd_unit_that_does_not_always_restart_fails(hf, monkeypatch, caps
                                                           tmp_path, restart):
     checks, _ = _systemd_doctor(
         hf, monkeypatch, capsys, tmp_path, "hiddenforge.service",
-        f"LoadState=loaded\nRestart={restart}\nUnitFileState=enabled\n")
+        f"LoadState=loaded\nRestart={restart}\nUnitFileState=enabled\nControlGroup={UNIT_CGROUP}\n")
     assert checks[RESTART]["ok"] is False and checks[RESTART]["severity"] == "fail"
     assert "Restart=always" in checks[RESTART]["detail"]
 
@@ -799,7 +812,7 @@ def test_a_systemd_unit_that_does_not_always_restart_fails(hf, monkeypatch, caps
 def test_a_disabled_systemd_unit_warns_about_reboots(hf, monkeypatch, capsys, tmp_path):
     checks, _ = _systemd_doctor(
         hf, monkeypatch, capsys, tmp_path, "hiddenforge.service",
-        "LoadState=loaded\nRestart=always\nUnitFileState=disabled\n")
+        f"LoadState=loaded\nRestart=always\nUnitFileState=disabled\nControlGroup={UNIT_CGROUP}\n")
     assert checks[UNIT_BOOT]["ok"] is False and checks[UNIT_BOOT]["severity"] == "warn"
 
 
@@ -807,6 +820,65 @@ def test_an_unreadable_systemd_unit_is_not_trusted(hf, monkeypatch, capsys, tmp_
     checks, _ = _systemd_doctor(hf, monkeypatch, capsys, tmp_path,
                                 "gone.service", None)
     assert checks[RESTART]["ok"] is False and checks[RESTART]["severity"] == "fail"
+
+
+def test_a_label_naming_an_unrelated_unit_does_not_pass(hf, monkeypatch, capsys, tmp_path):
+    """The reviewer's attack: label the container with a system unit that has
+    Restart=always but does not run it. The conmon process is not in that unit's
+    cgroup, so the label proves nothing."""
+    checks, _ = _systemd_doctor(
+        hf, monkeypatch, capsys, tmp_path, "systemd-journald.service",
+        "LoadState=loaded\nRestart=always\nUnitFileState=static\n"
+        "ControlGroup=/system.slice/systemd-journald.service\n")
+    assert checks[RESTART]["ok"] is False and checks[RESTART]["severity"] == "fail"
+    assert "cgroup" in checks[RESTART]["detail"]
+
+
+def test_the_system_scope_counts_only_when_it_runs_the_container(hf, monkeypatch,
+                                                                capsys, tmp_path):
+    """User bus unreachable, system scope answers for a same-named unit that does
+    not contain the container: not trusted. One that does contain it: trusted."""
+    elsewhere = ("LoadState=loaded\nRestart=always\nUnitFileState=enabled\n"
+                 "ControlGroup=/system.slice/hiddenforge.service\n")
+    checks, _ = _systemd_doctor(hf, monkeypatch, capsys, tmp_path, "hiddenforge.service",
+                                elsewhere, user_show=None)
+    assert checks[RESTART]["ok"] is False
+    checks, _ = _systemd_doctor(hf, monkeypatch, capsys, tmp_path, "hiddenforge.service",
+                                elsewhere, conmon_cgroup="/system.slice/hiddenforge.service")
+    assert checks[RESTART]["ok"] is True
+
+
+def test_a_container_whose_conmon_cannot_be_located_is_not_trusted(hf, monkeypatch,
+                                                                   capsys, tmp_path):
+    checks, _ = _systemd_doctor(
+        hf, monkeypatch, capsys, tmp_path, "hiddenforge.service",
+        f"LoadState=loaded\nRestart=always\nUnitFileState=enabled\nControlGroup={UNIT_CGROUP}\n",
+        conmon_cgroup=None)
+    assert checks[RESTART]["ok"] is False
+
+
+def test_a_quadlet_unit_is_described_not_told_to_enable(hf, monkeypatch, capsys, tmp_path):
+    """Generated units cannot be `systemctl enable`d; the advice must not say to."""
+    checks, _ = _systemd_doctor(
+        hf, monkeypatch, capsys, tmp_path, "hiddenforge.service",
+        f"LoadState=loaded\nRestart=always\nUnitFileState=generated\nControlGroup={UNIT_CGROUP}\n")
+    assert checks[UNIT_BOOT]["ok"] is False and checks[UNIT_BOOT]["severity"] == "warn"
+    assert "enable" not in checks[UNIT_BOOT]["detail"].split(";", 1)[1].replace("[Install]", "")
+    assert "[Install]" in checks[UNIT_BOOT]["detail"]
+
+
+def test_cgroup_of_reads_the_v2_line(hf, tmp_path, monkeypatch):
+    assert hf._cgroup_of(None) is None and hf._cgroup_of("x") is None
+    assert hf._cgroup_of(0) is None
+    own = hf._cgroup_of(os.getpid())
+    assert own is None or own.startswith("/")
+
+
+def test_run_reports_a_missing_program_instead_of_raising(hf):
+    """systemctl is absent on hosts without systemd; doctor must report, not crash."""
+    r = hf._run(["hiddenforge-no-such-program-xyz", "--version"])
+    assert r.returncode == 127
+    assert "hiddenforge-no-such-program-xyz" in r.stderr
 
 
 @pytest.mark.parametrize("label", ["--user=evil.service", "-H x.service", "a b.service",
@@ -817,7 +889,7 @@ def test_a_hostile_unit_label_never_reaches_systemctl(hf, monkeypatch, capsys,
     '-' would be parsed by systemctl as an option."""
     checks, calls = _systemd_doctor(
         hf, monkeypatch, capsys, tmp_path, label,
-        "LoadState=loaded\nRestart=always\nUnitFileState=enabled\n")
+        f"LoadState=loaded\nRestart=always\nUnitFileState=enabled\nControlGroup={UNIT_CGROUP}\n")
     assert not any(c[0] == "systemctl" and "show" in c for c in calls)
     assert checks[RESTART]["ok"] is False
 

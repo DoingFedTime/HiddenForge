@@ -277,9 +277,16 @@ MUTATIONS = [
         "tests/test_verify_trust.py",
     ),
     (
+        "doctor trusts a unit that does not contain the container's conmon process",
+        "scripts/hiddenforge",
+        "                and (cgroup == group or cgroup.startswith(group.rstrip(\"/\") + \"/\"))):",
+        "                ):",
+        "tests/test_cli.py -k unrelated_unit",
+    ),
+    (
         "doctor passes an unvalidated container label to systemctl",
         "scripts/hiddenforge",
-        "    if not _UNIT_NAME.fullmatch(unit):",
+        "    if not _UNIT_NAME.fullmatch(unit) or not cgroup:",
         "    if False:",
         "tests/test_cli.py -k hostile",
     ),
