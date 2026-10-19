@@ -3177,7 +3177,15 @@ def cmd_verify_image(args) -> int:
         elif registry is None:
             failures.append(f"could not resolve registry digest: {reg_err}")
         elif not digest_match:
-            failures.append("registry digest does not match the signed digest")
+            # A release's signatures can only be committed AFTER its tag (the
+            # digest depends on the tagged commit), so a checkout of the tag
+            # itself carries the previous release's signatures. Say so: the
+            # usual cause of this line is verifying from the wrong checkout.
+            failures.append("registry digest does not match the signed digest "
+                            f"({signed}); if these signatures came from a checkout of "
+                            "a release tag, they belong to the release before it: a "
+                            "release's signatures are committed on master after its "
+                            "tag, so verify with signatures from master")
         if ssh_ok is False:
             failures.append(f"SSH-FIDO2 signature: {ssh_detail}")
         elif ssh_ok is None:

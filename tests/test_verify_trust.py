@@ -284,3 +284,17 @@ def test_an_ssh_keygen_that_hangs_is_not_checked_rather_than_a_crash(hf, tmp_pat
     verdict, detail = hf._verify_ssh_signature(
         d, "sam@sambent.com", (d / "hiddenforge.digest").read_bytes(), "")
     assert verdict is None and "NOT checked" in detail
+
+
+def test_a_digest_mismatch_explains_the_tag_checkout_trap(hf, tmp_path, capsys,
+                                                          monkeypatch):
+    """Verifying from a checkout of a release tag compares against the previous
+    release's digest. The failure must say so instead of only "mismatch"."""
+    d = tmp_path / "sig"
+    shutil.copytree(SIGNATURES, d)
+    monkeypatch.setattr(hf, "_resolve_registry_digest", lambda image: ("sha256:" + "f" * 64, None))
+    rc = hf.main(["verify-image", "example.com/x:1", "--sigdir", str(d), "--json",
+                  "--allow-pq-only", "--allow-classical-only"])
+    doc = json.loads(capsys.readouterr().out)
+    assert rc == hf.EXIT_FAIL and doc["digest_match"] is False
+    assert any("committed on master after its tag" in f for f in doc["failures"])
