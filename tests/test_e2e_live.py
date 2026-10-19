@@ -28,6 +28,12 @@ import pytest
 from loader import repo_root
 
 REPO = repo_root(__file__)
+# How long a fresh key may take to be published, and then reported ready. A
+# fresh Tor bootstrap plus first descriptor upload was measured at 365s on a
+# slow directory fetch (Docker, 2026-09-26) and 27-252s across real reboots, so
+# the old 300s limit failed healthy runs whenever the Tor network was slow
+# (seen 2026-10-19: "No circuits are opened", passed on immediate re-run).
+PUBLISH_DEADLINE_S = 600
 
 
 def _rmtree_as_root(path):
@@ -228,7 +234,7 @@ def test_the_running_container_has_the_posture_the_fragment_promises(workdir):
         _assert_stack_up(proc)
 
         published = workdir / "tor-keys" / "demo.onion"
-        deadline = time.time() + 300
+        deadline = time.time() + PUBLISH_DEADLINE_S
         while time.time() < deadline and not published.exists():
             time.sleep(3)
         assert published.exists(), "address file was never published\n" + \
@@ -300,7 +306,7 @@ def test_demo_publishes_and_show_agrees(workdir):
         _assert_stack_up(proc)
 
         published = workdir / "tor-keys" / "demo.onion"
-        deadline = time.time() + 300
+        deadline = time.time() + PUBLISH_DEADLINE_S
         while time.time() < deadline and not published.exists():
             time.sleep(3)
         # Attach the container's own output to the failure. Without it this
@@ -324,7 +330,7 @@ def test_demo_publishes_and_show_agrees(workdir):
         assert doc["key_path"].endswith("hs_ed25519_secret_key")
 
         # And status must eventually report ready with the address attached.
-        deadline = time.time() + 300
+        deadline = time.time() + PUBLISH_DEADLINE_S
         ready = False
         while time.time() < deadline:
             st = subprocess.run(
