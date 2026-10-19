@@ -23,6 +23,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import http.client
 import io
 import json
 import pathlib
@@ -31,6 +32,7 @@ import sys
 import tarfile
 import urllib.error
 import urllib.request
+import zlib
 from typing import NoReturn
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
@@ -100,14 +102,19 @@ def fetch_index(branch: str, arch: str) -> dict[str, list[str]]:
             # it, and the rule is named here so the reason travels with the code.
             with urllib.request.urlopen(url, timeout=60) as resp:  # nosemgrep  # noqa: S310
                 blob = resp.read()
-        except (urllib.error.URLError, TimeoutError) as exc:
+        except (OSError, http.client.HTTPException) as exc:
+            # URLError, timeouts, resets and refused connections are all OSError;
+            # a truncated body is an HTTPException. None of them is an answer.
             _unavailable(f"cannot fetch {url}: {exc}")
-        with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tar:
-            member = next(m for m in tar.getmembers() if m.name == "APKINDEX")
-            handle = tar.extractfile(member)
-            if handle is None:
-                _unavailable(f"{url} has no readable APKINDEX")
-            text = handle.read().decode("utf-8", "replace")
+        try:
+            with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tar:
+                member = next((m for m in tar.getmembers() if m.name == "APKINDEX"), None)
+                handle = tar.extractfile(member) if member is not None else None
+                if handle is None:
+                    _unavailable(f"{url} has no readable APKINDEX")
+                text = handle.read().decode("utf-8", "replace")
+        except (tarfile.TarError, EOFError, OSError, zlib.error) as exc:
+            _unavailable(f"{url} is not a readable index archive: {exc}")
         name = None
         for block in text.split("\n\n"):
             for line in block.splitlines():

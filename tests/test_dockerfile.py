@@ -8,6 +8,8 @@ excuse itself.
 """
 import re
 
+import pytest
+
 from loader import repo_root
 
 DOCKERFILE = repo_root(__file__) / "Dockerfile"
@@ -70,3 +72,44 @@ def test_check_pins_exits_3_when_it_cannot_check():
                           capture_output=True, text=True, timeout=60, check=False)
     assert proc.returncode == 3, (proc.returncode, proc.stderr)
     assert "implausible --branch" in proc.stderr
+
+
+
+@pytest.mark.parametrize("failure", ["reset", "partial", "junk", "no-index"])
+def test_check_pins_never_mistakes_a_bad_download_for_an_answer(failure, monkeypatch, capsys):
+    """Every way of not getting the index is exit 3, not a traceback (exit 1)."""
+    import gzip
+    import http.client
+    import io
+    import tarfile
+
+    from loader import load_file
+
+    cp = load_file(repo_root(__file__) / "scripts" / "check_pins.py", "hf_check_pins_f")
+
+    def empty_tar():
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:gz"):
+            pass
+        return buf.getvalue()
+
+    class Resp(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def fake(url, timeout):
+        if failure == "reset":
+            raise ConnectionResetError("reset by peer")
+        if failure == "partial":
+            raise http.client.IncompleteRead(b"x")
+        if failure == "junk":
+            return Resp(gzip.compress(b"not a tar"))
+        return Resp(empty_tar())
+
+    monkeypatch.setattr(cp.urllib.request, "urlopen", fake)
+    with pytest.raises(SystemExit) as exc:
+        cp.fetch_index("v3.23", "x86_64")
+    assert exc.value.code == 3
