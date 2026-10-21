@@ -20,7 +20,7 @@ result rather than reproducing.
 | R2 | Two onions from one container | the committed `docker-compose.yml` plus a second `*_TOR_SERVICE_HOSTS`; `status` and `show` for each | **pass** (`66dc20f`) - both ready after recreate; `show` agrees for each; both return HTTP 200 over Tor |
 | R3 | The committed `docker-compose.yml` boots | `docker compose up -d` with only the image (and, on this host, the subnets) overridden | **pass** (`66dc20f`) - `status` ready 19s after `up` (fresh key); host-side `doctor` ok, 16 checks, no failures, no warnings |
 | R4 | `sbom` emits a valid SPDX document | `hiddenforge sbom --image ...` | **pass** (`66dc20f`) - SPDX-2.3, 43 packages |
-| R5 | `verify-image` verifies a published release | run without `--skip-registry` against `sambent.dev`, with stock tools only (Alpine 3.23: OpenSSL, ssh-keygen, skopeo; no pqsign) | **pass (2.0.4)** - registry digest equals the signed digest; SSH-FIDO2 and ML-DSA-65 both verify against the pinned keys; `VERIFIED`, exit 0. Re-run against 2.1.0 once it is published |
+| R5 | `verify-image` verifies a published release | run without `--skip-registry` against `sambent.dev`, with stock tools only (Alpine 3.23: OpenSSL, ssh-keygen, skopeo; no pqsign) | **pass (2.1.0)** - in a stock `alpine:3.23.5` container (OpenSSL 3.5.9, ssh-keygen, skopeo; no pqsign), from a fresh clone of master: the registry digest equals the signed `sha256:183a5df3...`; ML-DSA-65 verifies through OpenSSL against the pinned key; exit 0 with `--allow-pq-only`, `complete: false`, because the SSH-FIDO2 half is not yet published. 2.0.4 passed with both halves |
 | R6 | The arm64 image runs on an arm64 kernel | full-system arm64 VM (QEMU `virt`, Debian 13 arm64, real aarch64 kernel 6.12; emulated CPU), the shipped compose file | **pass** (`66dc20f`, Debian 13 arm64, kernel 6.12.113) - ready in 333s on the emulated CPU, descriptor uploaded, HTTP 200 over Tor (fetched from the host's Tor client, and from a fresh client inside the VM in 69s); Tor at uid 100 with `Seccomp: 2`, `Seccomp_filters: 2` (runtime profile + `Sandbox 1`, same as amd64); Tor killed, container restarted (restarts=1) with the same address and ready again; `doctor` no failures, no warnings. The VM's long-running system Tor client failed its first fetches (`No more HSDir available to query`) after slow circuit builds through one guard, and kept that failure cached; the host and a fresh in-VM client both reached the service. Not real ARM hardware |
 | R7 | The built image is clean | CI `security`: trivy image (HIGH/CRITICAL, fixable), trivy fs, semgrep, gitleaks over every commit | **pass** - trivy on the `66dc20f` image: 0 vulnerabilities at any severity (pinned `aquasec/trivy@sha256:ab70a022...`, the CI image). The full CI `security` job on `8d66c4d`: every scan step passed, no leaks. Run locally with `forgejo-runner exec`, where the final artifact-upload step cannot run (no artifact server); that step is the only one that failed |
 | R8 | Every in-image CLI subcommand works | CI `build-and-test` plus the documented `docker run <image> ...` forms | **pass** (`66dc20f`) - `version`/`info` contract (2.1.0, Tor 0.4.9.14), in-image `vanity` (also with `--network none`), `setup` writes its four files; live E2E 5/5 in 110s |
@@ -33,10 +33,12 @@ result rather than reproducing.
 | R15 | Rootless Podman applies every declared limit | Docker Compose v2 (Ubuntu's `docker-compose-v2`, no Docker engine) on the rootless Podman socket, the shipped `podman-compose.yml` | **pass** (earlier image, same compose file) - `pids.max` 256, `memory.swap.max` 0, DNS isolated; Tor killed, restarted, same address, HTTP 200; `doctor` no failures, no warnings |
 | R16 | "Ready" means clients can reach it | fresh key and restart; compare Tor's HS_DESC UPLOADED events with the moment of ready, fetch at that moment | **pass** (`66dc20f`) - ready 1s after the first upload (fresh) and in the same second (restart, fetched by a Tor client that had never seen the address); the fetch returned HTTP 200 both times. A client that fetched the descriptor *before* the restart holds stale introduction points: its first fetch at the ready moment timed out and its retry succeeded after 67s. That is the client's cache, not readiness, and it heals without action. Before the fix, ready came ~45s before the upload |
 
-CI on `8d66c4d`: lint, unit (98.91% coverage, mutation spot-check
-57/57, and a new property test over every accepted key path), pin-freshness,
-build-and-test (live E2E 5/5), reproducibility pass; security as R7 (gitleaks clean
-with the `[allowlist]` form on 8.28 and 8.21; trivy clean with no setuptools exception).
+CI on the `v2.1.0` tag (`c5514b9`, sambent.dev Actions, 2026-10-21): lint, unit
+(mutation spot-check 63/63; 99.03% coverage of `entrypoint.py`, re-measured on the
+tag with the job's own command), mutation (the full mutmut run and gate),
+build-and-test (live E2E), security (trivy, semgrep, gitleaks) and reproducibility
+all pass. `pin-freshness` runs on schedule and dispatch only; it passed on the same
+commit in a dispatch run that day.
 
 Supporting detail for the rows that produced a finding follows.
 
