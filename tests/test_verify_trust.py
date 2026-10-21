@@ -1,4 +1,4 @@
-"""verify-image's trust anchor, exercised with real ssh-keygen and the real signatures.
+"""verify-image's trust anchor, exercised with real ssh-keygen and real release signatures.
 
 The signer keys used to be read from the signature directory being verified, so
 anyone able to alter that directory could substitute their own key, sign their
@@ -22,6 +22,11 @@ from loader import load_file, repo_root
 
 REPO = repo_root(__file__)
 SIGNATURES = REPO / "signatures"
+# A complete, genuine release set (2.0.4: digest, SSH-FIDO2 and ML-DSA signatures,
+# made with the pinned keys). The live directory cannot stand in for it: a release
+# is published with the ML-DSA half first and gains the hardware half later, so
+# between the two it has no .sig at all.
+GENUINE = REPO / "tests" / "fixtures" / "signatures-2.0.4"
 
 
 @pytest.fixture(scope="module")
@@ -79,7 +84,7 @@ def test_the_genuine_release_signature_verifies_against_the_pin(hf, capsys, tmp_
     """The other side, with the real published signature: the pin must accept it,
     or the fix would just be a verifier that refuses everything."""
     d = tmp_path / "sig"
-    shutil.copytree(SIGNATURES, d)
+    shutil.copytree(GENUINE, d)
     (d / "allowed-signers").write_text("")   # prove the file is not consulted
     rc, doc = _verify(hf, capsys, d, "--allow-classical-only")
     assert doc["ssh_fido2"] is True, doc["ssh_fido2_detail"]
@@ -111,7 +116,7 @@ def test_an_mldsa_key_that_is_not_the_pinned_one_is_a_failure(hf, tmp_path):
 def test_the_real_set_without_pqsign_is_refused_by_default(hf, tmp_path, capsys,
                                                            monkeypatch):
     d = tmp_path / "sig"
-    shutil.copytree(SIGNATURES, d)
+    shutil.copytree(GENUINE, d)
     real_which = shutil.which
     monkeypatch.setattr(hf.shutil, "which",
                         lambda n: None if n == "pqsign" else real_which(n))
@@ -217,7 +222,7 @@ def test_a_digest_changed_by_one_byte_fails_with_openssl(hf):
 
 def _without_hardware_sig(tmp_path: Path) -> Path:
     d = tmp_path / "sig"
-    shutil.copytree(SIGNATURES, d)
+    shutil.copytree(GENUINE, d)
     (d / "hiddenforge.digest.sig").unlink()
     return d
 
@@ -276,7 +281,7 @@ def test_both_opt_outs_together_never_accept_an_unsigned_image(hf, tmp_path, cap
 def test_an_ssh_keygen_that_hangs_is_not_checked_rather_than_a_crash(hf, tmp_path,
                                                                      monkeypatch):
     d = tmp_path / "sig"
-    shutil.copytree(SIGNATURES, d)
+    shutil.copytree(GENUINE, d)
 
     def hang(*a, **kw):
         raise subprocess.TimeoutExpired(a[0] if a else "ssh-keygen", 60)
@@ -298,3 +303,11 @@ def test_a_digest_mismatch_explains_the_tag_checkout_trap(hf, tmp_path, capsys,
     doc = json.loads(capsys.readouterr().out)
     assert rc == hf.EXIT_FAIL and doc["digest_match"] is False
     assert any("committed on master after its tag" in f for f in doc["failures"])
+
+
+def test_the_genuine_fixture_uses_the_shipped_keys():
+    """The fixture is only evidence for the pin if it was made with the keys that
+    ship; a re-keyed release must refresh it rather than leave it vouching for an
+    old key."""
+    for name in ("allowed-signers", "sambent-mldsa.pub"):
+        assert (GENUINE / name).read_bytes() == (SIGNATURES / name).read_bytes(), name

@@ -1,11 +1,23 @@
-# Signatures for HiddenForge 2.0.4
+# Signatures for HiddenForge 2.1.0
 
-Image digest: `sambent.dev/sam/hiddenforge@sha256:063d824c3e56205bea5a3bfeb3d2d991de7dea88439cf6ebda8bb4b17ecce0ca`
+Image digest: `sambent.dev/sam/hiddenforge@sha256:183a5df347fcf0cb84136b1f1f79f5f8bd29ba6f236662e744e47d1ffc2d1190`
 
-These signatures cover the **2.0.4** release. The `2.1.0` branch is **not signed**
-yet: `hiddenforge.digest` still holds the 2.0.4 digest, so a build from `2.1.0`
-will not match it. That mismatch means "not yet signed", not "tampered with" --
-but a verifier must not be left to guess which. See `docs/IMPROVEMENTS.md`.
+The same index is served as `doingfedtime/hiddenforge@sha256:183a5df347fcf0cb84136b1f1f79f5f8bd29ba6f236662e744e47d1ffc2d1190`
+on Docker Hub. It covers `linux/amd64` and `linux/arm64`.
+
+**What is signed today:** the **ML-DSA-65** signature (`hiddenforge.digest.mldsa`)
+is present. The hardware **SSH-FIDO2** signature (`hiddenforge.digest.sig`) is
+**pending**: it will be added over this same digest, without a new image. Until
+then `hiddenforge verify-image` refuses by default, and accepts with
+`--allow-pq-only`, reporting `complete: false`.
+
+**Verify from master, not from the tag.** Signing an image needs the tag to exist
+first, so a release's signatures are committed after its tag. A checkout of
+`v2.1.0` therefore still holds the 2.0.4 signature files, which do not match the
+2.1.0 digest. That mismatch means "look on master", not "tampered with".
+
+The 2.0.4 signatures (digest `sha256:063d824c3e56205bea5a3bfeb3d2d991de7dea88439cf6ebda8bb4b17ecce0ca`,
+both halves) remain in the `v2.0.4` tag and in git history.
 
 ### Which digest gets compared (this cost a full build cycle)
 
@@ -14,22 +26,19 @@ never `docker image inspect --format '{{.Id}}'`. They are different values: the
 `.Id` is the image config digest, the index digest covers the manifest list. A
 verification that compares `.Id` reports a false "NOT REPRODUCIBLE".
 
-### Architecture: what is verified, and what is not
+### Architecture: what is verified
 
-This release index is **multi-platform** (`linux/amd64` + `linux/arm64`). The
-reproduction below is run on an amd64 builder, so **only the amd64 manifest has
-been reproduced**; the arm64 manifest has not. An amd64-only build produces a
-different index digest than the two-platform index, and that is expected, not a
-failure -- reproduce with the same `--platform` value the release used. A
-consumer on arm64 needs the arm64 manifest digest, which is not published here.
-(The unreleased tree's arm64 image now builds reproducibly and passes the in-image
-checks under qemu; see `docs/PRODUCTION-READINESS.md` R6. That says nothing about
-the 2.0.4 arm64 manifest, which has still not been reproduced.)
-Until an arm64 build is reproduced on a builder that can run it, treat arm64 as
-unverified.
+This release index is **multi-platform** (`linux/amd64` + `linux/arm64`), and the
+**whole index** was reproduced: two independent clean builds of `v2.1.0` produced
+the same index digest, which covers both platform manifests. The arm64 half was
+built under qemu emulation on an amd64 host; it was also run on a full-system
+arm64 VM (see `docs/PRODUCTION-READINESS.md` R6), but not on real ARM hardware.
+An amd64-only build produces a different index digest than the two-platform
+index, and that is expected, not a failure: reproduce with the same
+`--platform` value the release used.
 
-Two independent signatures over that digest. No transparency log, no external
-service, nothing to phone home to:
+Signatures over that digest. No transparency log, no external service, nothing
+to phone home to:
 
 1. **ML-DSA-65** (FIPS 204, post-quantum): `hiddenforge.digest.mldsa`, made
    with `pqsign`. Its files are a 16-byte header followed by the raw FIPS 204
@@ -47,7 +56,8 @@ service, nothing to phone home to:
    ```
    With `pqsign` installed, the equivalent is
    `pqsign verify --pub sambent-mldsa.pub --sig hiddenforge.digest.mldsa --in hiddenforge.digest`.
-2. **SSH-FIDO2** (YubiKey hardware key): `hiddenforge.digest.sig`
+2. **SSH-FIDO2** (YubiKey hardware key): `hiddenforge.digest.sig`, **pending for
+   2.1.0**. Once it is committed:
    ```
    ssh-keygen -Y verify -f allowed-signers -I sam@sambent.com -n file \
      -s hiddenforge.digest.sig < hiddenforge.digest
@@ -66,30 +76,32 @@ sha256sum sambent-mldsa.pub      # 4ae873ade7ee596c815f55f3052c0f01020b1817f86ea
 Confirm the digest you verified is the one you actually pulled:
 
 ```
-skopeo inspect --raw docker://sambent.dev/sam/hiddenforge:2.0.4 | sha256sum
-docker buildx imagetools inspect sambent.dev/sam/hiddenforge:2.0.4 | head -3
+skopeo inspect --raw docker://sambent.dev/sam/hiddenforge:2.1.0 | sha256sum
+docker buildx imagetools inspect sambent.dev/sam/hiddenforge:2.1.0 | head -3
 ```
 
 ## Reproducing the build
 
 This release is bit-for-bit reproducible. **Build from a fresh clone**; this is
-not optional, see the warning below:
+not optional, see the warning below. The release was built with **buildx
+v0.19.3** and a `docker-container` builder running **BuildKit v0.30.0**; arm64
+needs qemu's `binfmt_misc` handler for aarch64 on the host.
 
 ```
-git clone https://sambent.dev/sam/HiddenForge.git /tmp/hf && cd /tmp/hf
-git checkout v2.0.4
+git clone --branch v2.1.0 https://sambent.dev/sam/HiddenForge.git /tmp/hf && cd /tmp/hf
 docker buildx version   # record this; buildx behaviour here is version-sensitive
-export SOURCE_DATE_EPOCH=$(git log -1 --format=%ct v2.0.4)
-docker buildx build --platform linux/amd64,linux/arm64 \
+docker buildx create --name repro --driver docker-container \
+  --driver-opt image=moby/buildkit:v0.30.0
+export SOURCE_DATE_EPOCH=$(git log -1 --format=%ct v2.1.0)
+docker buildx build --builder repro --no-cache --platform linux/amd64,linux/arm64 \
   --build-arg SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH \
   --provenance=false --output type=oci,dest=out.tar,rewrite-timestamp=true .
 tar -xOf out.tar index.json | python3 -c 'import json,sys;print(json.load(sys.stdin)["manifests"][0]["digest"])'
 ```
 
-The verified amd64 reproduction was done with **buildx v0.19.3** (docker driver).
-Record the version you build with: `--provenance=false` and `rewrite-timestamp`
-behave differently across buildx releases, so an unattributable digest mismatch
-is otherwise impossible to diagnose.
+Record the versions you build with: `--provenance=false` and `rewrite-timestamp`
+behave differently across buildx and BuildKit releases, so an unattributable
+digest mismatch is otherwise impossible to diagnose.
 
 Two flags are load-bearing, and both were learned the hard way:
 
@@ -106,6 +118,13 @@ deterministic. In a working tree where files were edited at different times,
 anything *older* than `SOURCE_DATE_EPOCH` keeps its own mtime and lands in the
 layer verbatim, producing a digest only that particular tree can generate.
 Releases are therefore built from a pristine checkout.
+
+**Older tags no longer build.** The Dockerfile pins exact Alpine package
+versions, and Alpine prunes superseded builds from its index. `v2.0.4`'s pins
+are gone, so a checkout of that tag fails at `apk add`; reproducing it would need
+an archived copy of the Alpine index from its release date. The same will
+eventually happen to 2.1.0, which is why its digest was reproduced twice at
+release time.
 
 ## Signing key rotation (as of 2.0.4)
 
@@ -133,6 +152,7 @@ python3 scripts/collect_evidence.py --out evidence --image sambent.dev/sam/hidde
 ```
 
 No value in the bundle is typed by hand; a gate that cannot run records its own
-failure rather than being omitted. The bundle is signed alongside the image
-digest at release time and is never committed (it would be stale the next
-commit), so a consumer can verify the claims instead of trusting them.
+failure rather than being omitted. For 2.1.0 the bundle is attached to the
+release as a tarball, and its `MANIFEST.sha256` is signed with the same ML-DSA-65
+key (`MANIFEST.sha256.mldsa`, verified the same way as the digest above). It is
+never committed (it would be stale the next commit).
