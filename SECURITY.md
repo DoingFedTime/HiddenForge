@@ -4,8 +4,9 @@
 
 | Version | Supported |
 |---|---|
-| 2.x (latest) | Yes |
-| 1.x | No, upgrade to v2.0.0 |
+| 2.1.x | Yes |
+| 2.0.x | No, upgrade to 2.1. 2.0.4's image carries known CVEs, and its pinned packages are gone from Alpine, so it cannot be rebuilt |
+| 1.x | No |
 
 ## Reporting a Vulnerability
 

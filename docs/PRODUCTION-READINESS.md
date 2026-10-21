@@ -87,8 +87,9 @@ loaded image passed the same in-image checks as amd64.
   fails with a named error.
 - **R7 exposed a vulnerable TLS stack:** the image shipped OpenSSL 3.5.7-r0
   (20 CVEs, 2 HIGH). The HIGH ones are QUIC-server issues and Tor has no QUIC,
-  but the image should not ship a known-vulnerable OpenSSL. `openssl=3.5.8-r0` is
-  now pinned explicitly rather than inherited from the base digest; rescan clean.
+  but the image should not ship a known-vulnerable OpenSSL. OpenSSL is now
+  pinned explicitly rather than inherited from the base digest (first 3.5.8-r0;
+  3.5.9-r0 since Alpine pruned it); rescan clean.
 - **Fuzzing (R11) found a real crash:** a lone surrogate in an environment value
   reached a log line and aborted startup. Fixed.
 - **R11, re-run (2026-09-18).** The target gained a third invariant when the key
