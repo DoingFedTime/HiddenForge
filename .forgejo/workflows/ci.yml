@@ -284,9 +284,13 @@ jobs:
           set -euo pipefail
           SDE="$(git log -1 --format=%ct)"
           a="$(mktemp -d)"; b="$(mktemp -d)"
+          # The runner is host mode: scratch left here stays on the host.
+          trap 'rm -rf "$a" "$b"' EXIT
           for pair in "A $a" "B $b"; do
             set -- $pair
-            docker buildx build --platform linux/amd64 --provenance=false \
+            # --no-cache: a second build served from the first one's cache
+            # reports a match it did not earn.
+            docker buildx build --no-cache --platform linux/amd64 --provenance=false \
               --build-arg SOURCE_DATE_EPOCH="$SDE" \
               --output "type=oci,dest=$2/out.tar,rewrite-timestamp=true" .
           done
