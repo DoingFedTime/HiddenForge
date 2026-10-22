@@ -16,10 +16,10 @@ result rather than reproducing.
 
 | # | Claim | Command | Result |
 |---|---|---|---|
-| R1 | The image builds bit-for-bit reproducibly | two fresh clones, `--no-cache`, `buildx --platform linux/amd64,linux/arm64 --output type=oci`, compare `index.json` digests; plus CI `reproducibility` (amd64) | **pass** (`66dc20f`) - both two-platform builds `sha256:91910832e67486ce1f287ffaab02c956087871e86db7108357a5a8bc6613e638` (buildx v0.19.3, BuildKit v0.30.0). The digest moves with each commit's `SOURCE_DATE_EPOCH`, so the release tag's own pair of builds is compared again at publish time |
+| R1 | The image builds bit-for-bit reproducibly | two fresh clones (one under umask 007, one under 022), `--no-cache`, `buildx --platform linux/amd64,linux/arm64 --output type=oci`, compare `index.json` digests; plus CI `reproducibility` (amd64) | **pass (2.1.1)** (`0037c38`, tag `v2.1.1`) - both two-platform builds `sha256:889da0a9d21d7d3af87cba102e1c6ff5ea4b2618c46ea4cec26785a43ed89645`, byte-identical archives, one clone under umask 007 and one under 022 (buildx v0.19.3, BuildKit v0.30.0); the published index on both registries is that digest. 2.1.0 reproduced only under one umask: its `COPY` layers recorded the clone's file modes (fixed in 2.1.1). The digest moves with each commit's `SOURCE_DATE_EPOCH`, so the release tag's own pair of builds is compared again at publish time |
 | R2 | Two onions from one container | the committed `docker-compose.yml` plus a second `*_TOR_SERVICE_HOSTS`; `status` and `show` for each | **pass** (`66dc20f`) - both ready after recreate; `show` agrees for each; both return HTTP 200 over Tor |
 | R3 | The committed `docker-compose.yml` boots | `docker compose up -d` with only the image (and, on this host, the subnets) overridden | **pass** (`66dc20f`) - `status` ready 19s after `up` (fresh key); host-side `doctor` ok, 16 checks, no failures, no warnings |
-| R4 | `sbom` emits a valid SPDX document | `hiddenforge sbom --image ...` | **pass** (`66dc20f`) - SPDX-2.3, 43 packages |
+| R4 | `sbom` emits a valid SPDX document | `hiddenforge sbom --image ...` | **pass (2.1.1)** - SPDX-2.3, 43 packages, from `sambent.dev/sam/hiddenforge:2.1.1` |
 | R5 | `verify-image` verifies a published release | run without `--skip-registry` against `sambent.dev`, with stock tools only (Alpine 3.23: OpenSSL, ssh-keygen, skopeo; no pqsign) | **pass (2.1.0)** - in a stock `alpine:3.23.5` container (OpenSSL 3.5.9, ssh-keygen, skopeo; no pqsign), from a fresh clone of master: the registry digest equals the signed `sha256:183a5df3...`; ML-DSA-65 verifies through OpenSSL against the pinned key; exit 0 with `--allow-pq-only`, `complete: false`, because the SSH-FIDO2 half is not yet published. 2.0.4 passed with both halves |
 | R6 | The arm64 image runs on an arm64 kernel | full-system arm64 VM (QEMU `virt`, Debian 13 arm64, real aarch64 kernel 6.12; emulated CPU), the shipped compose file | **pass** (`66dc20f`, Debian 13 arm64, kernel 6.12.113) - ready in 333s on the emulated CPU, descriptor uploaded, HTTP 200 over Tor (fetched from the host's Tor client, and from a fresh client inside the VM in 69s); Tor at uid 100 with `Seccomp: 2`, `Seccomp_filters: 2` (runtime profile + `Sandbox 1`, same as amd64); Tor killed, container restarted (restarts=1) with the same address and ready again; `doctor` no failures, no warnings. The VM's long-running system Tor client failed its first fetches (`No more HSDir available to query`) after slow circuit builds through one guard, and kept that failure cached; the host and a fresh in-VM client both reached the service. Not real ARM hardware |
 | R7 | The built image is clean | CI `security`: trivy image (HIGH/CRITICAL, fixable), trivy fs, semgrep, gitleaks over every commit | **pass** - trivy on the `66dc20f` image: 0 vulnerabilities at any severity (pinned `aquasec/trivy@sha256:ab70a022...`, the CI image). The full CI `security` job on `8d66c4d`: every scan step passed, no leaks. Run locally with `forgejo-runner exec`, where the final artifact-upload step cannot run (no artifact server); that step is the only one that failed |
@@ -39,6 +39,12 @@ tag with the job's own command), mutation (the full mutmut run and gate),
 build-and-test (live E2E), security (trivy, semgrep, gitleaks) and reproducibility
 all pass. `pin-freshness` runs on schedule and dispatch only; it passed on the same
 commit in a dispatch run that day.
+
+CI on the `v2.1.1` tag (`0037c38`, 2026-10-22): lint, unit, mutation,
+build-and-test (live E2E), security and reproducibility (now two clones under
+umask 007 and 022) all pass; master at the same commit passed the same jobs.
+2.1.1 changes the Dockerfile's `COPY` modes and CI only, so the image-bearing
+rows above other than R1, R4 and R5 are carried forward from `66dc20f`.
 
 Supporting detail for the rows that produced a finding follows.
 
