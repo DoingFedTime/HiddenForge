@@ -146,7 +146,7 @@ The only two lines you need to edit are flagged with `<-- EDIT`.
 ## Upgrading from 2.0.4
 
 Your key directory and `*_TOR_SERVICE_HOSTS` lines carry over unchanged, and the
-onion address stays the same: upgrading a 2.0.4 deployment to 2.1.0 and rolling
+onion address stays the same: upgrading a 2.0.4 deployment to 2.1.x and rolling
 it back were both tested with the same key. What changed is the compose file
 around them. If you wrote your own compose file from the 2.0.4 one, make these
 changes:
@@ -250,7 +250,7 @@ dependency on any external service or transparency log: a **post-quantum
 ML-DSA-65** signature (FIPS 204) and a **hardware YubiKey** (SSH-FIDO2)
 signature. The verification files live in `signatures/`.
 
-> **2.1.0 is signed with ML-DSA-65 only, for now.** The hardware key was not
+> **2.1.1 is signed with ML-DSA-65 only, for now.** The hardware key was not
 > available at release; its signature will be made over the same digest and
 > added to `signatures/` without a new image. Until then the `ssh-keygen` line
 > below has no `.sig` to check, and `hiddenforge verify-image` needs
@@ -552,4 +552,4 @@ podman info --format '{{.Host.Security.Rootless}}'
 | Base image | Alpine 3.23.5 digest-pinned |
 | Host isolation (optional) | Rootless Podman: container escape = host user, not real root |
 
-**Tor version: 0.4.9.14** (2.1.0; the published 2.0.4 image runs 0.4.9.11)
+**Tor version: 0.4.9.14** (2.1.x; the published 2.0.4 image runs 0.4.9.11)

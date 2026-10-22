@@ -2,11 +2,35 @@
 
 All notable changes to HiddenForge are documented here.
 
-The latest release is **2.1.0**; its image digest and signatures are in
+The latest release is **2.1.1**; its image digest and signatures are in
 `signatures/` on master (a release's signatures are committed after its tag).
-2.1.0 is signed with ML-DSA-65; the hardware SSH-FIDO2 signature over the same
+2.1.1 is signed with ML-DSA-65; the hardware SSH-FIDO2 signature over the same
 digest follows, without a new image. `v2.0.5` is a git tag with no image of its own: its changes ship
 with 2.1.0.
+
+---
+
+## [2.1.1] - 2026-10-22
+
+A reproducibility fix. The software in the image is unchanged from 2.1.0;
+the image digest is new, because the layers now record fixed file modes.
+
+### Fixed
+
+- **2.1.0 reproduced only for a builder with the release builder's umask.**
+  A `COPY` without `--chmod` records the mode the file has in the build
+  context, and a fresh clone gets its modes from the cloner's umask. The same
+  commit cloned under umask 007 and under 022 built two different index
+  digests; the `RUN chmod 755` after the copies fixed the final modes but not
+  the `COPY` layers underneath. Every `COPY` now states its mode, the
+  `RUN chmod` is gone, and `tests/test_dockerfile.py` fails on any `COPY` or
+  `ADD` without `--chmod`. Measured on this tree: clones under umask 007 and
+  022 (entrypoint.py 0660 and 0644 in the context) build the same amd64 index
+  digest.
+- **The CI `reproducibility` job could not have caught that.** It built one
+  checkout twice under one umask. It now clones the commit twice, under umask
+  007 and 022, and compares those two builds; it also turns off `--sbom` and
+  drops the job token from `.git/config` before running repository code.
 
 ---
 
