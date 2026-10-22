@@ -193,7 +193,7 @@ def test_every_copy_destination_directory_exists_before_the_copy():
     way. Every destination directory must be one the base image already has or
     one an earlier RUN creates with `mkdir -p`.
     """
-    base_dirs = {"/tmp", "/usr/local/bin"}
+    base_dirs = {"/tmp", "/usr/local/bin"}  # noqa: S108 - paths inside the image
     created: set[str] = set()
     missing = []
     for n, line in enumerate(_logical_lines(), 1):
