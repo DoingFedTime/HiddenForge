@@ -24,7 +24,7 @@ docker-compose.override.yml
 
 
 # Python venv (dev/test only)
-.venv/
+.venv
 
 # Coverage / test artifacts
 .coverage
