@@ -167,3 +167,20 @@ def test_check_pins_an_empty_community_index_is_not_a_pruned_pin(monkeypatch):
     with pytest.raises(SystemExit) as exc:
         cp.fetch_index("v3.23", "x86_64")
     assert exc.value.code == 3
+
+
+def test_every_copy_states_its_mode():
+    """A COPY without --chmod records the build context's mode in its layer, and
+    that mode is whatever the builder's checkout and umask produced. The same
+    commit cloned under umask 007 and under 022 built two different image
+    digests (measured on 2.1.0), which is a reproducibility failure a verifier
+    cannot tell from tampering. A `RUN chmod` afterwards does not help: it adds a
+    layer and leaves the COPY layer as it was.
+    """
+    lines = DOCKERFILE.read_text().splitlines()
+    copies = [(n, line.strip()) for n, line in enumerate(lines, 1)
+              if re.match(r"\s*(COPY|ADD)\s", line)]
+    assert copies, "no COPY in the Dockerfile: the parser is looking at the wrong file"
+    unmoded = [f"{n}: {text}" for n, text in copies
+               if not re.search(r"\s--chmod=0[0-7]{3}\s", text)]
+    assert unmoded == [], "COPY/ADD without an explicit --chmod:\n" + "\n".join(unmoded)

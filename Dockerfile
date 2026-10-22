@@ -8,7 +8,7 @@ ARG SOURCE_DATE_EPOCH=0
 # pipefail, so a failing `sha256sum -c` in the pipeline cannot be masked.
 SHELL ["/bin/ash", "-eo", "pipefail", "-c"]
 WORKDIR /src
-COPY vendor/mkp224o-5172c0fd.tar.gz /tmp/mkp224o.tar.gz
+COPY --chmod=0644 vendor/mkp224o-5172c0fd.tar.gz /tmp/mkp224o.tar.gz
 # DL3018: these are BUILD-ONLY dependencies and are deliberately not
 # version-pinned. Alpine prunes superseded versions from its index (which has
 # repeatedly broken this image's pinned runtime packages), and none of them
@@ -103,7 +103,7 @@ RUN apk add --no-cache \
 # After install we strip pip, setuptools, and any test / cache artefacts from
 # the venv so no third-party installer or HTTP-client packages remain in the
 # final image (the Python stdlib's urllib/ssl cannot be removed and still ship).
-COPY requirements.txt /tmp/requirements.txt
+COPY --chmod=0644 requirements.txt /tmp/requirements.txt
 RUN python3 -m venv /opt/vanguards-venv && \
     /opt/vanguards-venv/bin/pip install \
       --no-cache-dir \
@@ -143,19 +143,21 @@ RUN mkdir -p ${HOME}/.tor /etc/tor && \
 # machine contract, and the in-container smoke test only.
 # The host unit suite runs on the build host / in CI - it is deliberately NOT
 # shipped in the image.
-COPY --from=mkp224o-build /mkp224o /usr/local/bin/mkp224o
-COPY entrypoint.py /usr/local/bin/entrypoint.py
-COPY healthcheck.py /usr/local/bin/healthcheck.py
-COPY vanity.py /usr/local/bin/vanity.py
-COPY scripts/hiddenforge /usr/local/bin/hiddenforge
-COPY manifest.json /opt/hiddenforge/manifest.json
-COPY tests/test_torrc.py /usr/local/bin/tests/test_torrc.py
-# 0755 so the unprivileged tor user can read+execute the healthcheck and CLI (the
-# build context files are 0660; COPY preserves that, leaving 'other' unable to
-# read). These scripts contain no secrets.
-RUN chmod 755 /usr/local/bin/entrypoint.py /usr/local/bin/healthcheck.py \
-              /usr/local/bin/vanity.py /usr/local/bin/hiddenforge \
-              /usr/local/bin/mkp224o
+#
+# Every COPY states its mode. Without --chmod a layer records the mode the file
+# had in the build context, which is whatever the builder's checkout and umask
+# produced: a clone under umask 007 and one under 022 built different layers,
+# so different image digests, from the same commit. A later `RUN chmod` cannot
+# repair that, because it adds a layer and leaves the COPY layer as it was.
+# 0755 lets the unprivileged tor user read and run the scripts and the CLI;
+# none of them holds a secret.
+COPY --chmod=0755 --from=mkp224o-build /mkp224o /usr/local/bin/mkp224o
+COPY --chmod=0755 entrypoint.py /usr/local/bin/entrypoint.py
+COPY --chmod=0755 healthcheck.py /usr/local/bin/healthcheck.py
+COPY --chmod=0755 vanity.py /usr/local/bin/vanity.py
+COPY --chmod=0755 scripts/hiddenforge /usr/local/bin/hiddenforge
+COPY --chmod=0644 manifest.json /opt/hiddenforge/manifest.json
+COPY --chmod=0644 tests/test_torrc.py /usr/local/bin/tests/test_torrc.py
 
 # Persist hidden service keys across container restarts
 VOLUME ["/var/lib/tor/hidden_service/"]
