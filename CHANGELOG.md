@@ -2,11 +2,30 @@
 
 All notable changes to HiddenForge are documented here.
 
-The latest release is **2.1.1**; its image digest and signatures are in
+The latest release is **2.1.2**; its image digest and signatures are in
 `signatures/` on master (a release's signatures are committed after its tag).
-2.1.1 is signed with ML-DSA-65; the hardware SSH-FIDO2 signature over the same
+2.1.2 is signed with ML-DSA-65; the hardware SSH-FIDO2 signature over the same
 digest follows, without a new image. `v2.0.5` is a git tag with no image of its own: its changes ship
 with 2.1.0.
+
+---
+
+## [2.1.2] - 2026-10-22
+
+Fixes a directory-mode defect 2.1.1 introduced. The software in the image is
+unchanged from 2.1.0. Use 2.1.2 rather than 2.1.1.
+
+### Fixed
+
+- **2.1.1 shipped `/opt/hiddenforge` and `/usr/local/bin/tests` as mode 0644.**
+  A directory that `COPY --chmod=0644` creates takes the file's mode (measured,
+  BuildKit v0.30.0), and a 0644 directory cannot be entered by any non-root
+  user. Nothing at runtime reads those paths as non-root, so no behaviour
+  changed, but the machine contract at `/opt/hiddenforge/manifest.json` was
+  unreadable to the `tor` user (as it was in 2.1.0, where the file itself was
+  0660). Both directories are now created 0755 before the copies, the
+  manifest is readable by every user, and `tests/test_dockerfile.py` fails on
+  any `COPY` into a directory that nothing created first.
 
 ---
 

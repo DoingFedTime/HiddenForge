@@ -135,7 +135,12 @@ RUN python3 -m venv /opt/vanguards-venv && \
 # Set up Tor data directory and config directory.
 # DataDirectory must be mode 700 — Tor refuses to create a ControlSocket in a
 # world-readable directory (it validates this before starting).
-RUN mkdir -p ${HOME}/.tor /etc/tor && \
+#
+# /opt/hiddenforge and /usr/local/bin/tests are created here, 0755, because a
+# directory that `COPY --chmod` creates gets the FILE's mode: COPY --chmod=0644
+# into a missing directory made it 0644, which no non-root user can enter.
+RUN mkdir -p ${HOME}/.tor /etc/tor /opt/hiddenforge /usr/local/bin/tests && \
+    chmod 755 /opt/hiddenforge /usr/local/bin/tests && \
     chown -R tor:tor ${HOME} && \
     chmod 700 ${HOME}
 

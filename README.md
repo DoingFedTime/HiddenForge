@@ -250,7 +250,7 @@ dependency on any external service or transparency log: a **post-quantum
 ML-DSA-65** signature (FIPS 204) and a **hardware YubiKey** (SSH-FIDO2)
 signature. The verification files live in `signatures/`.
 
-> **2.1.1 is signed with ML-DSA-65 only, for now.** The hardware key was not
+> **2.1.2 is signed with ML-DSA-65 only, for now.** The hardware key was not
 > available at release; its signature will be made over the same digest and
 > added to `signatures/` without a new image. Until then the `ssh-keygen` line
 > below has no `.sig` to check, and `hiddenforge verify-image` needs

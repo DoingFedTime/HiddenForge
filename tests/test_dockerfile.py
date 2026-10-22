@@ -184,3 +184,42 @@ def test_every_copy_states_its_mode():
     unmoded = [f"{n}: {text}" for n, text in copies
                if not re.search(r"\s--chmod=0[0-7]{3}\s", text)]
     assert unmoded == [], "COPY/ADD without an explicit --chmod:\n" + "\n".join(unmoded)
+
+
+def test_every_copy_destination_directory_exists_before_the_copy():
+    """`COPY --chmod=0644 f /new/dir/f` creates /new/dir with mode 0644 as well
+    (measured, BuildKit v0.30.0), and a 0644 directory cannot be entered by any
+    non-root user. 2.1.1 shipped /opt/hiddenforge and /usr/local/bin/tests that
+    way. Every destination directory must be one the base image already has or
+    one an earlier RUN creates with `mkdir -p`.
+    """
+    base_dirs = {"/tmp", "/usr/local/bin"}
+    created: set[str] = set()
+    missing = []
+    for n, line in enumerate(_logical_lines(), 1):
+        if line.startswith("RUN") and "mkdir -p" in line:
+            for arg in line.split("mkdir -p", 1)[1].split("&&", 1)[0].split():
+                created.add(arg.rstrip("/"))
+        m = re.match(r"(COPY|ADD)\s+(?:--\S+\s+)*\S+\s+(\S+)$", line)
+        if m:
+            dest = m.group(2)
+            parent = dest.rstrip("/").rsplit("/", 1)[0] or "/"
+            if parent not in base_dirs and parent not in created:
+                missing.append(f"{n}: {line}  (parent {parent} is created by the COPY)")
+    assert missing == [], "COPY into a directory nothing created first:\n" + "\n".join(missing)
+
+
+def _logical_lines() -> list[str]:
+    """The Dockerfile with comments dropped and backslash continuations joined."""
+    out, cur = [], ""
+    for raw in DOCKERFILE.read_text().splitlines():
+        if raw.lstrip().startswith("#"):
+            continue
+        if raw.rstrip().endswith("\\"):
+            cur += raw.rstrip()[:-1] + " "
+            continue
+        cur += raw
+        if cur.strip():
+            out.append(" ".join(cur.split()))
+        cur = ""
+    return out
