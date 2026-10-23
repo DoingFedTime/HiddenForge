@@ -4,6 +4,10 @@ This is the smallest possible consumer. The app (`web`, an nginx serving
 `./site`) publishes **nothing** to the host and has **no** internet access. It
 is reachable only through hiddenforge's Tor sidecar.
 
+`app.yml` is an illustration of the smallest consumer, not a hardened production
+file. For a production starting point use [`docker-compose.yml`](../../docker-compose.yml)
+or [`podman-compose.yml`](../../podman-compose.yml).
+
 Three commands, no file editing in the hiddenforge repo:
 
 ```bash

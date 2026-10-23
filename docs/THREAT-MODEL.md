@@ -3,7 +3,7 @@
 This is the in-repo threat model. It is deliberately concrete: every control
 names where it lives in the code, and every limit says what it does not cover.
 The wiki's Security Model page is the prose companion; this is the engineering
-one.
+one. Last checked against release 2.1.2 on 2026-10-23.
 
 ## Assets, in priority order
 
@@ -241,7 +241,7 @@ output and compares that hash before deleting anything. It is never printed and
 never written to disk unencrypted except by `restore`/`decrypt-key`, which put it
 back where it came from. `show`, `status` and `doctor` read only public files.
 
-### Standards, honestly
+### Standards coverage
 
 - **NIST SP 800-57** (key management) applies *partially*: keys live only in the
   mounted volume and generation is separate from storage, but there is no formal

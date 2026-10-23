@@ -1,16 +1,21 @@
-# HiddenForge — production-ready compose file
+# HiddenForge: production-ready compose file
 #
 # USAGE:
-#   1. Copy this file and edit the two lines marked with <-- EDIT
+#   1. Copy this file and make the two edits marked <-- EDIT (the service name,
+#      which appears twice, and the backend image)
 #   2. mkdir -p ./tor-keys
 #   3. docker compose up -d
 #   4. docker compose exec tor cat /var/lib/tor/hidden_service/myapp/hostname
 #      (replace "myapp" with whatever you used in step 1)
 #
 # All security flags are pre-configured. Do not remove them.
+#
+# Docker and Podman differ in a few settings; see the table in
+# docs/INTEGRATION.md. This file tracks :latest. Run `hiddenforge verify-image`
+# before you deploy, and pin the verified digest if you want it to stay put.
 
 networks:
-  # tor-internal: isolated network — only tor and your backend live here.
+  # tor-internal: isolated network. Only tor and your backend live here.
   # The backend has NO internet access and is NOT reachable from outside.
   tor-internal:
     internal: true
@@ -31,8 +36,8 @@ services:
       - CHOWN        # transfer ownership of hidden_service dir to the tor user
       - DAC_OVERRIDE # create service subdirs inside the host-owned bind mount
       - FOWNER       # chmod service dirs that are owned by the host user
-      - SETUID       # su-exec: drop from root → tor to run the Tor daemon
-      - SETGID       # su-exec: drop from root → tor group to run the Tor daemon
+      - SETUID       # su-exec: drop from root to tor to run the Tor daemon
+      - SETGID       # su-exec: drop from root to the tor group to run the Tor daemon
     security_opt:
       - no-new-privileges:true     # prevent privilege escalation via setuid
       # NO seccomp=unconfined. Tor's Sandbox 1 is an IN-PROCESS filter covering
@@ -68,7 +73,7 @@ services:
       # HOST uid, and the tor user is uid 100, which other containers share
       # (i2pforge's i2pd is also uid 100). On a host already running >= the
       # limit as uid 100, su-exec's setuid() fails with EAGAIN ("Resource
-      # temporarily unavailable") and Tor never starts -- visible only as a
+      # temporarily unavailable") and Tor never starts. The only symptom is a
       # restart loop with no logs. Fork-bomb containment comes from
       # `pids_limit` instead, which is a per-container cgroup and does not
       # depend on what else is on the host.
@@ -76,7 +81,7 @@ services:
     # ── Health ───────────────────────────────────────────────────────────
     # Declared here, not only in the image. The image's HEALTHCHECK is a Docker
     # extension to the image config; the OCI image format has no such field, and
-    # Podman ignores it on OCI images -- measured: `podman inspect` showed no
+    # Podman ignores it on OCI images. Measured: `podman inspect` showed no
     # healthcheck at all for the published image, so a wedged Tor or a dead
     # Vanguards was never reported. Compose-level healthchecks work on both.
     healthcheck:
@@ -96,14 +101,14 @@ services:
 
     environment:
       # <-- EDIT: change "MYAPP" to your service name (lowercase, hyphens ok)
-      # The entrypoint resolves Docker service names automatically — no static IPs needed.
+      # The entrypoint resolves Docker service names automatically, so no static IPs are needed.
       # Format: "onion_port:service_name:backend_port"
       # Multiple ports: "80:web:80,443:web:443"
       MYAPP_TOR_SERVICE_HOSTS: "80:web:80"   # <-- EDIT (change MYAPP)
 
     volumes:
       # Hidden service keys persist here across container restarts.
-      # Back this directory up — losing it means losing your .onion address.
+      # Back this directory up. Losing it means losing your .onion address.
       - ./tor-keys:/var/lib/tor/hidden_service
 
     networks:
@@ -112,7 +117,7 @@ services:
 
     # No DNS leaves this container. Docker's resolver still answers backend
     # names on the internal network, but forwards any name it cannot answer to
-    # the host's upstream DNS -- so a backend that is down or not up yet would be
+    # the host's upstream DNS, so a backend that is down or not up yet would be
     # announced there, in step with the onion's outages. Tor needs no DNS (it
     # bootstraps from relay IPs); a loopback server nothing listens on ends it.
     dns: 127.0.0.1
@@ -122,11 +127,12 @@ services:
 
   # ── Your backend service ──────────────────────────────────────────────────
   # Replace this with your actual application. The key constraints:
-  #   - NO 'ports:' mapping — the backend must never be internet-exposed
+  #   - NO 'ports:' mapping: the backend must never be internet-exposed
   #   - Only connect to tor-internal, not tor-external
   web:
-    # <-- EDIT: replace with your actual image
-    image: nginx:alpine
+    # <-- EDIT: replace with your actual image. This nginx is an example backend,
+    # pinned by digest; use your own pinned image.
+    image: nginx:alpine@sha256:a3554c0d0b48177b1413c26e01f695334428020d9df01243fbae3e11cfd17417
     restart: unless-stopped
     cap_drop:
       - ALL

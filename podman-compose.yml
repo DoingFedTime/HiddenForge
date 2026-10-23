@@ -1,9 +1,10 @@
-# HiddenForge — rootless Podman compose file
+# HiddenForge: rootless Podman compose file
 #
 # USAGE:
-#   1. Copy this file and edit the two lines marked with <-- EDIT
+#   1. Copy this file and make the two edits marked <-- EDIT (the service name,
+#      which appears twice, and the backend image)
 #   2. mkdir -p ./tor-keys
-#   3. Bring it up. Recommended -- Docker Compose v2 on the rootless Podman
+#   3. Bring it up. Recommended: Docker Compose v2 on the rootless Podman
 #      socket, the only way measured to apply every limit below (the Compose
 #      binary only; `apt install --no-install-recommends docker-compose-v2`,
 #      no Docker engine):
@@ -22,17 +23,19 @@
 # WHY THIS FILE EXISTS (rootless security model):
 #   Running Podman rootless means container uid 0 maps to your host user (e.g.
 #   uid 1000) via Linux user namespaces.  A container escape gives an attacker
-#   only your regular user account — not real root on the host.
+#   only your regular user account, not real root on the host.
 #
 #   This also eliminates two capabilities that rootful Docker requires:
-#     DAC_OVERRIDE — rootful Docker needs this because the ./tor-keys bind mount
+#     DAC_OVERRIDE: rootful Docker needs this because the ./tor-keys bind mount
 #       is owned by host uid 1000, and container root (uid 0) is a different user.
 #       In rootless Podman the bind mount appears root-owned inside the container
 #       (uid 0 = uid 1000 in the user namespace), so DAC_OVERRIDE is not needed.
-#     FOWNER — same reasoning: container root owns the bind mount, so it can
+#     FOWNER: same reasoning: container root owns the bind mount, so it can
 #       chmod without needing FOWNER.
 #
-#   All other security flags are identical to docker-compose.yml.
+#   All other security flags are identical to docker-compose.yml. The table in
+#   docs/INTEGRATION.md lists every difference. This file tracks :latest; run
+#   `hiddenforge verify-image` before you deploy.
 
 networks:
   tor-internal:
@@ -56,15 +59,15 @@ services:
       - ALL                        # drop every Linux capability
     cap_add:
       - CHOWN        # transfer ownership of hidden_service dir to the tor user
-      - SETUID       # su-exec: drop from root → tor to run the Tor daemon
-      - SETGID       # su-exec: drop from root → tor group to run the Tor daemon
+      - SETUID       # su-exec: drop from root to tor to run the Tor daemon
+      - SETGID       # su-exec: drop from root to the tor group to run the Tor daemon
       # NOTE: DAC_OVERRIDE and FOWNER are NOT listed here.
       # In rootless Podman, container root (uid 0) maps to your host user via
       # user namespaces, so the ./tor-keys bind mount appears root-owned inside
       # the container. No extra capabilities are needed to write there.
     security_opt:
       - no-new-privileges:true     # prevent privilege escalation via setuid
-      # NO seccomp=unconfined -- see docker-compose.yml for the full reasoning.
+      # NO seccomp=unconfined: see docker-compose.yml for the full reasoning.
       # Verified separately on rootless podman, whose default profile is not
       # byte-identical to Docker's: the Tor process carries two stacked filters
       # and reaches Bootstrapped 100%.
@@ -87,7 +90,7 @@ services:
     # source: `pids_limit` only from podman-compose 1.1 (Ubuntu 24.04 ships
     # 1.0.6, which leaves Podman's default of 2048), and `memswap_limit` in no
     # version at all. Docker Compose on the Podman socket (USAGE, step 3)
-    # applies both -- measured: pids.max 256, memory.swap.max 0. With an older
+    # applies both (measured: pids.max 256, memory.swap.max 0). With an older
     # podman-compose, add --podman-run-args="--pids-limit=256" to the up command
     # (it applies to every service); swap cannot be limited through
     # podman-compose, so run the host without swap. `hiddenforge doctor`
@@ -108,8 +111,8 @@ services:
 
     # ── Health: deliberately NO healthcheck under Podman ───────────────────
     # Rootless Podman 4.9 (Ubuntu 24.04's version) runs healthchecks through
-    # systemd user timers. Without a reachable systemd user manager -- a service
-    # account with no login session, `sudo -iu`, cron, a broken user bus -- a
+    # systemd user timers. Without a reachable systemd user manager (a service
+    # account with no login session, `sudo -iu`, cron, a broken user bus) a
     # container that has a healthcheck is NEVER restarted when it exits.
     # Measured on Ubuntu 24.04: with a healthcheck, the restart policy
     # left it stopped after exit 1; with none, it restarted every time, with or
@@ -118,7 +121,7 @@ services:
     # a new IP, and when a backend that was down at boot comes up. Without a
     # session Podman cannot run the healthcheck anyway.
     #
-    # So no `healthcheck:` key at all -- not even `disable: true`: Docker Compose
+    # So there is no `healthcheck:` key at all, not even `disable: true`: Docker Compose
     # on the Podman socket sends that as test [NONE], which Podman 4.9 still
     # treats as a healthcheck (measured: not restarted). The published image is
     # OCI, which carries no healthcheck Podman applies (verified with `podman
@@ -131,14 +134,14 @@ services:
 
     environment:
       # <-- EDIT: change "MYAPP" to your service name (lowercase, hyphens ok)
-      # The entrypoint resolves Podman service names automatically — no static IPs needed.
+      # The entrypoint resolves Podman service names automatically, so no static IPs are needed.
       # Format: "onion_port:service_name:backend_port"
       # Multiple ports: "80:web:80,443:web:443"
       MYAPP_TOR_SERVICE_HOSTS: "80:web:80"   # <-- EDIT (change MYAPP)
 
     volumes:
       # Hidden service keys persist here across container restarts.
-      # Back this directory up — losing it means losing your .onion address.
+      # Back this directory up. Losing it means losing your .onion address.
       - ./tor-keys:/var/lib/tor/hidden_service
 
     networks:
@@ -146,7 +149,7 @@ services:
       - tor-external   # to reach the Tor network
 
     # No DNS leaves this container. aardvark-dns still answers backend names on
-    # the internal network, but forwards any name it cannot answer upstream --
+    # the internal network, but forwards any name it cannot answer upstream,
     # so a backend that is down or not up yet would be announced there, in step
     # with the onion's outages. Tor needs no DNS (it bootstraps from relay IPs);
     # a loopback server nothing listens on ends it.
@@ -157,7 +160,7 @@ services:
 
   # ── Your backend service ──────────────────────────────────────────────────
   # Replace this with your actual application. The key constraints:
-  #   - NO 'ports:' mapping — the backend must never be internet-exposed
+  #   - NO 'ports:' mapping: the backend must never be internet-exposed
   #   - Only connect to tor-internal, not tor-external
   web:
     # <-- EDIT: replace with your actual image
@@ -166,7 +169,8 @@ services:
     #   a) Add NET_BIND_SERVICE to cap_add below, OR
     #   b) Configure your backend to listen on port >= 1024 (e.g. 8080) and
     #      update the *_TOR_SERVICE_HOSTS mapping accordingly: "80:web:8080"
-    image: docker.io/library/nginx:alpine
+    # Example backend, pinned by digest; use your own pinned image.
+    image: docker.io/library/nginx:alpine@sha256:a3554c0d0b48177b1413c26e01f695334428020d9df01243fbae3e11cfd17417
     restart: always                  # see the tor service: Podman reboots
     cap_drop:
       - ALL

@@ -1,4 +1,7 @@
-# HiddenForge branch record: 2.1.0
+# Design decisions through 2.1.0
+
+Historical record of the 2.1.0 branch, dated 2026-09-12 with later corrections.
+It is not a description of the current release.
 
 > **Superseded in five places (2026-09-25 and 2026-10-19).** This record is
 > kept as written, but these lines are no longer true and the code wins: **E4**,
@@ -15,9 +18,8 @@ ledger (each item is done `[x]` or a deliberate non-change `[-]` with its reason
 recorded). The few genuinely open items are in **OPEN** at the end, each with the
 reason it is open. If a claim here and the code disagree, the code wins.
 
-Compiled from a full read of the codebase, the git history, the in-tree wiki that
-was removed in `5d44a21`, and the sibling project i2pforge, whose machine-first
-contract this branch adopts for Tor.
+The branch adopted the machine-first contract of the sibling project i2pforge for
+Tor.
 
 Status legend: `[x]` done on this branch · `[ ]` open (see OPEN) · `[-]`
 deliberate decision not to do (reason given).

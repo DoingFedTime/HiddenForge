@@ -3,7 +3,7 @@
 # has no internet access and is not reachable from the host.
 services:
   web:
-    image: nginx:alpine
+    image: nginx:alpine@sha256:a3554c0d0b48177b1413c26e01f695334428020d9df01243fbae3e11cfd17417
     restart: unless-stopped
     cap_drop: [ALL]
     cap_add: [CHOWN, SETUID, SETGID, DAC_OVERRIDE]
