@@ -6,7 +6,7 @@ restored from untrusted media or is writable by another host user.
 
 The property under test is narrow and absolute: **no operation may ever follow a
 symlink out of the hidden-service tree.** Before this was fixed, ``_chown_r``
-used a plain ``os.chown()``, which follows symlinks — giving a hostile key volume
+used a plain ``os.chown()``, which follows symlinks. That gave a hostile key volume
 a root-privileged arbitrary-chown primitive (demonstrated: a symlink inside the
 key dir caused a file outside it to change owner 0 -> 100).
 
@@ -23,7 +23,7 @@ import entrypoint as e
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# _open_dir_nofollow — the primitive everything else is built on
+# _open_dir_nofollow: the primitive everything else is built on
 # ─────────────────────────────────────────────────────────────────────────────
 
 def test_open_dir_nofollow_opens_a_real_directory(tmp_path):
@@ -82,7 +82,7 @@ def test_chmod_dir_nofollow_does_not_chmod_through_a_symlink(tmp_path):
         e._chmod_dir_nofollow(str(link), 0o700)
     assert exc.value.errno == errno.ENOTDIR
     assert os.stat(str(target)).st_mode & 0o777 == 0o755, \
-        "symlink target was chmod'ed — the escape is still open"
+        "symlink target was chmod'ed, so the escape is still open"
 
 
 def test_chmod_dir_nofollow_skips_when_not_root_owned(tmp_path):
@@ -137,7 +137,7 @@ def _record_chowns(monkeypatch, calls, *, realpath=False, basename=False):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# _chown_r — the function that had the real bug
+# _chown_r: the function that had the real bug
 # ─────────────────────────────────────────────────────────────────────────────
 
 def test_chown_r_never_follows_symlinks(tmp_path, monkeypatch):
@@ -153,8 +153,8 @@ def test_chown_r_never_follows_symlinks(tmp_path, monkeypatch):
     sub.mkdir()
     (sub / "a.auth").write_text("x")
     # The symlink target must EXIST, so that vulnerable code succeeds in
-    # following it (and is caught by the assertion) rather than dying on ENOENT
-    # — a crash would be an accidental, fragile way to "pass" this test.
+    # following it (and is caught by the assertion) rather than dying on ENOENT.
+    # A crash would be an accidental, fragile way to "pass" this test.
     outside_target = tmp_path / "outside_target"
     outside_target.write_text("sensitive")
     (d / "evil").symlink_to(outside_target)

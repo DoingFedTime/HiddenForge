@@ -3,7 +3,7 @@
 build_torrc_string() performs no filesystem operations, so it runs on the host.
 Covers: mapping shapes, multi-service determinism, malformed-skip behaviour,
 presence of every security-critical directive, the Sandbox toggle, golden
-snapshots, and — most importantly — the injection-proof property.
+snapshots, and, most importantly, the injection-proof property.
 """
 import os
 
@@ -219,7 +219,7 @@ def test_vanguards_lite_is_pinned_not_auto(monkeypatch):
     The full Vanguards addon's layer-2/3 pinning is unavailable to us (Sandbox 1
     rejects the SETCONF it needs), so vanguards-lite is our ONLY defence against
     guard-discovery attacks. Per the Tor manual, "auto" delegates the decision to
-    the `vanguards-lite-enabled` consensus parameter — i.e. to the directory
+    the `vanguards-lite-enabled` consensus parameter, that is, to the directory
     authorities. An adversary with influence over the consensus could then
     disable guard-discovery protection for every deployment at once, silently.
     Pinning it locally removes that lever.
@@ -269,7 +269,7 @@ INJECTION_PAYLOADS = [
     "80:127.0.0.1\n:8080",
     "80:evil\nORPort 9001:8080",
     "\nORPort 9001",
-    # NB: NUL bytes cannot reach this code path — the OS rejects them in env
+    # NB: NUL bytes cannot reach this code path: the OS rejects them in env
     # var values (verified). The NUL case is tested at the validator level.
     "80:127.0.0.1:8080\n\n__OwningControllerProcess 1",
 ]
@@ -302,7 +302,7 @@ def test_no_injection_via_env_var_name(monkeypatch, evil_name):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Golden snapshots — lock the deterministic byte output
+# Golden snapshots: lock the deterministic byte output
 # ─────────────────────────────────────────────────────────────────────────────
 
 GOLDEN_SCENARIOS = {
@@ -383,7 +383,7 @@ def test_unusable_resolver_output_drops_the_mapping(monkeypatch, answer):
 
 @pytest.mark.parametrize("answer", RECOVERABLE_RESOLVER_ANSWERS)
 def test_whitespace_padded_resolver_output_is_normalised(monkeypatch, answer):
-    """Surrounding whitespace is stripped, not rejected — and never reaches the file."""
+    """Surrounding whitespace is stripped, not rejected, and never reaches the file."""
     torrc, _ = _resolver(monkeypatch, answer)
     assert "HiddenServicePort 80 10.0.0.5:8080" in torrc
 

@@ -18,8 +18,8 @@ from directives import ALLOWED_DIRECTIVES
 #   - NUL: the OS forbids it in env var values.
 #   - surrogates (category Cs): os.environ[...] = value cannot ENCODE a lone
 #     surrogate in this test harness. (Surrogates CAN appear in a real env via
-#     surrogateescape decoding of non-UTF8 bytes, but the validators reject them
-#     — covered directly in test_validators, not via this env-based strategy.)
+#     surrogateescape decoding of non-UTF8 bytes, but the validators reject them,
+#     so they are covered directly in test_validators, not via this env-based strategy.)
 # Everything else (newlines, CR, control chars, unicode, colons, commas) is fair game.
 _no_nul = st.text(
     alphabet=st.characters(

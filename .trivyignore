@@ -2,7 +2,7 @@
 # reason. Nothing is suppressed here without the reason written down, and every
 # entry expires so it gets looked at again.
 #
-# AVD-DS-0002 / DS002 — Dockerfile has no USER instruction.
+# AVD-DS-0002 / DS002: Dockerfile has no USER instruction.
 #   The container MUST start as root: the entrypoint chowns the operator's key
 #   bind mount and then drops to the `tor` user via su-exec. A non-root USER
 #   makes both impossible. The network-facing processes run as `tor`; `doctor`

@@ -20,7 +20,7 @@ def _denied(*a, **kw):
 
 
 def test_a_regular_file_is_refused_as_not_a_directory(tmp_path):
-    """A file in the key volume is reported as "not a directory" — the exact
+    """A file in the key volume is reported as "not a directory", the exact
     wording an operator uses to decide whether the volume was tampered with."""
     f = tmp_path / "hs"
     f.write_text("x")

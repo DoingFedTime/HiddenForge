@@ -21,7 +21,7 @@ if _TESTS_DIR not in sys.path:
 
 # test_torrc.py is the IN-CONTAINER smoke test: it does real filesystem work at
 # import time (writes /etc/tor/torrc, needs the 'tor' user) and is run directly
-# via python3 inside the container by CI — never collected in the host run.
+# via python3 inside the container by CI and never collected in the host run.
 collect_ignore = ["test_torrc.py"]
 
 

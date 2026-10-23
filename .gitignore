@@ -6,7 +6,7 @@ __pycache__/
 # Editor / IDE / tooling state
 .*cache/
 
-# Hidden service keys — NEVER commit these
+# Hidden service keys: NEVER commit these
 # If you accidentally stage them: git rm --cached -r tor-keys/ tor-data/
 tor-keys/
 tor-data/
@@ -37,7 +37,6 @@ security-reports/
 .pytest_cache/
 .hypothesis/
 mutants/
-.mutmut-cache
 .mutmut-cache/
 
 # The evidence bundle is generated per-release and signed alongside the

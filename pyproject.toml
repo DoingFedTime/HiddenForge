@@ -1,4 +1,4 @@
-# HiddenForge — tooling config (tests, coverage, lint).
+# HiddenForge: tooling config (tests, coverage, lint).
 # This file configures DEV tooling only. It is not installed into the image.
 
 [tool.pytest.ini_options]
@@ -30,7 +30,7 @@ show_missing = true
 # supervision loop took it to ~76%, and the floor moved up with it.
 fail_under = 72
 # The supervision loop / signal handler / Vanguards management are integration
-# surface, not unit surface — excluded from the unit coverage gate honestly
+# surface, not unit surface. They are excluded from the unit coverage gate
 # rather than faked with mocks.
 exclude_lines = [
     "pragma: no cover",
@@ -49,15 +49,15 @@ select = ["E", "F", "W", "B", "S", "UP", "RUF", "PLW", "SIM", "PERF"]
 [tool.ruff.lint.per-file-ignores]
 # entrypoint.py is a privileged container supervisor; these rules flag
 # choices that are INTENTIONAL and security-relevant, justified per line:
-#   S110 — best-effort process kill in the signal handler (swallowing errors
+#   S110: best-effort process kill in the signal handler (swallowing errors
 #          during shutdown is deliberate; we are already terminating).
-#   S103 — chmod 0o755 on the parent hidden_service dir is required so the tor
+#   S103: chmod 0o755 on the parent hidden_service dir is required so the tor
 #          user (uid 100) can traverse a root-owned bind mount under rootless
 #          Podman. The service dirs themselves are 0o700.
-#   S603/S607 — subprocess calls to su-exec/tor by name with FIXED, validated
+#   S603/S607: subprocess calls to su-exec/tor by name with FIXED, validated
 #          argument lists and shell=False. No untrusted input reaches argv;
 #          partial paths resolve against the container's controlled PATH.
-#   PLW0603 — the two module-level process handles exist so signal_handler() can
+#   PLW0603: the two module-level process handles exist so signal_handler() can
 #          terminate both children; they are the one deliberate use of `global`.
 "entrypoint.py" = ["S110", "S103", "S603", "S606", "S607", "PLW0603"]
 # vanity.py runs a FIXED mkp224o argv (no shell, no untrusted input); S105/S108
