@@ -36,8 +36,8 @@ regeneration; the `Dockerfile` will refuse to build otherwise.
 A v3 `.onion` address is `base32(PUBKEY || CHECKSUM || 0x03)`. `mkp224o` is a
 purpose-built, multithreaded Ed25519 brute-forcer that reaches millions of keys
 per second; a pure-Python implementation is several orders of magnitude slower
-and would make anything past a 3–4 character prefix impractical. It writes keys
-in Tor's own on-disk format (64-byte `hs_ed25519_public_key`, 96-byte
+and would make any prefix longer than three or four characters impractical. It
+writes keys in Tor's own on-disk format (64-byte `hs_ed25519_public_key`, 96-byte
 `hs_ed25519_secret_key`, `hostname`), so the output drops straight into
 `HiddenServiceDir`.
 
