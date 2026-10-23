@@ -107,7 +107,7 @@ def test_an_mldsa_key_that_is_not_the_pinned_one_is_a_failure(hf, tmp_path):
     Decided before pqsign is ever run, so it holds on a host without pqsign."""
     d = tmp_path / "sig"
     shutil.copytree(SIGNATURES, d)
-    shutil.copy(SIGNATURES / "hiddenforge-mldsa.pub", d / "sambent-mldsa.pub")
+    shutil.copy(GENUINE.parent / "untrusted-mldsa.pub", d / "sambent-mldsa.pub")
     verdict, detail = hf._verify_mldsa_signature(d, (d / "hiddenforge.digest").read_bytes())
     assert verdict is False
     assert "not the pinned release key" in detail

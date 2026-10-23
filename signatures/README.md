@@ -5,11 +5,24 @@ Image digest: `sambent.dev/sam/hiddenforge@sha256:cc6c215d0a85b94ff7724951b2d617
 The same index is served as `doingfedtime/hiddenforge@sha256:cc6c215d0a85b94ff7724951b2d6176111f508030235733afbb40116a93c3f05`
 on Docker Hub. It covers `linux/amd64` and `linux/arm64`.
 
-**What is signed today:** the **ML-DSA-65** signature (`hiddenforge.digest.mldsa`)
-is present. The hardware **SSH-FIDO2** signature (`hiddenforge.digest.sig`) is
-**pending**: it will be added over this same digest, without a new image. Until
-then `hiddenforge verify-image` refuses by default, and accepts with
-`--allow-pq-only`, reporting `complete: false`.
+**What is signed:** 2.1.2 carries the **ML-DSA-65** signature
+(`hiddenforge.digest.mldsa`) only. There is no hardware **SSH-FIDO2** signature
+(`hiddenforge.digest.sig`) for this release. One may be added later over the same
+digest, which would not need a new image. `hiddenforge verify-image` refuses a
+release without it by default, and accepts with `--allow-pq-only`, reporting
+`complete: false`.
+
+**Files in this directory:**
+
+| File | What it is |
+|---|---|
+| `hiddenforge.digest` | The signed text: the 2.1.2 image index digest |
+| `hiddenforge.digest.mldsa` | ML-DSA-65 signature over `hiddenforge.digest` |
+| `sambent-mldsa.pub` | The maintainer's ML-DSA-65 public key (pinned in `scripts/hiddenforge`) |
+| `allowed-signers` | Every SSH key that has signed a release, for `ssh-keygen -Y verify` |
+
+`cosign.pub` at the repository root verifies releases up to 2.0.3 only. It is not
+used for 2.0.4 or later.
 
 **Verify from master, not from the tag.** Signing an image needs the tag to exist
 first, so a release's signatures are committed after its tag. A checkout of
@@ -23,7 +36,7 @@ ML-DSA-65) is in git history at the commit that adds it (`165cb5a`). The 2.0.4
 signatures (digest `sha256:063d824c3e56205bea5a3bfeb3d2d991de7dea88439cf6ebda8bb4b17ecce0ca`,
 both halves) remain in the `v2.0.4` tag and in git history.
 
-### Which digest gets compared (this cost a full build cycle)
+### Which digest to compare
 
 Compare the **OCI index digest** extracted from `index.json` inside the archive,
 never `docker image inspect --format '{{.Id}}'`. They are different values: the
@@ -107,7 +120,7 @@ Record the versions you build with: `--provenance=false` and `rewrite-timestamp`
 behave differently across buildx and BuildKit releases, so an unattributable
 digest mismatch is otherwise impossible to diagnose.
 
-Two flags are load-bearing, and both were learned the hard way:
+Two requirements are load-bearing:
 
 **`--provenance=false` is required.** buildx puts wall-clock build timestamps in
 the SLSA provenance attestation, and that attestation lives *inside* the image
@@ -145,7 +158,7 @@ maintainer signs with a single per-identity key (currently `SHA256:wL6piZbyXpTOz
 releases remain independently verifiable. A signing key changing without
 explanation is indistinguishable from a compromise, hence this note.
 
-No Sigstore, no Fulcio, no Rekor, no cosign.
+Nothing here depends on Sigstore (Fulcio, Rekor) or on cosign.
 
 ## Evidence bundle (what makes the readiness claims checkable)
 

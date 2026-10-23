@@ -13,13 +13,15 @@ tests happen.
 
 | Job | What it does |
 |---|---|
-| `lint` | hadolint (threshold `warning`), `ruff`, `py_compile` incl. the extensionless CLI, and `mypy` over sources *and* tests |
+| `lint` | hadolint (threshold `warning`), `ruff`, `py_compile` incl. the extensionless CLI, `mypy` over sources *and* tests, `tests/test_version_consistency.py` (manifest, CLI, CHANGELOG and golden output state one version), and `docker compose config -q` on both shipped compose files |
 | `unit` | host unit + property tests with the coverage floor enforced; `manifest.json` is checked against the code (not just parsed); `scripts/mutation_spotcheck.py` |
-| `mutation` | a full `mutmut run` over `entrypoint.py`, `healthcheck.py` and `vanity.py`, then `scripts/mutation_gate.py`: every mutant that survives must be explained in the gate's allowlist or the job fails. The gate also re-runs each mutant mutmut recorded as a `timeout` on its own, because that label is a wall-clock bound rather than a verdict and has been measured hiding live survivors; a mutant that really hangs must be named in `DOCUMENTED_HANGS`. Tag/schedule only -- the run takes twenty minutes and more, of which the timeout re-grade is the slow half. See `review/MUTATION-2026-09-18.md` |
+| `mutation (tags and nightly)` | a full `mutmut run` over `entrypoint.py`, `healthcheck.py` and `vanity.py`, then `scripts/mutation_gate.py`: every mutant that survives must be explained in the gate's allowlist or the job fails. The gate also re-runs each mutant mutmut recorded as a `timeout` on its own, because that label is a wall-clock bound rather than a verdict and has been measured hiding live survivors; a mutant that really hangs must be named in `DOCUMENTED_HANGS`. Tag/schedule only -- the run takes twenty minutes and more, of which the timeout re-grade is the slow half. See `review/MUTATION-2026-09-18.md` |
 | `build-and-test` | `docker build`, the in-container torrc test, the CLI contract checks, a vanity smoke test, and the live acceptance suite (`HIDDENFORGE_E2E=1`) |
 | `security` | trivy (image + fs), semgrep (security-audit + dockerfile), gitleaks over every commit and the working tree; runs on a daily schedule so an advisory published after the last commit is still caught. Accepted findings live in `.trivyignore`/`.gitleaks.toml` |
 | `reproducibility` | clones the commit twice, once under umask 007 and once under 022, and builds each with `--no-cache` (a build served from the other's cache would report a match it did not earn) for `linux/amd64` only; fails if the OCI index digests differ. The two umasks are the point: a file mode leaking from the builder into a layer is invisible to two builds of one checkout, and it is how 2.1.0 failed to reproduce. The two-platform release digest is reproduced by hand before signing |
-| `pin-freshness` | `scripts/check_pins.py` against the Alpine index: fails if a pinned apk version has disappeared, reports (does not auto-bump) a newer one. Schedule/dispatch only |
+| `pin-freshness (nightly)` | `scripts/check_pins.py` against the Alpine index: fails if a pinned apk version has disappeared, reports (does not auto-bump) a newer one. Schedule/dispatch only |
+
+Every job has a `timeout-minutes` so a hung step cannot hold the single runner: lint 20, unit 30, mutation 60, build-and-test 30, security 30, reproducibility 30, pin-freshness 20. `mutation` and `pin-freshness` do not run on an ordinary push, so a green push run does not include them.
 
 All jobs use `runs-on: docker`, mapped to **host mode** on
 the runner, so job steps execute directly on that machine and have `docker`, `git` and

@@ -52,6 +52,8 @@ concurrency:
 
 jobs:
   lint:
+    name: lint
+    timeout-minutes: 20
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: docker
     steps:
@@ -93,8 +95,16 @@ jobs:
           /tmp/hf-lint/bin/ruff check scripts/check_manifest.py scripts/coverage_summary.py
       - name: mypy (sources AND tests, including the extensionless CLI)
         run: MYPY=/tmp/hf-lint/bin/mypy sh scripts/typecheck.sh
+      - name: version consistency
+        run: python3 tests/test_version_consistency.py
+      - name: shipped compose files parse
+        run: |
+          docker compose -f docker-compose.yml config -q
+          docker compose -f podman-compose.yml config -q
 
   unit:
+    name: unit
+    timeout-minutes: 30
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: docker
     steps:
@@ -119,6 +129,8 @@ jobs:
         run: /tmp/hf-unit/bin/python scripts/mutation_spotcheck.py
 
   mutation:
+    name: mutation (tags and nightly)
+    timeout-minutes: 60
     # The full run takes twenty minutes and more (the gate re-grades every
     # timeout on its own), so it is not on the path of every
     # push: it runs for a TAG (the release trigger) and on the daily schedule,
@@ -147,6 +159,8 @@ jobs:
           /tmp/hf-mutation/bin/python scripts/mutation_gate.py
 
   build-and-test:
+    name: build-and-test
+    timeout-minutes: 30
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: docker
     steps:
@@ -200,6 +214,8 @@ jobs:
           /tmp/hf-e2e/bin/python -m pytest tests/test_e2e_live.py -v
 
   security:
+    name: security
+    timeout-minutes: 30
     # Runs on push, schedule and manual dispatch, and on a same-repo PR. The
     # schedule is the point: a push-triggered scan cannot see an advisory
     # published after the last commit.
@@ -270,6 +286,8 @@ jobs:
           path: security-reports/
 
   reproducibility:
+    name: reproducibility
+    timeout-minutes: 30
     # Reproducibility silently regresses; the first person to notice is then a
     # verifier deciding whether it is a build bug or an attack. This builds the
     # checked-out commit twice, each time from a fresh clone made under a
@@ -320,6 +338,8 @@ jobs:
           # digest differs, but the property is the same.
 
   pin-freshness:
+    name: pin-freshness (nightly)
+    timeout-minutes: 20
     # Pinned apk versions are CVE-driven and bumped by hand, which is right:
     # a crypto/anonymity bump is a reviewed decision. What is NOT acceptable is a
     # pin silently disappearing -- `tor=0.4.9.11-r0` was pruned by Alpine and left
