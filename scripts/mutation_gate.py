@@ -373,6 +373,13 @@ ACCEPTED: dict[tuple[str, str, str], str] = {
 # rather than `killed` depends on how busy the machine was, so an entry that goes
 # unseen for a run means nothing.
 DOCUMENTED_HANGS: dict[tuple[str, str, str], str] = {
+    ('entrypoint._read_small_regular_file',
+     'fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)',
+     'fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW & os.O_NONBLOCK)'):
+        'O_NOFOLLOW & O_NONBLOCK is 0, so the open loses O_NONBLOCK (and O_NOFOLLOW). '
+        'The FIFO test then blocks in open() waiting for a writer that never comes. '
+        'mutmut records it as killed on an idle box and as a timeout on a busy one; '
+        'both are detection, and it is written here so the classification does not flap.',
     ('entrypoint.main',
      'tor_rc = _tor_process.poll()',
      'tor_rc = None'):
