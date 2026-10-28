@@ -282,7 +282,7 @@ you verify the image you pull.
 Releases are signed over the image digest with a post-quantum **ML-DSA-65**
 signature (FIPS 204) and, when the hardware key is available, an **SSH-FIDO2**
 YubiKey signature. Neither depends on an outside service or a transparency log.
-The files are in `signatures/`. **2.1.2 carries the ML-DSA-65 signature only.**
+The files are in `signatures/`. **2.1.3 carries the ML-DSA-65 signature only.**
 There is no hardware signature for it, so `hiddenforge verify-image` needs
 `--allow-pq-only` and reports `complete: false`.
 
@@ -300,8 +300,8 @@ from the root of this repository or pass `--sigdir`. `sbom` runs on the host: it
 drives a digest-pinned syft container through the Docker socket, which the image
 deliberately does not have.
 
-The signed digest for 2.1.2 is
-`sha256:cc6c215d0a85b94ff7724951b2d6176111f508030235733afbb40116a93c3f05`. Signature
+The signed digest for 2.1.3 is
+`sha256:a9c985da5ceffa601da5d6aab17a6bbdacb4bb9a3e301b1c157d4f2ff04f27ad`. Signature
 files verify against whatever public key sits beside them, so the keys are the
 trust anchor. They must match these values, which are also pinned in
 `scripts/hiddenforge`:
