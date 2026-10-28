@@ -1,12 +1,23 @@
 """scripts/bump_pins.py moves pruned pins and touches nothing else."""
 import importlib.util
-import pathlib
 import shutil
+from types import ModuleType
 
-REPO = pathlib.Path(__file__).resolve().parent.parent
-_spec = importlib.util.spec_from_file_location("bump_pins", REPO / "scripts" / "bump_pins.py")
-bump = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(bump)
+from loader import repo_root
+
+REPO = repo_root(__file__)
+
+
+def _load(name: str) -> ModuleType:
+    spec = importlib.util.spec_from_file_location(name, REPO / "scripts" / f"{name}.py")
+    if spec is None or spec.loader is None:
+        raise ImportError(name)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+bump = _load("bump_pins")
 cp = bump._load_check_pins()
 
 DOCKERFILE = """FROM alpine:3.23.5
