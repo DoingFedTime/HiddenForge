@@ -2,11 +2,35 @@
 
 All notable changes to HiddenForge are documented here.
 
-The latest release is **2.1.2**; its image digest and signatures are in
+The latest release is **2.1.3**; its image digest and signatures are in
 `signatures/` on master (a release's signatures are committed after its tag).
-2.1.2 is signed with ML-DSA-65; the hardware SSH-FIDO2 signature over the same
-digest follows, without a new image. `v2.0.5` is a git tag with no image of its own: its changes ship
+2.1.3 is signed with ML-DSA-65 only; a hardware SSH-FIDO2 signature may be added
+later over the same digest, without a new image. `v2.0.5` is a git tag with no image of its own: its changes ship
 with 2.1.0.
+
+---
+
+## [2.1.3] - 2026-10-28
+
+Updates the Python runtime. Nothing else in the image changed.
+
+### Security
+
+- **`python3` `3.12.15-r0` to `3.12.16-r0`**, clearing CVE-2026-115557 (trivy:
+  CRITICAL; Python adds a denylist of compromised certificates to its TLS
+  handling). HiddenForge's Python code does no TLS parsing, but the runtime of a
+  Tor service should not carry a flagged version.
+
+### Fixed
+
+- **The image could not be rebuilt from source.** Alpine pruned
+  `python3=3.12.15-r0` from its index, so `apk add` failed. This is the same
+  failure as for earlier pins; the scheduled `pin-freshness` job reported it.
+
+### Upgrading
+
+From 2.1.0, 2.1.1 or 2.1.2 nothing is needed: same compose file, same keys, same
+address.
 
 ---
 

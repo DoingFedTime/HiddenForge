@@ -79,7 +79,7 @@ ENV PIP_DISABLE_PIP_VERSION_CHECK=1
 # documents it receives from relays, so the bug is reachable from the network.
 RUN apk add --no-cache \
     tor=0.4.9.14-r0 \
-    python3=3.12.15-r0 \
+    python3=3.12.16-r0 \
     su-exec=0.3-r0 \
     py3-pip=25.1.1-r1 \
     openssl=3.5.9-r0 \

@@ -3,7 +3,7 @@
 This is the in-repo threat model. It is deliberately concrete: every control
 names where it lives in the code, and every limit says what it does not cover.
 The wiki's Security Model page is the prose companion; this is the engineering
-one. Last checked against release 2.1.2 on 2026-10-23.
+one. Last checked against release 2.1.3 on 2026-10-28.
 
 ## Assets, in priority order
 

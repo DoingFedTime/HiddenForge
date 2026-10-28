@@ -4,7 +4,7 @@
 
 | Version | Supported |
 |---|---|
-| 2.1.x | Yes. Use 2.1.2: 2.1.1 ships `/opt/hiddenforge` and `/usr/local/bin/tests` as mode 0644, so no non-root user can enter them |
+| 2.1.x | Yes. Use 2.1.3: 2.1.1 ships `/opt/hiddenforge` and `/usr/local/bin/tests` as mode 0644, so no non-root user can enter them |
 | 2.0.x | No, upgrade to 2.1. 2.0.4's image carries known CVEs that 2.1.0 fixed: python3 3.12.14 (CVE-2026-19445, CVE-2026-19553, CVE-2026-82049), OpenSSL 3.5.7 (CVE-2026-14456 and others) and zlib 1.3.2-r0 (CVE-2026-85091); see the 2.1.0 entry in the [CHANGELOG](CHANGELOG.md). Its pinned packages are gone from Alpine, so it cannot be rebuilt |
 | 1.x | No |
 

@@ -1,6 +1,6 @@
 # HiddenForge
 
-**Latest release: [2.1.2](https://sambent.dev/sam/HiddenForge/releases/tag/v2.1.2) (2026-10-22).**
+**Latest release: [2.1.3](https://sambent.dev/sam/HiddenForge/releases/tag/v2.1.3) (2026-10-28).**
 
 I run my own services as onion services, and I wanted one container that gets
 the Tor side right and that anyone can check: pinned inputs, signed releases and
@@ -20,8 +20,8 @@ The full guide is in the [wiki](https://sambent.dev/sam/HiddenForge/wiki).
 
 > **Upgrading from 2.0.4?** Your keys and onion address carry over, but a copy of
 > the 2.0.4 compose file will not pick up the changes. Read
-> [Upgrading from 2.0.4](#upgrading-from-204) first. Upgrading from 2.1.0 or
-> 2.1.1 to 2.1.2 needs nothing: same compose file, same keys, same address.
+> [Upgrading from 2.0.4](#upgrading-from-204) first. Upgrading from 2.1.0,
+> 2.1.1 or 2.1.2 to 2.1.3 needs nothing: same compose file, same keys, same address.
 
 ![HiddenForge](docs/img/hiddenforge.webp)
 
@@ -191,7 +191,7 @@ just starts Tor. The full list of changes is in the [CHANGELOG](CHANGELOG.md).
 
 | Issue | Status |
 |---|---|
-| 2.1.1 shipped `/opt/hiddenforge` and `/usr/local/bin/tests` as mode 0644 | Fixed in 2.1.2. Do not deploy 2.1.1 |
+| 2.1.1 shipped `/opt/hiddenforge` and `/usr/local/bin/tests` as mode 0644 | Fixed in 2.1.2 and later. Do not deploy 2.1.1 |
 | 2.1.x has no hardware (SSH-FIDO2) signature | ML-DSA-65 only. `hiddenforge verify-image` needs `--allow-pq-only` and reports `complete: false` |
 | arm64 was tested under emulation and in an emulated full-system VM | Not tested on real ARM hardware |
 | Under the shipped Podman file, `<name>.onion` is not written to the key volume | By design; see [Rootless Podman](#rootless-podman-recommended-for-high-risk-deployments) |
@@ -214,13 +214,13 @@ compilers unpinned; only the hash-checked, statically linked binary it produces 
 kept in the image.
 
 **What is pinned and why** (checked against the Dockerfile and `requirements.txt`
-on 2026-10-23, release 2.1.2):
+on 2026-10-23, release 2.1.3):
 
 | Dependency | Pinned to | Why it matters |
 |---|---|---|
 | Alpine base image | `alpine:3.23.5@sha256:...` | Digest pinning locks the exact OS bytes. A tag like `latest` or even `3.23.5` can be silently updated on the registry |
 | `tor` apk | `0.4.9.14-r0` | A tampered Tor binary could de-anonymise every circuit |
-| `python3` apk | `3.12.15-r0` | The Python runtime executes the entrypoint and Vanguards |
+| `python3` apk | `3.12.16-r0` | The Python runtime executes the entrypoint and Vanguards |
 | `su-exec` apk | `0.3-r0` | This binary performs the privilege drop to the `tor` user |
 | `openssl` apk | `3.5.9-r0` | Pinned explicitly rather than inherited from the base image, so a known-vulnerable OpenSSL cannot ride in with it |
 | `zlib` apk | `1.3.2-r1` | Pinned explicitly for the same reason: the base's `1.3.2-r0` has a heap overflow (CVE-2026-85091) in code Tor runs on data from relays |
@@ -245,7 +245,7 @@ plus the exact-version pin, not the hash algorithm.
 
 This has a limit. `apk add --no-cache` fetches the index from
 `dl-cdn.alpinelinux.org` at build time, and digest-pinning the base image does
-not freeze it. The exact-version pin (`=3.12.15-r0`) still makes the resolved
+not freeze it. The exact-version pin (`=3.12.16-r0`) still makes the resolved
 package deterministic: apk installs that version or fails, never a silently newer
 one. But Alpine prunes superseded versions from the index, so a pin that was valid
 at release time stops resolving once a security update lands. The build then fails
@@ -256,7 +256,7 @@ necessarily reproduce, and pinned versions must be refreshed as Alpine moves. It
 has happened repeatedly: `tor=0.4.9.8-r0` (fixed in 2.0.2), `python3=3.12.13-r0`
 (fixed in 2.0.4), and during 2.1.0 development `tor=0.4.9.11-r0`,
 `tor=0.4.9.12-r0`, then `tor=0.4.9.13-r0`, `python3=3.12.14-r0` and
-`openssl=3.5.8-r0` together (all fixed in 2.1.0). A scheduled CI job
+`openssl=3.5.8-r0` together (all fixed in 2.1.0), then `python3=3.12.15-r0` (fixed in 2.1.3). A scheduled CI job
 (`pin-freshness`) checks every pin against the live index, so the next one is
 caught before a build needs it.
 
