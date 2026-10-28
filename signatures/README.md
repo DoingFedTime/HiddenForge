@@ -177,9 +177,10 @@ python3 scripts/collect_evidence.py --out evidence --image sambent.dev/sam/hidde
 ```
 
 No value in the bundle is typed by hand; a gate that cannot run records its own
-failure rather than being omitted. For 2.1.3 the bundle is published as
-`hiddenforge-2.1.3-evidence.tar.gz` on this forge's package registry
-(<https://sambent.dev/sam/-/packages/generic/hiddenforge-release/2.1.3>, with the
-SBOM and `SHA256SUMS`), and its `MANIFEST.sha256` is signed with the same
-ML-DSA-65 key (`MANIFEST.sha256.mldsa`, verified the same way as the digest
-above). It is never committed (it would be stale the next commit).
+failure rather than being omitted. The bundle was published for 2.1.0, 2.1.1 and
+2.1.2 as `hiddenforge-<version>-evidence.tar.gz` on this forge's package registry
+(<https://sambent.dev/sam/-/packages/generic/hiddenforge-release/>), with its
+`MANIFEST.sha256` signed by the same ML-DSA-65 key. 2.1.3 has no bundle: the
+release is the 2.1.2 image with one package updated, and the record of its checks
+is the CI run on the `v2.1.3` tag. A bundle is never committed (it would be stale
+the next commit).
