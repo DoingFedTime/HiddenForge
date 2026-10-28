@@ -51,7 +51,16 @@ def disagreement(found: dict) -> str:
     return "versions disagree:\n" + "\n".join(f"  {v!s:>8}  {k}" for k, v in found.items())
 
 
+def _need_full_tree() -> None:
+    """mutmut runs the tests from a partial copy of the tree; skip there."""
+    if not (REPO / "manifest.json").exists():
+        import pytest
+
+        pytest.skip("not a full checkout")
+
+
 def test_every_source_states_the_same_version():
+    _need_full_tree()
     found = collect(REPO)
     assert not disagreement(found), disagreement(found)
 
@@ -63,6 +72,7 @@ def _copy_sources(dst: Path) -> None:
 
 
 def test_a_single_stale_source_is_caught(tmp_path):
+    _need_full_tree()
     _copy_sources(tmp_path)
     path = tmp_path / "scripts" / "hiddenforge"
     text = path.read_text()
@@ -74,6 +84,7 @@ def test_a_single_stale_source_is_caught(tmp_path):
 
 
 def test_a_source_that_loses_its_version_is_caught(tmp_path):
+    _need_full_tree()
     _copy_sources(tmp_path)
     path = tmp_path / "tests" / "golden_setup" / "compose.service.yml"
     path.write_text(re.sub(r"hiddenforge v\d+\.\d+\.\d+", "hiddenforge", path.read_text()))
