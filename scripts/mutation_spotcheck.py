@@ -556,7 +556,7 @@ def _invalidate_bytecode_cache(path: Path, *, bump_mtime: bool = True) -> None:
     cache.unlink(missing_ok=True)
     if not bump_mtime:
         # Restoring the original: the cache is already gone, so the next import
-        # recompiles whatever the timestamp says. Leave the file with an honest
+        # recompiles whatever the timestamp says. Leave the file with its real
         # mtime instead of one 60 seconds in the future -- a future timestamp on
         # a working tree confuses anything that reasons about "changed since",
         # and it cost time here when a source file appeared to have been edited

@@ -31,12 +31,12 @@ first, so a release's signatures are committed after its tag. A checkout of
 
 The 2.1.3 signature (digest `sha256:a9c985da5ceffa601da5d6aab17a6bbdacb4bb9a3e301b1c157d4f2ff04f27ad`,
 ML-DSA-65; superseded by 2.1.4, see the CHANGELOG) is in git history at commit
-`191937a`. The 2.1.2 signature (digest `sha256:cc6c215d0a85b94ff7724951b2d6176111f508030235733afbb40116a93c3f05`,
+`f1dbf20`. The 2.1.2 signature (digest `sha256:cc6c215d0a85b94ff7724951b2d6176111f508030235733afbb40116a93c3f05`,
 ML-DSA-65; superseded by 2.1.3) is in git history at commit
-`4581cb5`. The 2.1.1 signature (digest `sha256:889da0a9d21d7d3af87cba102e1c6ff5ea4b2618c46ea4cec26785a43ed89645`,
+`634b461`. The 2.1.1 signature (digest `sha256:889da0a9d21d7d3af87cba102e1c6ff5ea4b2618c46ea4cec26785a43ed89645`,
 ML-DSA-65; superseded by 2.1.2) is in git history at commit
-`fea0ff8`. The 2.1.0 signature (digest `sha256:183a5df347fcf0cb84136b1f1f79f5f8bd29ba6f236662e744e47d1ffc2d1190`,
-ML-DSA-65) is in git history at the commit that adds it (`165cb5a`). The 2.0.4
+`d97c46b`. The 2.1.0 signature (digest `sha256:183a5df347fcf0cb84136b1f1f79f5f8bd29ba6f236662e744e47d1ffc2d1190`,
+ML-DSA-65) is in git history at the commit that adds it (`cbcc1a1`). The 2.0.4
 signatures (digest `sha256:063d824c3e56205bea5a3bfeb3d2d991de7dea88439cf6ebda8bb4b17ecce0ca`,
 both halves) remain in the `v2.0.4` tag and in git history.
 

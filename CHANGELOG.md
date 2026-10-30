@@ -510,7 +510,7 @@ against the code, and scanning the whole history before anything is published.
   regression in this pass's hardlink fix: sockets cannot be opened). It is
   skipped with a warning, as device nodes are.
 - **Three more writes that could land on an inode that was not theirs**, found
-  by a third review pass hunting the same class. Startup's recursive chown
+  by a further check hunting the same class. Startup's recursive chown
   followed a hardlinked file out of the service directory (it now chowns through
   a descriptor and declines to chown any file with more than one link, with a warning; exploitable only
   where `fs.protected_hardlinks` is off). `setup --force` wrote through a
@@ -558,7 +558,7 @@ against the code, and scanning the whole history before anything is published.
 
 ### Fixed (second review, 2026-09-25)
 An independent pass over the fixes below, each finding reproduced before it was
-changed and re-reproduced by a second, adversarial reviewer.
+changed and re-reproduced independently.
 - **`verify-image` trusted whatever keys arrived with the signatures.** The signer
   list was read from `<sigdir>/allowed-signers` and the ML-DSA key from
   `<sigdir>/sambent-mldsa.pub`, so a directory carrying a substituted key and a
@@ -835,7 +835,7 @@ existing `docker compose up -d` human path is unchanged.
   linked, SHA256-verified archive; CC0-1.0). `hiddenforge vanity --prefix p
   --name n` runs headless, writes a Tor-native key set, refuses to overwrite
   without `--force` (archiving instead of deleting), and never prints key
-  material. `--bench` measures throughput and prints the honest difficulty table
+  material. `--bench` measures throughput and prints the difficulty table
   (`32^length`) for prefixes 1..8. A test proves the generated `.onion` starts
   with the requested prefix and that the address re-derives from the public key.
 - **Programmatic address discovery**: the entrypoint publishes a world-readable

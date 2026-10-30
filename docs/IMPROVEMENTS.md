@@ -55,7 +55,7 @@ deliberate decision not to do (reason given).
 - [x] **B3** Refuses to overwrite an existing key without `--force`; never
   prints private key material.
 - [x] **B4** `--bench` measures keys/sec on this machine and prints/returns the
-  honest difficulty table (`32^L`, expected attempts and wall-clock) for
+  difficulty table (`32^L`, expected attempts and wall-clock) for
   prefixes 1..8.
 - [x] **B5** `show --json` reports `onion`, `key_path`, `name`; vanity result is
   independently verified by deriving the address from the generated public key.

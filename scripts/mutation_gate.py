@@ -443,7 +443,7 @@ def _configured_modules() -> frozenset[str]:
 TIMEOUT_BUDGET = 300
 """Seconds a single re-graded mutant gets, alone, before it is called a hang.
 
-Measured: the slowest honest mutant in this repository finished in 59 seconds and
+Measured: the slowest non-hanging mutant in this repository finished in 59 seconds and
 the three real hangs were still running at 240. 300 is well clear of both.
 """
 
