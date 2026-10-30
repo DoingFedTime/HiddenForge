@@ -525,7 +525,7 @@ def test_an_empty_environment_says_so(monkeypatch, capsys):
     down would be worse -- but it must not do so quietly."""
     e.build_torrc_string()
     assert capsys.readouterr().out == (
-        "Warning: no *_TOR_SERVICE_HOSTS env vars found — "
+        "Warning: no *_TOR_SERVICE_HOSTS env vars found; "
         "Tor will start but no hidden services will be configured.\n")
 
 
@@ -569,10 +569,10 @@ def test_a_dropped_service_names_the_variable_the_name_and_the_value(monkeypatch
         "Skipping invalid mapping '99999:127.0.0.1:8080': "
         "Port 99999 out of range in 99999:127.0.0.1:8080\n"
         "ERROR: service 'bad' has no valid port mappings "
-        "(from BAD_TOR_SERVICE_HOSTS='99999:127.0.0.1:8080') — skipping it. Tor cannot "
+        "(from BAD_TOR_SERVICE_HOSTS='99999:127.0.0.1:8080'); skipping it. Tor cannot "
         "start a hidden service with no ports, so emitting it would "
         "take down every other service too. Fix this mapping.\n"
-        "Warning: no *_TOR_SERVICE_HOSTS env vars found — "
+        "Warning: no *_TOR_SERVICE_HOSTS env vars found; "
         "Tor will start but no hidden services will be configured.\n")
 
 
@@ -619,7 +619,7 @@ def test_a_collision_names_both_variables(monkeypatch, capsys):
     assert reason == ("myapp_TOR_SERVICE_HOSTS: service name 'myapp' collides with "
                       "MYAPP_TOR_SERVICE_HOSTS")
     assert ("ERROR: myapp_TOR_SERVICE_HOSTS maps to service 'myapp', which is "
-            "already defined by MYAPP_TOR_SERVICE_HOSTS — skipping it. "
+            "already defined by MYAPP_TOR_SERVICE_HOSTS; skipping it. "
             "Service names are lowercased and underscores become hyphens, so "
             "names that differ only in case or in _ vs - collide. Rename one."
             ) in capsys.readouterr().out

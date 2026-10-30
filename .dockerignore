@@ -9,4 +9,5 @@
 !manifest.json
 !scripts/
 !vendor/
-!tests/
+!tests/test_torrc.py
+!LICENSE

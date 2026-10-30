@@ -2,11 +2,48 @@
 
 All notable changes to HiddenForge are documented here.
 
-The latest release is **2.1.3**; its image digest and signatures are in
+The latest release is **2.1.4**; its image digest and signatures are in
 `signatures/` on master (a release's signatures are committed after its tag).
-2.1.3 is signed with ML-DSA-65 only; a hardware SSH-FIDO2 signature may be added
+2.1.4 is signed with ML-DSA-65 only; a hardware SSH-FIDO2 signature may be added
 later over the same digest, without a new image. `v2.0.5` is a git tag with no image of its own: its changes ship
 with 2.1.0.
+
+---
+
+## [2.1.4] - 2026-10-30
+
+Updates Tor, and puts the license text and image labels in the image.
+
+### Security
+
+- **`tor` `0.4.9.14-r0` to `0.4.9.15-r0`.** Alpine no longer carries 0.4.9.14, so
+  the old pin could not be installed and the image could not be rebuilt from
+  source. Tor 0.4.9.15 is the version in Alpine's current index.
+
+### Added
+
+- **The license and image labels travel with the image.** The GPL-3.0 text is at
+  `/usr/share/licenses/hiddenforge/LICENSE`, and the image carries the
+  `org.opencontainers.image.*` labels `title`, `description`, `version`, `source`
+  and `licenses`. The labels are fixed text: a build date or commit id would give
+  every build of the same source a different digest. `tests/test_version_consistency.py`
+  now checks the version label too.
+- **`scripts/bump_pins.py`.** Moves an apk pin that Alpine has pruned to the version
+  its index carries now, together with the Tor version the CLI and `manifest.json`
+  also state. The nightly watchdog uses it to prepare a candidate fix (build, scan
+  and tests) when a pin disappears.
+
+### Changed
+
+- Some startup and supervisor messages have slightly different wording; the
+  conditions that print them did not change.
+- The build context holds only the files the Dockerfile copies: `LICENSE` and
+  `tests/test_torrc.py` from the repository, no other test files.
+
+### Upgrading
+
+From any 2.1.x release nothing is needed: same compose file, same keys, same
+address.
 
 ---
 

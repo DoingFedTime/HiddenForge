@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-HiddenForge entrypoint — generates a hardened torrc, starts Tor, and
+HiddenForge entrypoint: generates a hardened torrc, starts Tor, and
 monitors the Vanguards guard-protection addon alongside it.
 """
 import contextlib
@@ -169,7 +169,7 @@ def _open_dir_nofollow(path):
     Raises ``OSError(ENOTDIR)`` if ``path`` is a symlink, a regular file, or any
     other non-directory.  (Verified kernel behaviour: with ``O_DIRECTORY`` set,
     a symlink yields ENOTDIR rather than the ELOOP that ``O_NOFOLLOW`` alone
-    would give — ``O_DIRECTORY`` is evaluated first.  We keep ``O_DIRECTORY``
+    would give, because ``O_DIRECTORY`` is evaluated first.  We keep ``O_DIRECTORY``
     deliberately: it also makes opening a FIFO or device node fail immediately
     instead of blocking, which a bare ``O_NOFOLLOW`` open would not.)  Either
     way the open is refused, which is the correct loud failure for a key
@@ -182,7 +182,7 @@ def _chmod_dir_nofollow(path, mode, only_if_root_owned=False):
     """chmod a directory via an O_NOFOLLOW fd; never follows a symlink.
 
     If ``only_if_root_owned`` is set, the mode is applied only when the
-    directory is still owned by uid 0 — preserving the existing logic that
+    directory is still owned by uid 0. That preserves the existing logic that
     avoids chmod'ing a directory we do not own (which would need CAP_FOWNER).
     The ownership test is done with ``fstat`` on the same descriptor we chmod,
     so there is no TOCTOU window between the check and the change.
@@ -231,7 +231,7 @@ def validate_service_name(name):
     """Allow only lowercase alphanumeric and hyphens, max 63 chars.
 
     The name is interpolated into a filesystem path
-    (/var/lib/tor/hidden_service/<name>), so it is length-capped at 63 — the
+    (/var/lib/tor/hidden_service/<name>), so it is length-capped at 63, the
     DNS-label limit and a comfortable bound below any filesystem name limit.
     """
     if not re.fullmatch(r'[a-z0-9][a-z0-9\-]*', name) or len(name) > 63:
@@ -278,7 +278,7 @@ def resolve_to_ip(host, label):
     If host is already a dotted-quad IP it is returned unchanged.
     Otherwise Docker's embedded DNS is queried (this resolves Compose service
     names like 'web' to their container IP at startup time, so Tor never sees
-    a hostname in HiddenServicePort — it only accepts IPs).
+    a hostname in HiddenServicePort, which only accepts IPs).
     """
     stripped = host.strip()
     # If it has the shape of a dotted-quad, require it to be a VALID IPv4
@@ -315,7 +315,7 @@ def resolve_to_ip(host, label):
     except (ipaddress.AddressValueError, ValueError, AttributeError) as exc:
         raise ValueError(
             f"Resolver returned a non-IPv4 value {resolved!r} for '{_safe(stripped)}' "
-            f"in {_safe(label)} — refusing to write it to the torrc"
+            f"in {_safe(label)}; refusing to write it to the torrc"
         ) from exc
 
     print(f"Resolved '{_safe(stripped)}' → {validated}")
@@ -327,12 +327,12 @@ def resolve_to_ip(host, label):
 # ---------------------------------------------------------------------------
 
 def build_torrc_string(dropped=None, resolved=None, unresolved=None):
-    """Validate env vars and assemble the torrc text — PURE, no filesystem side effects.
+    """Validate env vars and assemble the torrc text. PURE: no filesystem side effects.
 
     Returns a tuple ``(torrc_content, hs_dirs)`` where ``hs_dirs`` is the list of
     hidden-service directory paths (in deterministic order) that the caller must
     create and chown.  This function performs NO ``mkdir``/``chmod``/``chown`` and
-    does not touch ``pwd`` — that makes it host-testable without the ``tor`` user
+    does not touch ``pwd``, which makes it host-testable without the ``tor`` user
     or write access to ``/etc/tor`` and keeps the security-critical string
     assembly isolated from privileged operations.  The bytes it produces are
     identical to what the previous monolithic generator wrote.
@@ -358,7 +358,7 @@ def build_torrc_string(dropped=None, resolved=None, unresolved=None):
     # present is not a reason to turn this off.  Default is enabled.
     sandbox = "1" if os.environ.get("TOR_SANDBOX", "1") != "0" else "0"
 
-    torrc_content = f"""# HiddenForge — hardened Tor configuration
+    torrc_content = f"""# HiddenForge: hardened Tor configuration
 # Generated at container startup. Do not edit by hand.
 
 # ── Control socket (required for Vanguards addon) ──────────────────────────
@@ -413,7 +413,7 @@ FetchUselessDescriptors 0     # do not fetch relay descriptors we won't use (def
 # one out is indistinguishable from a real config line to those checks.
 #
 # Pinned to 1, NOT left at the "auto" default.  Per the Tor manual, "auto" means
-# "do what the vanguards-lite-enabled consensus parameter tells them to do" —
+# "do what the vanguards-lite-enabled consensus parameter tells them to do",
 # which puts our only guard-discovery defence under the control of the directory
 # authorities rather than the operator.  An adversary able to influence the
 # consensus could otherwise disable it for every deployment simultaneously,
@@ -463,7 +463,7 @@ VanguardsLiteEnabled 1
         if service_name in seen_names:
             print(
                 f"ERROR: {safe_env} maps to service '{service_name}', which is "
-                f"already defined by {_safe(seen_names[service_name])} — skipping it. "
+                f"already defined by {_safe(seen_names[service_name])}; skipping it. "
                 "Service names are lowercased and underscores become hyphens, so "
                 "names that differ only in case or in _ vs - collide. Rename one."
             )
@@ -498,7 +498,7 @@ VanguardsLiteEnabled 1
         service_block += "HiddenServicePoWQueueRate  250\n"
         service_block += "HiddenServicePoWQueueBurst 2500\n"
         # Intro-point DoS defence throttles the INTRODUCE2 stage at the intro
-        # points — a different choke point from PoW, complementary not redundant.
+        # points, a different choke point from PoW, complementary not redundant.
         # Default-off in torrc and in the consensus; we enable it explicitly with
         # Tor's documented default rate/burst (25/sec, 200 burst). Burst must be
         # non-zero or the defence is disabled. (Tor onion-service DoS guidelines.)
@@ -554,7 +554,7 @@ VanguardsLiteEnabled 1
             # would abort Tor's startup and take every other service with it.
             print(
                 f"ERROR: service '{service_name}' has no valid port mappings "
-                f"(from {safe_env}='{safe_hosts}') — skipping it. Tor cannot "
+                f"(from {safe_env}='{safe_hosts}'); skipping it. Tor cannot "
                 "start a hidden service with no ports, so emitting it would "
                 "take down every other service too. Fix this mapping."
             )
@@ -568,7 +568,7 @@ VanguardsLiteEnabled 1
         found_any = True
 
     if not found_any:
-        print("Warning: no *_TOR_SERVICE_HOSTS env vars found — "
+        print("Warning: no *_TOR_SERVICE_HOSTS env vars found; "
               "Tor will start but no hidden services will be configured.")
 
     return torrc_content, hs_dirs
@@ -695,7 +695,7 @@ def generate_basic_torrc():
     # that same descriptor.
     #
     # open('w') follows symlinks, and the chmod/chown that used to follow took a
-    # PATH — so a process that could write into the /etc/tor tmpfs before this
+    # PATH, so a process that could write into the /etc/tor tmpfs before this
     # point could replace torrc with a symlink and have root truncate, chmod and
     # chown an arbitrary file. The window is small (this runs early, as PID 1, on
     # a tmpfs that starts empty) but it costs nothing to close, and it is the same
@@ -1263,7 +1263,7 @@ def start_vanguards():
     """Launch the Vanguards addon as the tor user via the control socket.
 
     --disable_vanguards: suppress the NumEntryGuards SETCONF call that
-      triggers Tor config re-validation — which Sandbox 1 blocks.
+      triggers Tor config re-validation, which Sandbox 1 blocks.
       Guard-layer rotation is handled by Tor's built-in vanguards-lite.
       We still gain bandguards (bandwidth side-channel detection) and
       rendguard (rendezvous-point overuse detection).
@@ -1492,7 +1492,7 @@ def main():
         # already correct, and the gate only runs when a write is pending.
         _publish_addresses(hs_dirs, gate=publication_gate)
 
-        # Tor is the primary process — exit if it dies.
+        # Tor is the primary process: exit if it dies.
         tor_rc = _tor_process.poll()
         if tor_rc is not None:
             print(f"Tor exited with code {tor_rc}, shutting down.")
@@ -1564,7 +1564,7 @@ def main():
                 if vanguards_restarts > VANGUARDS_MAX_RESTARTS:
                     print(
                         f"Vanguards exited (code {vg_rc}) too many times "
-                        "in quick succession — pausing it for "
+                        "in quick succession; pausing it for "
                         f"{VANGUARDS_COOLDOWN_SECONDS}s, then trying again."
                     )
                     vanguards_restarts = 0
@@ -1593,7 +1593,7 @@ def main():
                     vanguards_restarts += 1
                     print(f"Could not start Vanguards: {e}")
                     if vanguards_restarts > VANGUARDS_MAX_RESTARTS:
-                        print("Vanguards could not be started — pausing it for "
+                        print("Vanguards could not be started; pausing it for "
                               f"{VANGUARDS_COOLDOWN_SECONDS}s, then trying again.")
                         vanguards_restarts = 0
                         vanguards_next_attempt = now + VANGUARDS_COOLDOWN_SECONDS

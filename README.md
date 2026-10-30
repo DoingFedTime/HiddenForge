@@ -1,6 +1,6 @@
 # HiddenForge
 
-**Latest release: [2.1.3](https://sambent.dev/sam/HiddenForge/releases/tag/v2.1.3) (2026-10-28).**
+**Latest release: [2.1.4](https://sambent.dev/sam/HiddenForge/releases/tag/v2.1.4) (2026-10-30).**
 
 I run my own services as onion services, and I wanted one container that gets
 the Tor side right and that anyone can check: pinned inputs, signed releases and
@@ -21,7 +21,7 @@ The full guide is in the [wiki](https://sambent.dev/sam/HiddenForge/wiki).
 > **Upgrading from 2.0.4?** Your keys and onion address carry over, but a copy of
 > the 2.0.4 compose file will not pick up the changes. Read
 > [Upgrading from 2.0.4](#upgrading-from-204) first. Upgrading from 2.1.0,
-> 2.1.1 or 2.1.2 to 2.1.3 needs nothing: same compose file, same keys, same address.
+> 2.1.1, 2.1.2 or 2.1.3 to 2.1.4 needs nothing: same compose file, same keys, same address.
 
 ![HiddenForge](docs/img/hiddenforge.webp)
 
@@ -52,7 +52,7 @@ network-isolated and never exposed to the internet.
 The compose file pulls `:latest`. Run `hiddenforge verify-image` before you
 deploy, and pin the verified digest if you want a deployment that never moves.
 
-**What it is:** a hardened Tor hidden service container: Tor 0.4.9.14 on Alpine
+**What it is:** a hardened Tor hidden service container: Tor 0.4.9.15 on Alpine
 3.23 with Tor's built-in vanguards-lite pinned on, plus the Vanguards addon's
 bandguards and rendguard attack detectors. Every directly installed dependency is
 pinned (pip ones by SHA256, apk ones against Alpine's signed index) and the build
@@ -214,12 +214,12 @@ compilers unpinned; only the hash-checked, statically linked binary it produces 
 kept in the image.
 
 **What is pinned and why** (checked against the Dockerfile and `requirements.txt`
-on 2026-10-23, release 2.1.3):
+on 2026-10-30, release 2.1.4):
 
 | Dependency | Pinned to | Why it matters |
 |---|---|---|
 | Alpine base image | `alpine:3.23.5@sha256:...` | Digest pinning locks the exact OS bytes. A tag like `latest` or even `3.23.5` can be silently updated on the registry |
-| `tor` apk | `0.4.9.14-r0` | A tampered Tor binary could de-anonymise every circuit |
+| `tor` apk | `0.4.9.15-r0` | A tampered Tor binary could de-anonymise every circuit |
 | `python3` apk | `3.12.16-r0` | The Python runtime executes the entrypoint and Vanguards |
 | `su-exec` apk | `0.3-r0` | This binary performs the privilege drop to the `tor` user |
 | `openssl` apk | `3.5.9-r0` | Pinned explicitly rather than inherited from the base image, so a known-vulnerable OpenSSL cannot ride in with it |
@@ -256,7 +256,7 @@ necessarily reproduce, and pinned versions must be refreshed as Alpine moves. It
 has happened repeatedly: `tor=0.4.9.8-r0` (fixed in 2.0.2), `python3=3.12.13-r0`
 (fixed in 2.0.4), and during 2.1.0 development `tor=0.4.9.11-r0`,
 `tor=0.4.9.12-r0`, then `tor=0.4.9.13-r0`, `python3=3.12.14-r0` and
-`openssl=3.5.8-r0` together (all fixed in 2.1.0), then `python3=3.12.15-r0` (fixed in 2.1.3). A scheduled CI job
+`openssl=3.5.8-r0` together (all fixed in 2.1.0), then `python3=3.12.15-r0` (fixed in 2.1.3) and `tor=0.4.9.14-r0` (fixed in 2.1.4). A scheduled CI job
 (`pin-freshness`) checks every pin against the live index, so the next one is
 caught before a build needs it.
 
@@ -282,7 +282,7 @@ you verify the image you pull.
 Releases are signed over the image digest with a post-quantum **ML-DSA-65**
 signature (FIPS 204) and, when the hardware key is available, an **SSH-FIDO2**
 YubiKey signature. Neither depends on an outside service or a transparency log.
-The files are in `signatures/`. **2.1.3 carries the ML-DSA-65 signature only.**
+The files are in `signatures/`. **2.1.4 carries the ML-DSA-65 signature only.**
 There is no hardware signature for it, so `hiddenforge verify-image` needs
 `--allow-pq-only` and reports `complete: false`.
 
@@ -498,7 +498,7 @@ podman info --format '{{.Host.Security.Rootless}}'   # expected: true
 | Base image | Alpine 3.23.5 digest-pinned |
 | Host isolation (optional) | Rootless Podman: container escape = host user, not real root |
 
-**Tor version: 0.4.9.14** (2.1.x; the published 2.0.4 image runs 0.4.9.11)
+**Tor version: 0.4.9.15** (2.1.x; the published 2.0.4 image runs 0.4.9.11)
 
 ## Documentation
 

@@ -286,7 +286,7 @@ def test_a_resolver_answer_that_is_not_an_ipv4_address_is_named(monkeypatch):
         e.resolve_to_ip("backend", "80:backend:8080")
     assert str(exc.value) == (
         "Resolver returned a non-IPv4 value 'not-an-ip' for 'backend' "
-        "in 80:backend:8080 — refusing to write it to the torrc")
+        "in 80:backend:8080; refusing to write it to the torrc")
 
 
 def test_a_successful_resolution_is_announced_with_both_ends(mock_dns, capsys):

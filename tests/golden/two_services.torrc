@@ -1,4 +1,4 @@
-# HiddenForge — hardened Tor configuration
+# HiddenForge: hardened Tor configuration
 # Generated at container startup. Do not edit by hand.
 
 # ── Control socket (required for Vanguards addon) ──────────────────────────
@@ -53,7 +53,7 @@ FetchUselessDescriptors 0     # do not fetch relay descriptors we won't use (def
 # one out is indistinguishable from a real config line to those checks.
 #
 # Pinned to 1, NOT left at the "auto" default.  Per the Tor manual, "auto" means
-# "do what the vanguards-lite-enabled consensus parameter tells them to do" —
+# "do what the vanguards-lite-enabled consensus parameter tells them to do",
 # which puts our only guard-discovery defence under the control of the directory
 # authorities rather than the operator.  An adversary able to influence the
 # consensus could otherwise disable it for every deployment simultaneously,

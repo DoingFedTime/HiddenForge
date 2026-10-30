@@ -37,6 +37,14 @@ FROM alpine:3.23.5@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952
 # clock-derived field apk writes into /etc/shadow when it creates the tor user.
 ARG SOURCE_DATE_EPOCH=0
 
+# Static labels only: a build date or commit id here would change the digest
+# from one build of the same source to the next.
+LABEL org.opencontainers.image.title="HiddenForge" \
+      org.opencontainers.image.description="Hardened Tor v3 onion service container with the Vanguards addon" \
+      org.opencontainers.image.version="2.1.4" \
+      org.opencontainers.image.source="https://sambent.dev/sam/HiddenForge" \
+      org.opencontainers.image.licenses="GPL-3.0-only"
+
 ENV HOME=/var/lib/tor
 ENV PYTHONUNBUFFERED=1
 # Default key volume used by the in-image CLI (scripts/hiddenforge).
@@ -44,13 +52,13 @@ ENV HIDDENFORGE_KEYS_DIR=/var/lib/tor/hidden_service
 # Lets the CLI give host-specific guidance when a command needs tooling that the
 # image deliberately does not ship (age/gpg for backup/encrypt-key).
 ENV HIDDENFORGE_IN_CONTAINER=1
-# Suppress .pyc file generation — no bytecode debris on disk
+# Suppress .pyc file generation: no bytecode debris on disk
 ENV PYTHONDONTWRITEBYTECODE=1
 # Silence the pip self-update check at build time
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1
 
 # Install Tor and Python runtime with pinned package versions.
-# py3-pip is a build-only dep — removed after the venv is bootstrapped, leaving
+# py3-pip is a build-only dep, removed after the venv is bootstrapped, leaving
 # no pip/installer tooling in the final image. (The Python stdlib still ships
 # urllib/ssl; what we remove are the third-party package manager and HTTP
 # clients, not the language's built-in modules.)
@@ -59,13 +67,13 @@ ENV PIP_DISABLE_PIP_VERSION_CHECK=1
 # A virtual package would be the conventional way to drop a build dep and its
 # orphans in one go, but apk assigns every virtual package a self-generated
 # checksum in /lib/apk/db/installed, and that checksum was observed to differ
-# between two builds of identical source — producing different image digests
+# between two builds of identical source, producing different image digests
 # and silently breaking the reproducible-build guarantee (the failure looks
 # exactly like image tampering to anyone verifying it). Installing py3-pip by
 # name removes that record entirely; `apk del py3-pip` below still reclaims all
 # eight packages (py3-pip plus the py3-packaging/py3-parsing/py3-setuptools
-# tree it pulls in), because apk already tracks auto-installed dependencies —
-# verified: nothing is left behind versus the pre-pip package set.
+# tree it pulls in), because apk already tracks auto-installed dependencies.
+# Verified: nothing is left behind versus the pre-pip package set.
 #
 # rm apk.log because it records wall-clock operation times, which would also
 # break reproducibility.
@@ -78,7 +86,7 @@ ENV PIP_DISABLE_PIP_VERSION_CHECK=1
 # CVE-2026-85091 (heap buffer overflow), and Tor links it to decompress directory
 # documents it receives from relays, so the bug is reachable from the network.
 RUN apk add --no-cache \
-    tor=0.4.9.14-r0 \
+    tor=0.4.9.15-r0 \
     python3=3.12.16-r0 \
     su-exec=0.3-r0 \
     py3-pip=25.1.1-r1 \
@@ -95,7 +103,7 @@ RUN apk add --no-cache \
 
 # Install Vanguards guard-protection addon in an isolated venv.
 # vanguards 0.3.1 (PyPI) uses the removed SafeConfigParser API from Python
-# 3.12 — upstream PR #105 has been unmerged since 2024, so we patch it here.
+# 3.12; upstream PR #105 has been unmerged since 2024, so we patch it here.
 #
 # All packages are installed with --require-hashes so pip will abort if any
 # downloaded file does not match the SHA256 recorded in requirements.txt.
@@ -133,14 +141,14 @@ RUN python3 -m venv /opt/vanguards-venv && \
     rm -f /var/log/apk.log
 
 # Set up Tor data directory and config directory.
-# DataDirectory must be mode 700 — Tor refuses to create a ControlSocket in a
+# DataDirectory must be mode 700: Tor refuses to create a ControlSocket in a
 # world-readable directory (it validates this before starting).
 #
 # /opt/hiddenforge and /usr/local/bin/tests are created here, 0755, because a
 # directory that `COPY --chmod` creates gets the FILE's mode: COPY --chmod=0644
 # into a missing directory made it 0644, which no non-root user can enter.
-RUN mkdir -p ${HOME}/.tor /etc/tor /opt/hiddenforge /usr/local/bin/tests && \
-    chmod 755 /opt/hiddenforge /usr/local/bin/tests && \
+RUN mkdir -p ${HOME}/.tor /etc/tor /opt/hiddenforge /usr/local/bin/tests /usr/share/licenses/hiddenforge && \
+    chmod 755 /opt/hiddenforge /usr/local/bin/tests /usr/share/licenses /usr/share/licenses/hiddenforge && \
     chown -R tor:tor ${HOME} && \
     chmod 700 ${HOME}
 
@@ -162,16 +170,17 @@ COPY --chmod=0755 healthcheck.py /usr/local/bin/healthcheck.py
 COPY --chmod=0755 vanity.py /usr/local/bin/vanity.py
 COPY --chmod=0755 scripts/hiddenforge /usr/local/bin/hiddenforge
 COPY --chmod=0644 manifest.json /opt/hiddenforge/manifest.json
+COPY --chmod=0644 LICENSE /usr/share/licenses/hiddenforge/LICENSE
 COPY --chmod=0644 tests/test_torrc.py /usr/local/bin/tests/test_torrc.py
 
 # Persist hidden service keys across container restarts
 VOLUME ["/var/lib/tor/hidden_service/"]
 
-# Health check — Tor must have bootstrapped (100%) AND established a circuit,
+# Health check: Tor must have bootstrapped (100%) AND established a circuit,
 # not merely be running. Queried over the control socket as the tor user (the
 # socket lives in the 0700 DataDirectory). No pidof fallback: a pidof check
 # would report healthy the instant the process exists, masking a Tor that is
-# alive but wedged — which is exactly the failure this probe must catch.
+# alive but wedged, which is exactly the failure this probe must catch.
 # start-period is 120s: circuit-establish + descriptor publish with PoW and 6
 # intro points can exceed the previous 90s; failures during it don't count.
 HEALTHCHECK --interval=60s --timeout=10s --start-period=120s --retries=3 \

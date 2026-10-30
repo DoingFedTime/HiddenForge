@@ -27,6 +27,8 @@ SOURCES = (
      r"^## \[(\d+\.\d+\.\d+)\]", True),
     ("CHANGELOG.md latest-release line", "CHANGELOG.md",
      r"latest release is \*\*(\d+\.\d+\.\d+)\*\*", False),
+    ("Dockerfile image label", "Dockerfile",
+     r'org\.opencontainers\.image\.version="([^"]+)"', True),
     ("tests/golden_setup/compose.service.yml header", "tests/golden_setup/compose.service.yml",
      r"\(hiddenforge v(\d+\.\d+\.\d+), contract", True),
 )

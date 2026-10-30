@@ -299,7 +299,7 @@ def test_vanguards_crashes_are_restarted_then_paused(supervisor, capsys):
     assert h.vanguards_started == 1 + e.VANGUARDS_MAX_RESTARTS
     out = capsys.readouterr().out
     assert "Vanguards exited (code 1), retrying in 10s (attempt 1/5)..." in out
-    assert ("Vanguards exited (code 1) too many times in quick succession — "
+    assert ("Vanguards exited (code 1) too many times in quick succession; "
             "pausing it for 600s, then trying again.") in out
 
 
@@ -404,7 +404,7 @@ def test_a_generator_that_keeps_failing_is_disabled_after_its_budget(supervisor,
     assert h.vanguards_started == 2 + e.VANGUARDS_MAX_RESTARTS
     out = capsys.readouterr().out
     assert out.count("Could not start Vanguards: no such binary") == e.VANGUARDS_MAX_RESTARTS + 1
-    assert ("Vanguards could not be started — pausing it for 600s, "
+    assert ("Vanguards could not be started; pausing it for 600s, "
             "then trying again.") in out
 
 
@@ -479,10 +479,10 @@ def test_the_pausing_lines_are_exact(supervisor, capsys):
     bandguards and rendguard are gone until the cooldown ends, and the health
     status is the only other place that is visible."""
     supervisor(tor_polls=[None] * 300 + [0], start_vanguards_raises=OSError("gone"))
-    assert ("Vanguards could not be started — pausing it for 600s, then trying "
+    assert ("Vanguards could not be started; pausing it for 600s, then trying "
             "again.\n") in capsys.readouterr().out
     supervisor(tor_polls=[None] * 300 + [0], vanguards_polls=(9,))
-    assert ("Vanguards exited (code 9) too many times in quick succession — "
+    assert ("Vanguards exited (code 9) too many times in quick succession; "
             "pausing it for 600s, then trying again.\n") in capsys.readouterr().out
 
 
