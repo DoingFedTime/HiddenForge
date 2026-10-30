@@ -41,6 +41,48 @@ def _load_check_pins():
 # Files that quote a pin as `name=version` or as a bare version next to the name.
 QUOTING = ("README.md", "docs/DEPENDENCIES.md")
 
+# Tor's version is also stated without the apk revision, in the CLI constant that
+# `hiddenforge info` reports and in the manifest built from it. A test fails when
+# they disagree with the Dockerfile pin, so a tor bump has to move them together.
+# (file, pattern with {v} for the upstream version, required)
+TOR_MIRRORS = (
+    ("scripts/hiddenforge", 'TOR_VERSION = "{v}"', True),
+    ("manifest.json", '"tor_version": "{v}"', True),
+    ("README.md", "Tor {v} on Alpine", False),
+    ("README.md", "**Tor version: {v}**", False),
+)
+
+
+def _upstream(apk_version: str) -> str:
+    """0.4.9.15-r0 -> 0.4.9.15"""
+    return re.sub(r"-r[0-9]+$", "", apk_version)
+
+
+def mirror_tor(root: pathlib.Path, old: str, new: str) -> dict[pathlib.Path, str]:
+    """New contents for every file that states Tor's upstream version.
+
+    Computed in full before anything is written: a required statement that cannot
+    be found aborts the bump, so the tree is never left half moved.
+    """
+    old_v, new_v = _upstream(old), _upstream(new)
+    if old_v == new_v:
+        return {}
+    texts: dict[pathlib.Path, str] = {}
+    for rel, template, required in TOR_MIRRORS:
+        path = root / rel
+        if not path.exists():
+            if required:
+                raise SystemExit(f"bump_pins: {rel} is missing; nothing written")
+            continue
+        text = texts.get(path, path.read_text())
+        before, after = template.format(v=old_v), template.format(v=new_v)
+        if before not in text:
+            if required:
+                raise SystemExit(f"bump_pins: {rel} does not state {before!r}; nothing written")
+            continue
+        texts[path] = text.replace(before, after)
+    return texts
+
 
 def plan(
     pins: dict[str, str], index: dict[str, list[str]], key, bump_all: bool
@@ -61,6 +103,9 @@ def plan(
 def apply(root: pathlib.Path, changes: dict[str, tuple[str, str]]) -> list[str]:
     """Rewrite the Dockerfile and the quoting docs. Returns the files changed."""
     touched: list[str] = []
+    mirrored: dict[pathlib.Path, str] = {}
+    if "tor" in changes:
+        mirrored = mirror_tor(root, *changes["tor"])
     dockerfile = root / "Dockerfile"
     text = dockerfile.read_text()
     new_text = text
@@ -77,7 +122,7 @@ def apply(root: pathlib.Path, changes: dict[str, tuple[str, str]]) -> list[str]:
         if not path.exists():
             continue
         doc = path.read_text()
-        out = doc
+        out = mirrored.pop(path, doc)
         for name, (old, new) in changes.items():
             # `name=old` anywhere, the table form "| `name` apk | `old` |", and the
             # bare "`=old`" the README uses when the package was just named.
@@ -91,6 +136,9 @@ def apply(root: pathlib.Path, changes: dict[str, tuple[str, str]]) -> list[str]:
         if out != doc:
             path.write_text(out)
             touched.append(rel)
+    for path, content in mirrored.items():
+        path.write_text(content)
+        touched.append(str(path.relative_to(root)))
     return touched
 
 

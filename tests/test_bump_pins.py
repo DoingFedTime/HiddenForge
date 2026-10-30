@@ -75,3 +75,44 @@ def test_nothing_to_do_changes_no_file(tmp_path):
 def test_the_shipped_dockerfile_parses_to_pins():
     assert "python3" in cp.parse_pins((REPO / "Dockerfile").read_text())
     assert shutil.which("python3")
+
+
+def _tor_tree(tmp_path):
+    root = _tree(tmp_path)
+    (root / "scripts").mkdir()
+    (root / "scripts" / "hiddenforge").write_text('TOR_VERSION = "0.4.9.14"\n')
+    (root / "manifest.json").write_text('{\n  "tor_version": "0.4.9.14"\n}\n')
+    (root / "README.md").write_text(
+        "a hardened container: Tor 0.4.9.14 on Alpine 3.23\n"
+        "| `tor` apk | `0.4.9.14-r0` | binary |\n"
+        "**Tor version: 0.4.9.14** (2.1.x)\n"
+    )
+    return root
+
+
+def test_a_tor_bump_moves_the_version_the_cli_and_manifest_state(tmp_path):
+    root = _tor_tree(tmp_path)
+    index = {"tor": ["0.4.9.15-r0"], "python3": ["3.12.15-r0"], "openssl": ["3.5.9-r0"]}
+    pins = cp.parse_pins((root / "Dockerfile").read_text())
+    changes = bump.plan(pins, index, cp._version_key, bump_all=False)
+    assert changes == {"tor": ("0.4.9.14-r0", "0.4.9.15-r0")}
+    touched = bump.apply(root, changes)
+    assert 'TOR_VERSION = "0.4.9.15"' in (root / "scripts" / "hiddenforge").read_text()
+    assert '"tor_version": "0.4.9.15"' in (root / "manifest.json").read_text()
+    readme = (root / "README.md").read_text()
+    assert "0.4.9.14" not in readme and readme.count("0.4.9.15") == 3
+    assert sorted(touched) == ["Dockerfile", "README.md", "manifest.json", "scripts/hiddenforge"]
+
+
+def test_a_tor_bump_that_cannot_move_the_cli_writes_nothing(tmp_path):
+    root = _tor_tree(tmp_path)
+    (root / "scripts" / "hiddenforge").write_text('TOR_VERSION = "9.9.9"\n')
+    before = (root / "Dockerfile").read_text()
+    try:
+        bump.apply(root, {"tor": ("0.4.9.14-r0", "0.4.9.15-r0")})
+    except SystemExit as exc:
+        assert "TOR_VERSION" in str(exc)
+    else:
+        raise AssertionError("expected the bump to refuse")
+    assert (root / "Dockerfile").read_text() == before
+    assert "0.4.9.14" in (root / "manifest.json").read_text()
