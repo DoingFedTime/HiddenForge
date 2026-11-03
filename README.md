@@ -252,9 +252,9 @@ one. But Alpine prunes superseded versions from the index, so a pin that was val
 at release time stops resolving once a security update lands. The build then fails
 instead of drifting.
 
-That failure is intended. It also means a source build of an older tag will not
-necessarily reproduce, and pinned versions must be refreshed as Alpine moves. It
-has happened repeatedly: `tor=0.4.9.8-r0` (fixed in 2.0.2), `python3=3.12.13-r0`
+That failure is intended. A source build of an older tag may not reproduce, and
+pins have to be refreshed whenever Alpine ships an update. It has happened
+repeatedly: `tor=0.4.9.8-r0` (fixed in 2.0.2), `python3=3.12.13-r0`
 (fixed in 2.0.4), and during 2.1.0 development `tor=0.4.9.11-r0`,
 `tor=0.4.9.12-r0`, then `tor=0.4.9.13-r0`, `python3=3.12.14-r0` and
 `openssl=3.5.8-r0` together (all fixed in 2.1.0), then `python3=3.12.15-r0` (fixed in 2.1.3) and `tor=0.4.9.14-r0` (fixed in 2.1.4). A scheduled CI job
@@ -419,8 +419,8 @@ required.
 ## Time Synchronisation
 
 Tor is sensitive to clock skew. If the host clock is more than ~30 minutes
-off, Tor will fail to build circuits. Make sure `ntpd` or `systemd-timesyncd` is
-running and synced on the host before starting the container.
+off, Tor will fail to build circuits. Run `ntpd` or `systemd-timesyncd` on the host
+and confirm it is synced before you start the container.
 
 ```bash
 timedatectl status   # check sync status on systemd hosts
@@ -515,8 +515,9 @@ podman info --format '{{.Host.Security.Rootless}}'   # expected: true
 | [SECURITY.md](SECURITY.md) | Supported versions and how to report a vulnerability |
 | [CHANGELOG.md](CHANGELOG.md) | Every release |
 
-The registry digest is the same on both registries as of 2026-10-23. Mutation
-testing and the pin-freshness check run on tags and nightly, not on every push.
+Both registries served the same digest when this page was last checked
+(2026-11-03). Mutation testing runs on tags and nightly, and the pin-freshness
+check runs nightly.
 
 ## License
 

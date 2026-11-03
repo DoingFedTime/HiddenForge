@@ -20,8 +20,7 @@ Updates `libexpat`. Nothing else in the image changed.
   dereference) and CVE-2026-118370 (signed integer overflow), both rated HIGH by
   trivy. python3 depends on libexpat and the base image ships the old version.
   Nothing in the image parses XML, but the library is installed. It is now pinned
-  explicitly, like openssl and zlib, so a scanner finding in it is a version bump
-  rather than a surprise.
+  explicitly, like openssl and zlib, so a scanner finding in it means a version bump.
 
 ### Upgrading
 
@@ -45,8 +44,8 @@ Updates Tor, and puts the license text and image labels in the image.
 - **The license and image labels travel with the image.** The GPL-3.0 text is at
   `/usr/share/licenses/hiddenforge/LICENSE`, and the image carries the
   `org.opencontainers.image.*` labels `title`, `description`, `version`, `source`
-  and `licenses`. The labels are fixed text: a build date or commit id would give
-  every build of the same source a different digest. `tests/test_version_consistency.py`
+  and `licenses`. The labels hold fixed text, because a build date or commit id would
+  give every build of the same source a different digest. `tests/test_version_consistency.py`
   now checks the version label too.
 - **`scripts/bump_pins.py`.** Moves an apk pin that Alpine has pruned to the version
   its index carries now, together with the Tor version the CLI and `manifest.json`
@@ -58,7 +57,7 @@ Updates Tor, and puts the license text and image labels in the image.
 - Some startup and supervisor messages have slightly different wording; the
   conditions that print them did not change.
 - The build context holds only the files the Dockerfile copies: `LICENSE` and
-  `tests/test_torrc.py` from the repository, no other test files.
+  `tests/test_torrc.py`.
 
 ### Upgrading
 
