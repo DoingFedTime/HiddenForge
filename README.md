@@ -302,7 +302,7 @@ drives a digest-pinned syft container through the Docker socket, which the image
 deliberately does not have.
 
 The signed digest for 2.1.5 is
-`sha256:7732c01f505ba7826b422e2579d56f20c3f5ae11950336fb83507c1a35419582`. Signature
+`sha256:6eb375ecdfd1c7fbbd08517308c15708668d890e81ced8729141190c57d24a1d`. Signature
 files verify against whatever public key sits beside them, so the keys are the
 trust anchor. They must match these values, which are also pinned in
 `scripts/hiddenforge`:

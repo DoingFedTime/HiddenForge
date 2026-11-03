@@ -1,11 +1,11 @@
-# Signatures for HiddenForge 2.1.4
+# Signatures for HiddenForge 2.1.5
 
-Image digest: `sambent.dev/sam/hiddenforge@sha256:7732c01f505ba7826b422e2579d56f20c3f5ae11950336fb83507c1a35419582`
+Image digest: `sambent.dev/sam/hiddenforge@sha256:6eb375ecdfd1c7fbbd08517308c15708668d890e81ced8729141190c57d24a1d`
 
-The same index is served as `doingfedtime/hiddenforge@sha256:7732c01f505ba7826b422e2579d56f20c3f5ae11950336fb83507c1a35419582`
+The same index is served as `doingfedtime/hiddenforge@sha256:6eb375ecdfd1c7fbbd08517308c15708668d890e81ced8729141190c57d24a1d`
 on Docker Hub. It covers `linux/amd64` and `linux/arm64`.
 
-**What is signed:** 2.1.4 carries the **ML-DSA-65** signature
+**What is signed:** 2.1.5 carries the **ML-DSA-65** signature
 (`hiddenforge.digest.mldsa`) only. There is no hardware **SSH-FIDO2** signature
 (`hiddenforge.digest.sig`) for this release. One may be added later over the same
 digest, which would not need a new image. `hiddenforge verify-image` refuses a
@@ -16,7 +16,7 @@ release without it by default, and accepts with `--allow-pq-only`, reporting
 
 | File | What it is |
 |---|---|
-| `hiddenforge.digest` | The signed text: the 2.1.4 image index digest |
+| `hiddenforge.digest` | The signed text: the 2.1.5 image index digest |
 | `hiddenforge.digest.mldsa` | ML-DSA-65 signature over `hiddenforge.digest` |
 | `sambent-mldsa.pub` | The maintainer's ML-DSA-65 public key (pinned in `scripts/hiddenforge`) |
 | `allowed-signers` | Every SSH key that has signed a release, for `ssh-keygen -Y verify` |
@@ -26,11 +26,13 @@ used for 2.0.4 or later.
 
 **Verify from master, not from the tag.** Signing an image needs the tag to exist
 first, so a release's signatures are committed after its tag. A checkout of
-`v2.1.4` therefore still holds the 2.1.3 signature files, which do not match the
-2.1.4 digest. That mismatch means "look on master", not "tampered with".
+`v2.1.5` therefore still holds the 2.1.4 signature files, which do not match the
+2.1.5 digest. That mismatch means "look on master", not "tampered with".
 
-The 2.1.3 signature (digest `sha256:a9c985da5ceffa601da5d6aab17a6bbdacb4bb9a3e301b1c157d4f2ff04f27ad`,
-ML-DSA-65; superseded by 2.1.4, see the CHANGELOG) is in git history at commit
+The 2.1.4 signature (digest `sha256:7732c01f505ba7826b422e2579d56f20c3f5ae11950336fb83507c1a35419582`,
+ML-DSA-65; superseded by 2.1.5, see the CHANGELOG) is in git history at commit
+`2ad14fd`. The 2.1.3 signature (digest `sha256:a9c985da5ceffa601da5d6aab17a6bbdacb4bb9a3e301b1c157d4f2ff04f27ad`,
+ML-DSA-65; superseded by 2.1.4) is in git history at commit
 `f1dbf20`. The 2.1.2 signature (digest `sha256:cc6c215d0a85b94ff7724951b2d6176111f508030235733afbb40116a93c3f05`,
 ML-DSA-65; superseded by 2.1.3) is in git history at commit
 `634b461`. The 2.1.1 signature (digest `sha256:889da0a9d21d7d3af87cba102e1c6ff5ea4b2618c46ea4cec26785a43ed89645`,
@@ -50,7 +52,7 @@ verification that compares `.Id` reports a false "NOT REPRODUCIBLE".
 ### Architecture: what is verified
 
 This release index is **multi-platform** (`linux/amd64` + `linux/arm64`), and the
-**whole index** was reproduced: two independent clean builds of `v2.1.4`, cloned under umask 007 and 022, produced
+**whole index** was reproduced: two independent clean builds of `v2.1.5`, cloned under umask 007 and 022, produced
 the same index digest, which covers both platform manifests. The arm64 half was
 built under qemu emulation on an amd64 host; it was also run on a full-system
 arm64 VM (see `docs/PRODUCTION-READINESS.md` R6), but not on real ARM hardware.
@@ -78,7 +80,7 @@ to phone home to:
    With `pqsign` installed, the equivalent is
    `pqsign verify --pub sambent-mldsa.pub --sig hiddenforge.digest.mldsa --in hiddenforge.digest`.
 2. **SSH-FIDO2** (YubiKey hardware key): `hiddenforge.digest.sig`, not published for
-   2.1.4. When a release carries one:
+   2.1.5. When a release carries one:
    ```
    ssh-keygen -Y verify -f allowed-signers -I sam@sambent.com -n file \
      -s hiddenforge.digest.sig < hiddenforge.digest
@@ -97,8 +99,8 @@ sha256sum sambent-mldsa.pub      # 4ae873ade7ee596c815f55f3052c0f01020b1817f86ea
 Confirm the digest you verified is the one you actually pulled:
 
 ```
-skopeo inspect --raw docker://sambent.dev/sam/hiddenforge:2.1.4 | sha256sum
-docker buildx imagetools inspect sambent.dev/sam/hiddenforge:2.1.4 | head -3
+skopeo inspect --raw docker://sambent.dev/sam/hiddenforge:2.1.5 | sha256sum
+docker buildx imagetools inspect sambent.dev/sam/hiddenforge:2.1.5 | head -3
 ```
 
 ## Reproducing the build
@@ -109,11 +111,11 @@ v0.19.3** and a `docker-container` builder running **BuildKit v0.30.0**; arm64
 needs qemu's `binfmt_misc` handler for aarch64 on the host.
 
 ```
-git clone --branch v2.1.4 https://sambent.dev/sam/HiddenForge.git /tmp/hf && cd /tmp/hf
+git clone --branch v2.1.5 https://sambent.dev/sam/HiddenForge.git /tmp/hf && cd /tmp/hf
 docker buildx version   # record this; buildx behaviour here is version-sensitive
 docker buildx create --name repro --driver docker-container \
   --driver-opt image=moby/buildkit:v0.30.0
-export SOURCE_DATE_EPOCH=$(git log -1 --format=%ct v2.1.4)
+export SOURCE_DATE_EPOCH=$(git log -1 --format=%ct v2.1.5)
 docker buildx build --builder repro --no-cache --platform linux/amd64,linux/arm64 \
   --build-arg SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH \
   --provenance=false --output type=oci,dest=out.tar,rewrite-timestamp=true .
@@ -150,7 +152,7 @@ under umask 007 and 022 build the same digest, and CI checks exactly that.
 versions, and Alpine prunes superseded builds from its index. `v2.0.4`'s pins
 are gone, so a checkout of that tag fails at `apk add`; reproducing it would need
 an archived copy of the Alpine index from its release date. The same will
-eventually happen to 2.1.4, which is why its digest was reproduced twice at
+eventually happen to 2.1.5, which is why its digest was reproduced twice at
 release time.
 
 ## Signing key rotation (as of 2.0.4)
@@ -174,7 +176,7 @@ JSON, the SBOM if present, and `build.json` binding all of it to the commit, its
 tree hash and the image index digest. `MANIFEST.sha256` covers the rest:
 
 ```
-python3 scripts/collect_evidence.py --out evidence --image sambent.dev/sam/hiddenforge:2.1.4
+python3 scripts/collect_evidence.py --out evidence --image sambent.dev/sam/hiddenforge:2.1.5
 ( cd evidence && sha256sum -c MANIFEST.sha256 )
 ```
 
@@ -182,6 +184,6 @@ No value in the bundle is typed by hand; a gate that cannot run records its own
 failure rather than being omitted. The bundle was published for 2.1.0, 2.1.1 and
 2.1.2 as `hiddenforge-<version>-evidence.tar.gz` on this forge's package registry
 (<https://sambent.dev/sam/-/packages/generic/hiddenforge-release/>), with its
-`MANIFEST.sha256` signed by the same ML-DSA-65 key. 2.1.3 and 2.1.4 have no bundle: each is the previous image with packages updated, and the record of its checks
+`MANIFEST.sha256` signed by the same ML-DSA-65 key. 2.1.3, 2.1.4 and 2.1.5 have no bundle: each is the previous image with packages updated, and the record of its checks
 is the CI run on its tag. A bundle is never committed (it would be stale
 the next commit).
