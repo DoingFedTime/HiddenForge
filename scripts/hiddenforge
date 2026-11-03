@@ -57,7 +57,7 @@ if sys.version_info < (3, 10):  # noqa: UP036
 # tests/test_manifest.py asserts they agree).
 # ---------------------------------------------------------------------------
 
-HIDDENFORGE_VERSION = "2.1.5"
+HIDDENFORGE_VERSION = "2.1.6"
 CONTRACT_VERSION = 1
 DEFAULT_IMAGE = os.environ.get("HIDDENFORGE_IMAGE", "sambent.dev/sam/hiddenforge:latest")
 DEFAULT_IMAGE_REPOSITORY = "sambent.dev/sam/hiddenforge"
@@ -80,7 +80,7 @@ DEFAULT_SIGN_IDENTITY = "sam@sambent.com"
 PINNED_ALLOWED_SIGNERS = (
     "sam@sambent.com sk-ssh-ed25519@openssh.com "
     "AAAAGnNrLXNzaC1lZDI1NTE5QG9wZW5zc2guY29tAAAAIFQ5cGRalEe5f4+/rtOrQZnfLT2sEpnuNj"
-    "ztb4oVd0tgAAAAD3NzaDpoaWRkZW5mb3JnZQ== hiddenforge@Optimus",
+    "ztb4oVd0tgAAAAD3NzaDpoaWRkZW5mb3JnZQ== hiddenforge release signing",
     "sam@sambent.com sk-ssh-ed25519@openssh.com "
     "AAAAGnNrLXNzaC1lZDI1NTE5QG9wZW5zc2guY29tAAAAINolkpx1Nf22KT7i8mTisKmIox6JoJlyxV"
     "ZrEnVV1zGMAAAAH3NzaDpyZWxlYXNlLXNpZ25pbmdAc2FtYmVudC5kZXY= sambent release signing",

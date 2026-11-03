@@ -2,11 +2,34 @@
 
 All notable changes to HiddenForge are documented here.
 
-The latest release is **2.1.5**; its image digest and signatures are in
+The latest release is **2.1.6**; its image digest and signatures are in
 `signatures/` on master (a release's signatures are committed after its tag).
-2.1.5 is signed with ML-DSA-65 only; a hardware SSH-FIDO2 signature may be added
+2.1.6 is signed with ML-DSA-65 only; a hardware SSH-FIDO2 signature may be added
 later over the same digest, without a new image. `v2.0.5` is a git tag with no image of its own: its changes ship
 with 2.1.0.
+
+---
+
+## [2.1.6] - 2026-11-03
+
+Updates `musl`. Nothing else in the image changed.
+
+### Security
+
+- **`musl` and `musl-utils` `1.2.5-r23` to `1.2.5-r24`**, clearing CVE-2026-107891.
+  musl is the C library every program in the image links against, and the base
+  image ships the old version. It is now pinned explicitly. With this, trivy
+  reports no finding at any severity.
+
+### Changed
+
+- The comment on the 2.0.x release-signing key in `allowed-signers` and in the
+  CLI's pinned copy no longer names a machine. The key itself is unchanged.
+
+### Upgrading
+
+From any 2.1.x release nothing is needed: same compose file, same keys, same
+address.
 
 ---
 

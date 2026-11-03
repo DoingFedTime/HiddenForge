@@ -41,7 +41,7 @@ ARG SOURCE_DATE_EPOCH=0
 # from one build of the same source to the next.
 LABEL org.opencontainers.image.title="HiddenForge" \
       org.opencontainers.image.description="Hardened Tor v3 onion service container with the Vanguards addon" \
-      org.opencontainers.image.version="2.1.5" \
+      org.opencontainers.image.version="2.1.6" \
       org.opencontainers.image.source="https://sambent.dev/sam/HiddenForge" \
       org.opencontainers.image.licenses="GPL-3.0-only"
 
@@ -88,6 +88,8 @@ ENV PIP_DISABLE_PIP_VERSION_CHECK=1
 # libexpat is pinned for the same reason: python3 depends on it, the base ships
 # 2.9.0-r0, and 2.10.0-r0 fixes CVE-2026-117610 and CVE-2026-118370. Nothing in
 # this image parses XML, but a scanner reads the installed version.
+# musl (the C library) and musl-utils come from the base too; 1.2.5-r24 fixes
+# CVE-2026-107891.
 RUN apk add --no-cache \
     tor=0.4.9.15-r0 \
     python3=3.12.16-r0 \
@@ -95,7 +97,9 @@ RUN apk add --no-cache \
     py3-pip=25.1.1-r1 \
     openssl=3.5.9-r0 \
     zlib=1.3.2-r1 \
-    libexpat=2.10.0-r0 && \
+    libexpat=2.10.0-r0 \
+    musl=1.2.5-r24 \
+    musl-utils=1.2.5-r24 && \
     rm -f /var/log/apk.log && \
     # apk stamps a new account's shadow "last-change" field with the current day
     # (days since 1970) when it creates the tor user. Pin every account's field

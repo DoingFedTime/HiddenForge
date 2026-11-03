@@ -1,6 +1,6 @@
 # HiddenForge
 
-**Latest release: [2.1.5](https://sambent.dev/sam/HiddenForge/releases/tag/v2.1.5) (2026-11-03).**
+**Latest release: [2.1.6](https://sambent.dev/sam/HiddenForge/releases/tag/v2.1.6) (2026-11-03).**
 
 I run my own services as onion services, and I wanted one container that gets
 the Tor side right and that anyone can check: pinned inputs, signed releases and
@@ -21,7 +21,7 @@ The full guide is in the [wiki](https://sambent.dev/sam/HiddenForge/wiki).
 > **Upgrading from 2.0.4?** Your keys and onion address carry over, but a copy of
 > the 2.0.4 compose file will not pick up the changes. Read
 > [Upgrading from 2.0.4](#upgrading-from-204) first. Upgrading from 2.1.0,
-> 2.1.1, 2.1.2, 2.1.3 or 2.1.4 to 2.1.5 needs nothing: same compose file, same keys, same address.
+> any 2.1.x release to 2.1.6 needs nothing: same compose file, same keys, same address.
 
 ![HiddenForge](docs/img/hiddenforge.webp)
 
@@ -214,7 +214,7 @@ compilers unpinned; only the hash-checked, statically linked binary it produces 
 kept in the image.
 
 **What is pinned and why** (checked against the Dockerfile and `requirements.txt`
-on 2026-11-03, release 2.1.5):
+on 2026-11-03, release 2.1.6):
 
 | Dependency | Pinned to | Why it matters |
 |---|---|---|
@@ -225,6 +225,8 @@ on 2026-11-03, release 2.1.5):
 | `openssl` apk | `3.5.9-r0` | Pinned explicitly rather than inherited from the base image, so a known-vulnerable OpenSSL cannot ride in with it |
 | `zlib` apk | `1.3.2-r1` | Pinned explicitly for the same reason: the base's `1.3.2-r0` has a heap overflow (CVE-2026-85091) in code Tor runs on data from relays |
 | `libexpat` apk | `2.10.0-r0` | Pinned explicitly for the same reason: the base's `2.9.0-r0` carries CVE-2026-117610 and CVE-2026-118370. Nothing in the image parses XML |
+| `musl` apk | `1.2.5-r24` | The C library everything links against. Pinned for the same reason: the base's `1.2.5-r23` carries CVE-2026-107891 |
+| `musl-utils` apk | `1.2.5-r24` | musl's tools, moved with it |
 | `py3-pip` apk | `25.1.1-r1` | Build-only; pinned so it can't be updated to a version that silently ignores `--require-hashes` |
 | `mkp224o` source | commit `5172c0fd` + SHA256 | The vanity generator, vendored as a tarball the Dockerfile hash-checks before building it |
 | `vanguards` pip | `0.3.1` + SHA256 | Guard protection addon; a compromised version could leak circuit topology |
@@ -283,7 +285,7 @@ you verify the image you pull.
 Releases are signed over the image digest with a post-quantum **ML-DSA-65**
 signature (FIPS 204) and, when the hardware key is available, an **SSH-FIDO2**
 YubiKey signature. Neither depends on an outside service or a transparency log.
-The files are in `signatures/`. **2.1.5 carries the ML-DSA-65 signature only.**
+The files are in `signatures/`. **2.1.6 carries the ML-DSA-65 signature only.**
 There is no hardware signature for it, so `hiddenforge verify-image` needs
 `--allow-pq-only` and reports `complete: false`.
 
@@ -301,7 +303,7 @@ from the root of this repository or pass `--sigdir`. `sbom` runs on the host: it
 drives a digest-pinned syft container through the Docker socket, which the image
 deliberately does not have.
 
-The signed digest for 2.1.5 is
+The signed digest for 2.1.6 is
 `sha256:6eb375ecdfd1c7fbbd08517308c15708668d890e81ced8729141190c57d24a1d`. Signature
 files verify against whatever public key sits beside them, so the keys are the
 trust anchor. They must match these values, which are also pinned in
