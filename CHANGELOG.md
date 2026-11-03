@@ -2,11 +2,31 @@
 
 All notable changes to HiddenForge are documented here.
 
-The latest release is **2.1.4**; its image digest and signatures are in
+The latest release is **2.1.5**; its image digest and signatures are in
 `signatures/` on master (a release's signatures are committed after its tag).
-2.1.4 is signed with ML-DSA-65 only; a hardware SSH-FIDO2 signature may be added
+2.1.5 is signed with ML-DSA-65 only; a hardware SSH-FIDO2 signature may be added
 later over the same digest, without a new image. `v2.0.5` is a git tag with no image of its own: its changes ship
 with 2.1.0.
+
+---
+
+## [2.1.5] - 2026-11-03
+
+Updates `libexpat`. Nothing else in the image changed.
+
+### Security
+
+- **`libexpat` `2.9.0-r0` to `2.10.0-r0`**, clearing CVE-2026-117610 (NULL pointer
+  dereference) and CVE-2026-118370 (signed integer overflow), both rated HIGH by
+  trivy. python3 depends on libexpat and the base image ships the old version.
+  Nothing in the image parses XML, but the library is installed. It is now pinned
+  explicitly, like openssl and zlib, so a scanner finding in it is a version bump
+  rather than a surprise.
+
+### Upgrading
+
+From any 2.1.x release nothing is needed: same compose file, same keys, same
+address.
 
 ---
 

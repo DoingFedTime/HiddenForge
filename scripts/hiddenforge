@@ -57,7 +57,7 @@ if sys.version_info < (3, 10):  # noqa: UP036
 # tests/test_manifest.py asserts they agree).
 # ---------------------------------------------------------------------------
 
-HIDDENFORGE_VERSION = "2.1.4"
+HIDDENFORGE_VERSION = "2.1.5"
 CONTRACT_VERSION = 1
 DEFAULT_IMAGE = os.environ.get("HIDDENFORGE_IMAGE", "sambent.dev/sam/hiddenforge:latest")
 DEFAULT_IMAGE_REPOSITORY = "sambent.dev/sam/hiddenforge"

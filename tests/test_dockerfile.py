@@ -50,7 +50,7 @@ def test_every_apk_pin_is_documented_with_its_exact_version():
     root = repo_root(__file__)
     pins = load_file(root / "scripts" / "check_pins.py", "hf_check_pins").parse_pins(
         DOCKERFILE.read_text())
-    assert {"tor", "python3", "openssl", "zlib", "su-exec", "py3-pip"} <= set(pins)
+    assert {"tor", "python3", "openssl", "zlib", "libexpat", "su-exec", "py3-pip"} <= set(pins)
     readme = (root / "README.md").read_text()
     deps = (root / "docs" / "DEPENDENCIES.md").read_text()
     missing = [f"README: {p}={v}" for p, v in pins.items()
