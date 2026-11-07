@@ -1440,11 +1440,18 @@ def cmd_doctor(args) -> int:
     resolved = _resolve_container(container)
     runtime = _runtime_state(resolved)
 
-    required = ROOTLESS_REQUIRED_CAP_ADD if _is_rootless() else REQUIRED_CAP_ADD
+    # No-root mode (3.0): the container starts as the tor user and needs no
+    # capability at all, so "required" is empty and any granted one is extra.
+    cfg_user = str((info.get("Config") or {}).get("User") or "")
+    no_root = cfg_user.split(":", 1)[0] in ("100", "tor")
+    if no_root:
+        required: set[str] = set()
+    else:
+        required = ROOTLESS_REQUIRED_CAP_ADD if _is_rootless() else REQUIRED_CAP_ADD
     if runtime.get("capbnd") is not None:
         granted = _caps_from_mask(runtime["capbnd"])
         source = f"measured in the container (CapBnd): {sorted(granted)}"
-        extra = granted - REQUIRED_CAP_ADD
+        extra = granted - (set() if no_root else REQUIRED_CAP_ADD)
         missing = required - granted
     else:
         drop = _caps_ok(hc.get("CapDrop"))
@@ -1452,7 +1459,7 @@ def cmd_doctor(args) -> int:
         checks.append(_check("ALL" in drop, "cap_drop includes ALL",
                              f"CapDrop={sorted(drop)}"))
         source = f"engine config CapAdd={sorted(add)}"
-        extra = add - REQUIRED_CAP_ADD
+        extra = add - (set() if no_root else REQUIRED_CAP_ADD)
         missing = required - add
     checks.append(_check(not extra, "cap_add stays within the allowed set",
                          source + (f"; unexpected: {sorted(extra)}" if extra else "")))
@@ -1656,7 +1663,8 @@ def _yaml_double_quoted(value: str) -> str:
 
 
 def render_compose_fragment(services: dict[str, list[str]], image: str, keys: str,
-                            container: str, runtime: str = "docker") -> str:
+                            container: str, runtime: str = "docker",
+                            no_root: bool = False) -> str:
     """Render the mergeable compose fragment for one or more services.
 
     `services` maps a service name to a list of ``onion_port:host:port``
@@ -1678,8 +1686,18 @@ def render_compose_fragment(services: dict[str, list[str]], image: str, keys: st
     # Podman rejects the Docker-only uid=/gid=/mode= tmpfs options (the entrypoint
     # chowns /var/lib/tor at startup instead), so only Docker gets them.
     tor_tmpfs = "- /var/lib/tor:rw,noexec,nosuid,nodev,size=64m"
+    etc_tmpfs = "- /etc/tor:rw,noexec,nosuid,nodev,size=8m"
     if runtime == "docker":
         tor_tmpfs += ",uid=100,gid=101,mode=0700"
+    if no_root:
+        # No-root mode: the container starts as tor (100:101), so the tmpfs
+        # mounts it writes must already be tor's. Podman's `U` chowns a tmpfs
+        # to the container user; Docker takes uid=/gid=.
+        if runtime == "docker":
+            etc_tmpfs += ",uid=100,gid=101"
+        else:
+            tor_tmpfs += ",mode=0700,U"
+            etc_tmpfs += ",U"
     compose_cmd = "podman-compose" if runtime == "podman" else "docker compose"
     # Podman restarts only `always` containers after a reboot (podman-restart
     # .service); Docker restarts `unless-stopped` ones itself.
@@ -1698,6 +1716,12 @@ def render_compose_fragment(services: dict[str, list[str]], image: str, keys: st
     example = sorted(services)[0]
     header = (f"# hiddenforge compose fragment "
               f"(hiddenforge v{HIDDENFORGE_VERSION}, contract {CONTRACT_VERSION}).")
+    if no_root:
+        header += ("\n# No-root mode: the container runs as the tor user (100:101) with no "
+                   "capabilities at all.")
+    user_line = '    user: "100:101"\n' if no_root else ""
+    caps = ("    cap_drop: [ALL]\n" if no_root else
+            "    cap_drop: [ALL]\n    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID]\n")
     # json.dumps produces a double-quoted scalar that YAML parses as one string,
     # so a path cannot open a new key (`privileged: true`) or a second volume.
     keys_mount = _yaml_double_quoted(f"{keys}:/var/lib/tor/hidden_service")
@@ -1724,9 +1748,7 @@ services:
   {container}:
     image: {image}
     restart: {restart}
-    cap_drop: [ALL]
-    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID]
-    security_opt:
+{user_line}{caps}    security_opt:
       - no-new-privileges:true
 {apparmor}    read_only: true
     pids_limit: 256
@@ -1739,7 +1761,7 @@ services:
         hard: 8192
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=64m
-      - /etc/tor:rw,noexec,nosuid,nodev,size=8m
+      {etc_tmpfs}
       {tor_tmpfs}
     logging:
       driver: none
@@ -1757,7 +1779,8 @@ services:
 
 
 def render_deploy_sh(services: dict[str, list[str]], keys_dir: str,
-                     container: str, runtime: str = "docker") -> str:
+                     container: str, runtime: str = "docker",
+                     no_root: bool = False) -> str:
     names = " ".join(shlex.quote(n) for n in sorted(services))
     # Quoted for the shell, not interpolated into one. deploy.sh is written 0755
     # and the README tells the operator to run it.
@@ -1800,6 +1823,18 @@ fi"""
                         "    exit 1\nfi")
         up = "docker compose"
     container_q = shlex.quote(container)
+    # No-root mode: the key directory must belong to the tor user (100:101)
+    # before the container starts, since nothing inside it may chown.
+    if not no_root:
+        own_step = ""
+    elif runtime == "podman":
+        own_step = ("echo \"==> Handing the key directory to the tor user (100:101)\"\n"
+                    f"podman unshare chown -R 100:101 {keys_q}\n")
+    else:
+        own_step = (f"if [ \"$(stat -c %u:%g {keys_q})\" != \"100:101\" ]; then\n"
+                    "    echo \"==> Handing the key directory to the tor user (100:101); sudo asks once\"\n"
+                    f"    sudo chown -R 100:101 {keys_q}\n"
+                    "fi\n")
     # Where the address is kept on the host. Under rootless Podman the published
     # <name>.onion is never written (the supervisor cannot read `hostname`), so
     # saying it was would send the operator looking for a file that never comes.
@@ -1824,7 +1859,7 @@ BASE="${{1:-compose.yml}}"
 echo "==> Preparing key directory {keys_dir_display}"
 mkdir -p {keys_q}
 chmod 700 {keys_q} 2>/dev/null || :
-
+{own_step}
 echo "==> Bringing the stack up"
 {up} -f "$BASE" -f compose.service.yml up -d
 
@@ -1988,6 +2023,7 @@ def cmd_setup(args) -> int:
         # narrower than CONTAINER_RE, so nothing legitimate is refused.
         container = validate_container(args.container)
         runtime = args.runtime
+        no_root = bool(getattr(args, "no_root", False))
         if not 1 <= int(args.onion_port) <= 65535:
             raise ValueError(
                 f"--onion-port must be 1-65535, got {args.onion_port}. Emitting it "
@@ -1995,10 +2031,10 @@ def cmd_setup(args) -> int:
                 "drops at boot, with the reason only in the container log.")
         _write_text_nofollow(
             out / "compose.service.yml",
-            render_compose_fragment(services, image, keys, container, runtime))
+            render_compose_fragment(services, image, keys, container, runtime, no_root))
         _write_text_nofollow(
             out / "deploy.sh",
-            render_deploy_sh(services, keys, container, runtime), mode=0o755)
+            render_deploy_sh(services, keys, container, runtime, no_root), mode=0o755)
         _write_text_nofollow(
             out / "README.txt",
             render_readme_txt(services, image, keys, container, runtime))
@@ -2042,6 +2078,8 @@ def cmd_setup(args) -> int:
             "contract_version": CONTRACT_VERSION,
             "hiddenforge_version": HIDDENFORGE_VERSION,
         }
+        if no_root:
+            descriptor["no_root"] = True
         _write_text_nofollow(
             out / "hiddenforge.json",
             json.dumps(descriptor, indent=2, sort_keys=True) + "\n")
@@ -3341,6 +3379,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--keys", default=DEFAULT_KEYS)
     sp.add_argument("--container", default=DEFAULT_CONTAINER)
     sp.add_argument("--runtime", choices=["docker", "podman"], default="docker")
+    sp.add_argument("--no-root", action="store_true",
+                    help="run the container as the tor user (100:101) with no capabilities "
+                         "at all; deploy.sh hands the key directory to 100:101 once")
     sp.add_argument("--force", action="store_true",
                     help="overwrite setup's own output files if they already exist")
     sp.add_argument("--non-interactive", action="store_true")

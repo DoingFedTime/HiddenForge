@@ -837,6 +837,7 @@ pub struct SetupOpts<'a> {
     pub keys: &'a str,
     pub container: &'a str,
     pub runtime: &'a str,
+    pub no_root: bool,
 }
 
 fn render_compose(services: &Services, o: &SetupOpts) -> String {
@@ -862,8 +863,17 @@ fn render_compose(services: &Services, o: &SetupOpts) -> String {
     let docker = o.runtime == "docker";
     let apparmor = if docker { "      - apparmor=docker-default\n" } else { "" };
     let mut tor_tmpfs = "- /var/lib/tor:rw,noexec,nosuid,nodev,size=64m".to_string();
+    let mut etc_tmpfs = "- /etc/tor:rw,noexec,nosuid,nodev,size=8m".to_string();
     if docker {
         tor_tmpfs += ",uid=100,gid=101,mode=0700";
+    }
+    if o.no_root {
+        if docker {
+            etc_tmpfs += ",uid=100,gid=101";
+        } else {
+            tor_tmpfs += ",mode=0700,U";
+            etc_tmpfs += ",U";
+        }
     }
     let compose_cmd = if o.runtime == "podman" { "podman-compose" } else { "docker compose" };
     let restart = if o.runtime == "podman" { "always" } else { "unless-stopped" };
@@ -873,7 +883,16 @@ fn render_compose(services: &Services, o: &SetupOpts) -> String {
         "    healthcheck:\n      test: [\"CMD\", \"su-exec\", \"tor\", \"python3\", \"/usr/local/bin/healthcheck.py\"]\n      interval: 60s\n      timeout: 10s\n      start_period: 120s\n      retries: 3\n".to_string()
     };
     let example = &svc[0].0;
-    let header = format!("# hiddenforge compose fragment (hiddenforge v{VERSION}, contract {CONTRACT_VERSION}).");
+    let mut header = format!("# hiddenforge compose fragment (hiddenforge v{VERSION}, contract {CONTRACT_VERSION}).");
+    if o.no_root {
+        header += "\n# No-root mode: the container runs as the tor user (100:101) with no capabilities at all.";
+    }
+    let user_line = if o.no_root { "    user: \"100:101\"\n" } else { "" };
+    let caps = if o.no_root {
+        "    cap_drop: [ALL]\n"
+    } else {
+        "    cap_drop: [ALL]\n    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID]\n"
+    };
     let keys_mount = yaml_dq(&format!("{}:/var/lib/tor/hidden_service", o.keys));
     let (image, container) = (o.image, o.container);
     format!(
@@ -900,9 +919,7 @@ services:
   {container}:
     image: {image}
     restart: {restart}
-    cap_drop: [ALL]
-    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID]
-    security_opt:
+{user_line}{caps}    security_opt:
       - no-new-privileges:true
 {apparmor}    read_only: true
     pids_limit: 256
@@ -915,7 +932,7 @@ services:
         hard: 8192
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=64m
-      - /etc/tor:rw,noexec,nosuid,nodev,size=8m
+      {etc_tmpfs}
       {tor_tmpfs}
     logging:
       driver: none
@@ -973,6 +990,15 @@ fi"#
         )
     };
     let container_q = shlex_quote(o.container);
+    let own_step = if !o.no_root {
+        String::new()
+    } else if o.runtime == "podman" {
+        format!("echo \"==> Handing the key directory to the tor user (100:101)\"\npodman unshare chown -R 100:101 {keys_q}\n")
+    } else {
+        format!(
+            "if [ \"$(stat -c %u:%g {keys_q})\" != \"100:101\" ]; then\n    echo \"==> Handing the key directory to the tor user (100:101); sudo asks once\"\n    sudo chown -R 100:101 {keys_q}\nfi\n"
+        )
+    };
     let status_line = shlex_quote(&format!("  hiddenforge status --container {} --keys {keys_q}", o.container));
     let persisted = if o.runtime == "podman" {
         format!("{disp}/$svc/hostname (read it with the exec command above)")
@@ -992,7 +1018,7 @@ BASE="${{1:-compose.yml}}"
 echo "==> Preparing key directory {disp}"
 mkdir -p {keys_q}
 chmod 700 {keys_q} 2>/dev/null || :
-
+{own_step}
 echo "==> Bringing the stack up"
 {up} -f "$BASE" -f compose.service.yml up -d
 
@@ -1185,7 +1211,8 @@ fn cmd_setup(a: &Args) -> i32 {
                 "--onion-port must be 1-65535, got {onion_port}. Emitting it anyway would write a compose file whose service the container drops at boot, with the reason only in the container log."
             )));
         }
-        let o = SetupOpts { image: &image, keys: &keys, container: &container, runtime: &runtime };
+        let no_root = a.flag("no_root");
+        let o = SetupOpts { image: &image, keys: &keys, container: &container, runtime: &runtime, no_root };
         let fail = |e: String| (EXIT_FAIL, e);
         write_bytes_nofollow(&join(&out, "compose.service.yml"), render_compose(&services, &o).as_bytes(), 0o644).map_err(fail)?;
         write_bytes_nofollow(&join(&out, "deploy.sh"), render_deploy(&services, &o).as_bytes(), 0o755).map_err(fail)?;
@@ -1226,6 +1253,10 @@ fn cmd_setup(a: &Args) -> i32 {
             .with("key_path", format!("{keys}/{first}/{SECRET_FILE}").into())
             .with("contract_version", Json::Int(CONTRACT_VERSION))
             .with("hiddenforge_version", VERSION.into());
+        let mut descriptor = descriptor;
+        if no_root {
+            descriptor.set("no_root", true.into());
+        }
         write_bytes_nofollow(&join(&out, "hiddenforge.json"), (py::dumps(&descriptor, true, Some(2)) + "\n").as_bytes(), 0o644)
             .map_err(fail)?;
         if a.flag("json") {
@@ -1825,6 +1856,7 @@ pub fn run(cmd: &str, rest: &[String]) -> Option<i32> {
                 keys,
                 o("--container", Kind::Value),
                 Opt { choices: &["docker", "podman"], ..o("--runtime", Kind::Value) },
+                o("--no-root", Kind::Flag),
                 o("--force", Kind::Flag),
                 o("--non-interactive", Kind::Flag),
                 json,
