@@ -85,7 +85,7 @@ FIXED = [
     {"A_TOR_SERVICE_HOSTS_TOR_SERVICE_HOSTS": "80:8080"},
     {"_TOR_SERVICE_HOSTS": "80:8080"},
     {"A" * 70 + "_TOR_SERVICE_HOSTS": "80:8080"},
-    {"A_TOR_SERVICE_HOSTS": "80:​localhost:80,81:é:80"},
+    {"A_TOR_SERVICE_HOSTS": "80:\u200blocalhost:80,81:é:80"},
     {"A_TOR_SERVICE_HOSTS": "80:localhost:99999"},
 ]
 
@@ -101,7 +101,7 @@ def test_fixed_cases(env):
     check({**base, **env})
 
 
-ALPHA = "0123456789:,.abcz-_ \t\n\x1c" + "AZ" + "é​"
+ALPHA = "0123456789:,.abcz-_ \t\n\x1c" + "AZ" + "é\u200b"
 names = st.text(alphabet="ABCXYZ_-.abc0\x1b", min_size=0, max_size=12).map(
     lambda s: s + "_TOR_SERVICE_HOSTS"
 )

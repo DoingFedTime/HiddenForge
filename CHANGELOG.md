@@ -126,6 +126,7 @@ inputs this project archives and verifies.
 - **Reproducible**: two clean builds give byte-identical images.
 - `pin-freshness` is replaced by `inputs-integrity`, and `scripts/check_pins.py`
   and `scripts/bump_pins.py` are gone: there are no apk pins left to check.
+  `requirements.txt` (the 2.x Vanguards venv) is gone too: nothing installs it.
 
 ### Upgrading
 
