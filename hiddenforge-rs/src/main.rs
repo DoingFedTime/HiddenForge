@@ -41,6 +41,7 @@ const SUBCOMMANDS: &[&str] = &[
     "backup",
     "restore",
     "rotate",
+    "unseal-keys",
 ];
 /// Subcommands that read the tor-owned key directories, so they run as tor.
 const AS_TOR: &[&str] = &["show", "doctor"];
@@ -128,11 +129,31 @@ fn hiddenforge(args: &[String]) -> i32 {
         },
         ("torrc-preview", []) => torrc_preview(),
         ("healthcheck", _) => healthcheck(rest),
-        _ => cli::run(cmd, rest).unwrap_or_else(|| {
-            eprintln!("hiddenforge: unknown command {}", py::safe_str(cmd));
-            2
-        }),
+        _ => {
+            if AS_TOR.contains(&cmd.as_str()) && privs::is_root() && root_cannot_reach_keys() {
+                // Rootless Podman without DAC_OVERRIDE: root cannot traverse the
+                // tor-owned /var/lib/tor, but the tor user can. Read as tor.
+                if let Err(e) = compat::become_tor() {
+                    eprintln!("error: cannot switch to the tor user: {e}");
+                    return 2;
+                }
+            }
+            cli::run(cmd, rest).unwrap_or_else(|| {
+                eprintln!("hiddenforge: unknown command {}", py::safe_str(cmd));
+                2
+            })
+        }
     }
+}
+
+/// True when root is refused entry to the key directory (EACCES), which is
+/// what a container without DAC_OVERRIDE sees.
+fn root_cannot_reach_keys() -> bool {
+    let keys = std::env::var("HIDDENFORGE_KEYS_DIR")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "/var/lib/tor/hidden_service".into());
+    matches!(fsops::lstat(&keys), Err(e) if e.errno == Some(libc::EACCES))
 }
 
 fn python(args: &[String]) -> i32 {

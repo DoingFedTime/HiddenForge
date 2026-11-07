@@ -21,6 +21,7 @@
     "setup",
     "show",
     "status",
+    "unseal-keys",
     "vanity",
     "verify-image",
     "version"

@@ -4,9 +4,121 @@ All notable changes to HiddenForge are documented here.
 
 The latest release is **2.1.6**; its image digest and signatures are in
 `signatures/` on master (a release's signatures are committed after its tag).
-2.1.6 is signed with ML-DSA-65 only; a hardware SSH-FIDO2 signature may be added
-later over the same digest, without a new image. `v2.0.5` is a git tag with no image of its own: its changes ship
-with 2.1.0.
+3.0.0 is signed with ML-DSA-65 only, as 2.1.x is. `v2.0.5` is a git tag with no
+image of its own: its changes ship with 2.1.0.
+
+---
+
+## [3.0.0] - Unreleased
+
+A new image from the ground up. Same compose files, same keys, same address,
+same commands. What is inside the container is different, and much smaller.
+
+### Why
+
+2.1.x was Alpine plus Python. Every time Alpine shipped a security update it
+removed the old package from its index, the pinned build stopped resolving, and
+a release was needed to catch up. Each one brought Python and its libraries back
+into the CVE count. 3.0 removes the reason that kept happening: the image
+contains Tor, the libraries Tor links, and one small binary, built offline from
+inputs this project archives and verifies.
+
+### The image
+
+- **Base: Docker Hardened Images `dhi.io/static` (musl, Alpine 3.23), used
+  unchanged.** The image is that base by digest plus one layer. There is no
+  shell, no package manager and no Python in it. 40 MB, down from 107 MB.
+- **Zero known vulnerabilities at every severity**, from two scanners (trivy and
+  grype), on both architectures. CI fails a build on any finding, negligible
+  included, and the nightly watchdog alerts on any severity.
+- **Tor 0.4.9.16, compiled from Tor Project's release tarball.** The tarball's
+  SHA-256 file carries signatures from Tor's release keys; both are checked
+  against the fingerprints Tor publishes before the tarball is archived, and the
+  build checks the hash again. The relay and directory-authority code is compiled
+  out (`--disable-module-relay`): an onion service never runs it. Built with
+  `-D_FORTIFY_SOURCE=3`, fortify-headers and `-fstack-clash-protection`.
+- **The runtime is one Rust binary.** The entrypoint, the in-image CLI, the
+  healthcheck, the vanity wrapper and the guard monitors are a single program
+  with one crate dependency (`libc`, vendored and checked against `Cargo.lock`).
+  It links the image's own libcrypto, so there is one OpenSSL in the image.
+- **The guard monitors are native.** Vanguards' bandguards and rendguard were
+  ported from the Python addon. The port was run side by side with the Python
+  original against the same control-port traffic and made the same decisions,
+  down to the same 54 circuit closes. stem and the Vanguards package are gone
+  from the image. Tor's own vanguards-lite stays pinned on.
+- **The torrc is byte-identical to 2.1.6** for the same environment, checked by
+  21 fixed cases and 400 generated ones.
+
+### Hardening
+
+- **Landlock.** The supervisor confines itself after start-up, and every helper
+  it starts gets a stricter domain of its own, with TCP denied.
+- **No core dumps and no ptrace attach** for any HiddenForge process
+  (`RLIMIT_CORE` 0, not dumpable). A crash cannot write key material to disk.
+- **The supervisor holds no `CAP_KILL`.** It signals the tor user's processes
+  through a helper running as tor. Measured capability sets are unchanged from
+  2.1.6: `CapEff 0xc2` under Docker, `0xc0` under rootless Podman, and nothing
+  at all for Tor and the monitors.
+
+### New, opt-in
+
+- **No-root mode.** `hiddenforge setup --no-root` writes a fragment that starts
+  the container as the tor user with no capabilities at all. Nothing runs as
+  root, even at start-up. `doctor` recognises it.
+- **Key encryption at rest.** `hiddenforge setup --encrypt-keys` (with
+  `--passphrase-file`) seals the service key on the volume with AES-256-GCM under
+  an scrypt-derived key. At every start the key is decrypted into RAM for Tor.
+  An existing plaintext key is sealed on first start: the sealed copy is proven
+  to decrypt to the same bytes before the plaintext is overwritten and removed.
+  A container that has only the sealed key and no passphrase refuses to start
+  rather than generate a new address. This protects a volume, disk or backup
+  taken while the service is stopped. It does not protect a running host, or a
+  passphrase stored beside the volume. `hiddenforge unseal-keys` turns it off
+  again: with the service stopped it puts the plaintext key back, checks it
+  reads back as the sealed key's content, and only then removes the sealed copy.
+- **Offline setup wizard.** `wizard/hiddenforge-wizard.html` is one file you
+  open from disk. It makes no network request of any kind (its Content Security
+  Policy forbids every connection, form submission and external load) and writes
+  exactly what `hiddenforge setup` writes for the same answers.
+
+### Fixed
+
+- Under the shipped Podman file the `<name>.onion` file is now written to the
+  key volume, and `podman exec <container> hiddenforge show` and `doctor` work
+  as root (2.1.6 printed a Python traceback). Root there cannot enter the tor
+  user's directory, so the read is done as tor.
+
+### Compatibility
+
+- Every command 2.x ran inside the container still works: the healthcheck
+  (`su-exec tor python3 /usr/local/bin/healthcheck.py`), `cat` of the hostname,
+  `su-exec tor cat ...`, `test -S`, the 2.1.x doctor's runtime probe, and the
+  CLI subcommands. Each of those names answers only the exact forms 2.x used
+  and refuses anything else, so the image gains no general-purpose tool.
+  Replaying 18 such commands against 2.1.6 and 3.0 gave the same exit codes and
+  output.
+- `TOR_SANDBOX`, `*_TOR_SERVICE_HOSTS` and every documented variable behave as
+  in 2.1.6.
+
+### Build and supply chain
+
+- **The build is offline.** Every package, the Tor tarball and the vendored
+  crate come from an input archive passed as a build context; nothing is fetched
+  while building. `scripts/build_inputs.py verify` checks the archive first: every
+  file against its manifest, each package index against a signing key pinned in
+  `signatures/` (Docker's DHI apk key, Alpine's keys), every package against its
+  signed index, and the Tor signatures against Tor's release keys.
+- **Alpine pruning can no longer break a release build.** The inputs are kept
+  for the current release and the one before it.
+- **Reproducible**: two clean builds give byte-identical images.
+- `pin-freshness` is replaced by `inputs-integrity`.
+
+### Upgrading
+
+From any 2.1.x release nothing is needed: same compose file, same key volume,
+same address. Rolling back to 2.1.6 with the same volume also works. 2.1.6
+cannot read a sealed key: to roll back from `--encrypt-keys`, stop the service
+and run `hiddenforge unseal-keys` first.
 
 ---
 

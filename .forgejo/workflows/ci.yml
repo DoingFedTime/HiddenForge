@@ -48,7 +48,7 @@ permissions:
 
 # 3.0 builds offline from the verified input archive (DHI packages, the Tor
 # release tarball, the vendored libc crate). Its location on the runner host is
-# a repository variable, never a path hard-coded here; scripts/verify_inputs.py
+# a repository variable, never a path hard-coded here; scripts/build_inputs.py
 # checks every file against its publisher's signature before a build uses it.
 env:
   HIDDENFORGE_INPUTS: ${{ vars.HIDDENFORGE_INPUTS }}
@@ -79,7 +79,7 @@ jobs:
       - name: python syntax (the 2.x reference sources, the host CLI, the tools)
         run: |
           python3 -m py_compile entrypoint.py healthcheck.py vanity.py
-          python3 -m py_compile scripts/hiddenforge scripts/verify_inputs.py wizard/build.py
+          python3 -m py_compile scripts/hiddenforge scripts/build_inputs.py wizard/build.py
       - name: rust (fmt, clippy with warnings as errors)
         run: |
           cd hiddenforge-rs
@@ -190,7 +190,7 @@ jobs:
       - name: verify the build inputs
         run: |
           test -n "$HIDDENFORGE_INPUTS" || { echo "set the HIDDENFORGE_INPUTS repository variable"; exit 1; }
-          python3 scripts/verify_inputs.py "$HIDDENFORGE_INPUTS"
+          python3 scripts/build_inputs.py verify "$HIDDENFORGE_INPUTS"
 
       - name: build the image locally
         run: |
@@ -399,7 +399,7 @@ jobs:
       - uses: https://github.com/actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Every build input still verifies
-        run: python3 scripts/verify_inputs.py "$HIDDENFORGE_INPUTS"
+        run: python3 scripts/build_inputs.py verify "$HIDDENFORGE_INPUTS"
 
       - name: Is there a newer Tor stable?
         run: |

@@ -1685,7 +1685,8 @@ def render_compose_fragment(services: dict[str, list[str]], image: str, keys: st
     if passphrase_file is not None:
         # Key encryption at rest: the passphrase reaches the container as a
         # compose secret (a file), never as an environment value.
-        env_lines += "      HIDDENFORGE_KEY_PASSPHRASE_FILE: /run/secrets/hiddenforge_key_passphrase\n"
+        env_lines += ("      HIDDENFORGE_KEY_PASSPHRASE_FILE: "
+                      "/run/secrets/hiddenforge_key_passphrase\n")
         secret_use = "    secrets:\n      - hiddenforge_key_passphrase\n"
         secret_def = ("\nsecrets:\n  hiddenforge_key_passphrase:\n"
                       f"    file: {_yaml_double_quoted(passphrase_file)}\n")
@@ -1847,16 +1848,20 @@ fi"""
                     f"podman unshare chown -R 100:101 {keys_q}\n")
     else:
         own_step = (f"if [ \"$(stat -c %u:%g {keys_q})\" != \"100:101\" ]; then\n"
-                    "    echo \"==> Handing the key directory to the tor user (100:101); sudo asks once\"\n"
+                    "    echo \"==> Handing the key directory to the tor user (100:101); "
+                    "sudo asks once\"\n"
                     f"    sudo chown -R 100:101 {keys_q}\n"
                     "fi\n")
     if passphrase_file is not None:
         pp_q = shlex.quote(passphrase_file)
         own_step += (f"if [ ! -s {pp_q} ]; then\n"
-                     "    echo \"==> Creating a random key passphrase (keys are encrypted at rest)\"\n"
+                     "    echo \"==> Creating a random key passphrase "
+                     "(keys are encrypted at rest)\"\n"
                      f"    (umask 077; head -c 32 /dev/urandom | base64 > {pp_q})\n"
-                     "    echo \"    BACK IT UP, separately from the key directory: without it the\"\n"
-                     "    echo \"    address is lost. Kept on this disk it protects backups only.\"\n"
+                     "    echo \"    BACK IT UP, separately from the key directory: "
+                     "without it the\"\n"
+                     "    echo \"    address is lost. Kept on this disk it protects "
+                     "backups only.\"\n"
                      "fi\n")
         if no_root:
             # The container runs as 100:101 and must be able to read it.
@@ -2159,6 +2164,70 @@ def _rewrite_key_paths(doc: dict, keys: Path, container_prefix: str = "/keys/") 
         if isinstance(val, str) and val.startswith(container_prefix):
             doc[field] = str(keys / val[len(container_prefix):])
     return doc
+
+
+def cmd_unseal_keys(args) -> int:
+    """Turn key encryption at rest off: the plaintext key goes back on the volume.
+
+    The work is done by the image (it holds the cipher), as the tor user, with
+    no network and no capabilities. The passphrase is piped to it on stdin, so
+    no file is shared with the container. Stop the service first.
+    """
+    try:
+        validate_name(args.name)
+        validate_image_ref(args.image)
+        if not args.passphrase_file:
+            raise ValueError("--passphrase-file is required "
+                             "(the passphrase the key was sealed with)")
+        passphrase = _passphrase(args)
+    except (ValueError, OSError, UnicodeDecodeError) as exc:
+        return emit_json(EXIT_USAGE, error=str(exc))
+    keys = Path(args.keys).resolve()
+    try:
+        validate_keys_dir(str(keys))
+    except ValueError as exc:
+        return emit_json(EXIT_USAGE, error=str(exc))
+    if ":" in str(keys):
+        return emit_json(EXIT_USAGE, keys=str(keys),
+                         error=f"key directory {str(keys)!r} contains ':', which "
+                               "the container engine cannot mount with -v; use a "
+                               "path without one")
+    if not keys.is_dir():
+        return emit_json(EXIT_USAGE, keys=str(keys),
+                         error=f"key directory {keys} does not exist")
+    eng = _engine()
+    if eng is None:
+        return emit_json(EXIT_USAGE, error="neither docker nor podman found on PATH; "
+                                           "unseal-keys runs inside the image")
+    cmd = [eng, "run", "--rm", "-i", "--network", "none", "--read-only",
+           "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+           "--user", "100:101", "-v", f"{keys}:/var/lib/tor/hidden_service",
+           args.image, "unseal-keys", "--name", args.name,
+           "--passphrase-file", "-", "--json"]
+    proc = subprocess.run(cmd, input=passphrase + "\n", capture_output=True,
+                          text=True, check=False)
+    doc = None
+    for line in reversed(proc.stdout.strip().splitlines()):
+        try:
+            doc = json.loads(line)
+            break
+        except json.JSONDecodeError:
+            continue
+    if doc is None:
+        return emit_json(EXIT_FAIL, error=f"the image produced no JSON "
+                         f"(rc={proc.returncode}): {proc.stderr.strip()[-400:]}")
+    doc["keys"] = str(keys)
+    if args.json:
+        sys.stdout.write(json.dumps(doc, sort_keys=True) + "\n")
+    elif doc.get("ok") and not doc.get("unsealed"):
+        print(f"{args.name}: no sealed key; nothing to do")
+    elif doc.get("ok"):
+        print(f"{args.name}: the key is plaintext on the volume again. Remove "
+              "HIDDENFORGE_KEY_PASSPHRASE_FILE and the passphrase secret from the "
+              "compose file before the next start, or the key is sealed again.")
+    else:
+        _eprint(f"error: {doc.get('error', 'unseal failed')}")
+    return int(doc.get("exit_code", proc.returncode))
 
 
 def cmd_vanity(args) -> int:
@@ -3490,6 +3559,15 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--force", action="store_true")
     _add_json(sp)
     sp.set_defaults(func=cmd_restore)
+
+    sp = sub.add_parser("unseal-keys",
+                        help="turn key encryption at rest off (stop the service first)")
+    sp.add_argument("--name", default=DEFAULT_NAME)
+    sp.add_argument("--keys", default=str(_default_keys()))
+    sp.add_argument("--passphrase-file", default=None)
+    sp.add_argument("--image", default=DEFAULT_IMAGE)
+    _add_json(sp)
+    sp.set_defaults(func=cmd_unseal_keys)
 
     sp = sub.add_parser("rotate", help="DESTRUCTIVE: archive the identity and start over")
     sp.add_argument("--keys", default=str(_default_keys()))

@@ -1,20 +1,26 @@
 #!/usr/bin/env python3
-"""Verify the HiddenForge build-input archive before a build uses it.
+"""The HiddenForge build-input archive: verify it, pack it, fetch it.
 
-The image is built offline from this archive (`--build-context inputs=<dir>`),
-so this is the check that what is in it is what its publishers signed:
+The image is built offline from this archive (`--build-context inputs=<dir>`).
+`build-inputs.sha256` in this repository is the lock: the exact list of files a
+release is built from, with their SHA-256. Nothing else is accepted.
 
-  1. every file matches MANIFEST.sha256, and nothing unlisted is present;
-  2. each APKINDEX carries a valid RSA signature from a key pinned in
-     signatures/ (Docker's DHI apk key; Alpine's for the Alpine index);
-  3. every .apk matches the checksum its signed index lists for it;
-  4. the Tor tarball's SHA-256 file is signed by a Tor release key pinned in
-     signatures/tor-release-keys.gpg, and the tarball matches it;
-  5. the vendored libc crate matches the checksum Cargo.lock pins.
+  verify DIR       check DIR before a build uses it (exit 0 = all verified):
+                     1. DIR holds exactly the files in the lock, with those hashes
+                        (an older or substituted archive fails here, even if
+                        everything in it is validly signed);
+                     2. each APKINDEX carries a valid RSA signature from a key
+                        pinned in signatures/ (Docker's DHI apk key; Alpine's);
+                     3. every .apk matches the checksum its signed index lists;
+                     4. the Tor tarball's SHA-256 file is signed by a pinned Tor
+                        release key, and the tarball matches it;
+                     5. the vendored libc crate matches Cargo.lock.
+  pack DIR OUT     write DIR as one deterministic tar (same bytes every time),
+                   after verifying it: the file published beside a release.
+  fetch URL DIR    download that tar into the empty directory DIR, extract it
+                   without trusting its paths, and verify it.
 
-    python3 scripts/verify_inputs.py <inputs dir>     # exit 0 = all verified
-
-Needs openssl and gpg on the host. Network: none.
+Needs openssl and gpg on the host. Network: only `fetch`.
 """
 
 from __future__ import annotations
@@ -28,11 +34,14 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import urllib.request
 import zlib
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 SIG = REPO / "signatures"
+LOCK = REPO / "build-inputs.sha256"
+FETCH_MAX = 256 * 1024 * 1024
 TOR_TARBALL = "tor-0.4.9.16.tar.gz"
 # Tor release-signing keys accepted (primary fingerprints, from Tor's own
 # verification page): David Goulet, Alexander Faeroy, Nick Mathewson.
@@ -102,26 +111,39 @@ def apk_checksum(path: Path) -> str:
     return "Q1" + base64.b64encode(hashlib.sha1(m[1][0], usedforsecurity=False).digest()).decode()
 
 
-def main(inputs: Path) -> int:
-    # 1. manifest
-    listed = {}
-    for line in (inputs / "MANIFEST.sha256").read_text().splitlines():
+def read_manifest(path: Path) -> dict[str, str]:
+    out = {}
+    for line in path.read_text().splitlines():
         digest, name = line.split(None, 1)
-        listed[name.lstrip("./").lstrip("*")] = digest
+        out[name.lstrip("*").removeprefix("./")] = digest
+    return out
+
+
+def verify(inputs: Path) -> int:
+    # 1. the lock
+    locked = read_manifest(LOCK)
+    if read_manifest(inputs / "MANIFEST.sha256") != locked:
+        raise SystemExit(
+            "FAIL lock: the archive's MANIFEST.sha256 is not build-inputs.sha256; "
+            "this archive is not the one this source tree is built from"
+        )
     present = {
         str(p.relative_to(inputs))
         for p in inputs.rglob("*")
         if p.is_file() and p.name != "MANIFEST.sha256"
     }
-    if set(listed) != present:
+    if set(locked) != present:
         raise SystemExit(
-            f"FAIL manifest: unlisted {sorted(present - set(listed))[:5]}, "
-            f"missing {sorted(set(listed) - present)[:5]}"
+            f"FAIL lock: unlisted {sorted(present - set(locked))[:5]}, "
+            f"missing {sorted(set(locked) - present)[:5]}"
         )
-    for name, digest in listed.items():
+    for p in inputs.rglob("*"):
+        if p.is_symlink() or not (p.is_file() or p.is_dir()):
+            raise SystemExit(f"FAIL lock: {p.relative_to(inputs)} is not a regular file")
+    for name, digest in locked.items():
         if hashlib.sha256((inputs / name).read_bytes()).hexdigest() != digest:
-            raise SystemExit(f"FAIL manifest: {name} does not match")
-    print(f"ok   MANIFEST.sha256: {len(listed)} files")
+            raise SystemExit(f"FAIL lock: {name} does not match")
+    print(f"ok   build-inputs.sha256: {len(locked)} files, exactly as locked")
     # 2+3. indexes and packages
     for arch in ("x86_64", "aarch64"):
         for repo, index in (
@@ -165,12 +187,12 @@ def main(inputs: Path) -> int:
             text=True,
             check=False,
         )
+        # VALIDSIG ... <primary fingerprint> is the last field.
         good = {
             line.split()[-1]
             for line in st.stdout.splitlines()
             if line.startswith("[GNUPG:] VALIDSIG")
         }
-        # VALIDSIG ... <primary fingerprint> is the last field.
         if not good & TOR_FPRS:
             raise SystemExit("FAIL tor: no valid signature from a pinned Tor release key")
     want = (tor / f"{TOR_TARBALL}.sha256sum").read_text().split()[0]
@@ -191,7 +213,57 @@ def main(inputs: Path) -> int:
     return 0
 
 
+def pack(inputs: Path, out: Path) -> int:
+    verify(inputs)
+    names = ["MANIFEST.sha256", *sorted(read_manifest(LOCK))]
+    with (
+        open(out, "wb") as raw,
+        tarfile.open(fileobj=raw, mode="w", format=tarfile.PAX_FORMAT) as tar,
+    ):
+        for name in names:
+            data = (inputs / name).read_bytes()
+            info = tarfile.TarInfo(name)
+            info.size, info.mode, info.mtime = len(data), 0o644, 0
+            info.uid = info.gid = 0
+            info.uname = info.gname = ""
+            tar.addfile(info, io.BytesIO(data))
+    print(f"wrote {out}: sha256 {hashlib.sha256(out.read_bytes()).hexdigest()}")
+    return 0
+
+
+def fetch(url: str, dest: Path) -> int:
+    if not url.startswith("https://"):
+        raise SystemExit("FAIL fetch: https only")
+    dest.mkdir(parents=True, exist_ok=True)
+    if any(dest.iterdir()):
+        raise SystemExit(f"FAIL fetch: {dest} is not empty")
+    with urllib.request.urlopen(url, timeout=60) as r:  # noqa: S310 (https checked above)
+        blob = r.read(FETCH_MAX + 1)
+    if len(blob) > FETCH_MAX:
+        raise SystemExit("FAIL fetch: archive larger than expected")
+    allowed = {"MANIFEST.sha256", *read_manifest(LOCK)}
+    with tarfile.open(fileobj=io.BytesIO(blob), mode="r:") as tar:
+        for m in tar.getmembers():
+            # Only regular files the lock names: no links, devices, absolute or
+            # parent paths, and nothing the lock does not list.
+            if not m.isreg() or m.name not in allowed:
+                raise SystemExit(f"FAIL fetch: unexpected entry {m.name!r} in the archive")
+            target = dest / m.name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(tar.extractfile(m).read())
+    return verify(dest)
+
+
+def main(argv: list[str]) -> int:
+    match argv:
+        case ["verify", d]:
+            return verify(Path(d))
+        case ["pack", d, out]:
+            return pack(Path(d), Path(out))
+        case ["fetch", url, d]:
+            return fetch(url, Path(d))
+    raise SystemExit(__doc__)
+
+
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        raise SystemExit(__doc__)
-    sys.exit(main(Path(sys.argv[1])))
+    sys.exit(main(sys.argv[1:]))

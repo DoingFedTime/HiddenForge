@@ -152,6 +152,40 @@ pub fn settled(name: &str) -> bool {
         && read(&format!("{ram}/{HOSTNAME}"), 256) == read(&format!("{vol}/{HOSTNAME}"), 256)
 }
 
+/// Turn encryption at rest off for one service (`hiddenforge unseal-keys`):
+/// put the plaintext key back on the volume, prove it is the sealed key's
+/// content, and only then remove the envelope. Run with the service stopped.
+/// Ok(None) when the service has no sealed key (nothing to do).
+pub fn unseal_to_volume(name: &str, pass: &[u8]) -> Result<Option<String>, String> {
+    let vol = format!("{KEYS}/{name}");
+    let Some(env) = read(&format!("{vol}/{SEALED}"), 8192) else {
+        return Ok(None);
+    };
+    let plain = keycrypt::decrypt(&env, pass).map_err(|e| format!("{name}: {e}"))?;
+    match read(&format!("{vol}/{SECRET}"), 8192) {
+        Some(existing) if existing != plain.0 => {
+            return Err(format!(
+                "{name}: {SECRET} exists and differs from the sealed key; refusing to choose between them"
+            ))
+        }
+        Some(_) => {}
+        None => write_atomic(&vol, SECRET, &plain.0, 0o600)?,
+    }
+    if read(&format!("{vol}/{SECRET}"), 8192).as_deref() != Some(plain.0.as_slice()) {
+        return Err(format!(
+            "{name}: the plaintext key did not read back intact; the sealed key was left in place"
+        ));
+    }
+    std::fs::remove_file(format!("{vol}/{SEALED}"))
+        .map_err(|e| format!("{name}: cannot remove {SEALED}: {e}"))?;
+    if let Ok(d) = std::fs::File::open(&vol) {
+        let _ = d.sync_all();
+    }
+    Ok(Some(format!(
+        "{name}: the key is plaintext on the volume again ({SECRET}); {SEALED} removed"
+    )))
+}
+
 /// `hiddenforge __keys unseal|seal <name>`, passphrase on stdin (from the supervisor).
 pub fn helper(op: &str, name: &str) -> i32 {
     if !name

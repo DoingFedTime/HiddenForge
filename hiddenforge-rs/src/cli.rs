@@ -510,7 +510,13 @@ fn torrc_service_names(keys: &str) -> Vec<String> {
         } else {
             parent
         };
-        if py_path(parent) == py_path(keys) && name_ok(name) && !names.iter().any(|n| n == name) {
+        // Sealed keys: Tor's HiddenServiceDir is the RAM copy, named the same.
+        let sealed_copy =
+            py_path(parent) == crate::sealed::RAM && py_path(keys) == py_path(&default_keys_env());
+        if (py_path(parent) == py_path(keys) || sealed_copy)
+            && name_ok(name)
+            && !names.iter().any(|n| n == name)
+        {
             names.push(name.to_string());
         }
     }
@@ -524,7 +530,7 @@ fn service_names(keys: &str) -> Vec<String> {
     let rd = match std::fs::read_dir(keys) {
         Ok(r) => r,
         Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
-            return torrc_service_names(keys)
+            return torrc_service_names(keys);
         }
         Err(_) => return vec![],
     };
@@ -2397,6 +2403,118 @@ fn cmd_vanity(argv: &[String]) -> i32 {
     }
 }
 
+// ── unseal-keys: turn key encryption at rest off ────────────────────────────
+
+/// Service names from the `<NAME>_TOR_SERVICE_HOSTS` variables, as the torrc
+/// builder derives them.
+fn env_service_names() -> Vec<String> {
+    let mut names: Vec<String> = std::env::vars_os()
+        .filter_map(|(k, _)| k.into_string().ok())
+        .filter_map(|k| {
+            k.strip_suffix("_TOR_SERVICE_HOSTS")
+                .map(|n| n.to_lowercase().replace('_', "-"))
+        })
+        .filter(|n| name_ok(n))
+        .collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
+fn cmd_unseal_keys(a: &Args) -> i32 {
+    let Some(pf) = a
+        .get("passphrase_file")
+        .map(String::from)
+        .or_else(crate::sealed::passphrase_file)
+    else {
+        return emit_json(
+            EXIT_USAGE,
+            vec![(
+                "error",
+                format!(
+                    "no passphrase: pass --passphrase-file or set {}",
+                    crate::sealed::ENV
+                )
+                .into(),
+            )],
+        );
+    };
+    // Read the passphrase first (it may be readable by root only), then drop.
+    // `-` is stdin: the host CLI pipes it in, so no file is shared with the container.
+    let pass = match if pf == "-" {
+        crate::keycrypt::read_passphrase_stdin()
+    } else {
+        crate::keycrypt::read_passphrase(&pf)
+    } {
+        Ok(p) => p,
+        Err(e) => return emit_json(EXIT_FAIL, vec![("error", e.into())]),
+    };
+    if crate::privs::is_root() {
+        if let Err(e) = crate::compat::become_tor() {
+            return emit_json(
+                EXIT_FAIL,
+                vec![(
+                    "error",
+                    format!("cannot switch to the tor user: {e}").into(),
+                )],
+            );
+        }
+    }
+    let names = match a.get("name") {
+        Some(n) => {
+            if let Err(e) = validate_name(n) {
+                return emit_json(EXIT_USAGE, vec![("error", e.into())]);
+            }
+            vec![n.to_string()]
+        }
+        None => env_service_names(),
+    };
+    if names.is_empty() {
+        return emit_json(
+            EXIT_USAGE,
+            vec![("error", "no service named: pass --name, or run it in the tor service, where <NAME>_TOR_SERVICE_HOSTS is set".into())],
+        );
+    }
+    let mut done = Vec::new();
+    let mut skipped = Vec::new();
+    for n in &names {
+        match crate::sealed::unseal_to_volume(n, &pass.0) {
+            Ok(Some(msg)) => {
+                if !a.flag("json") {
+                    println!("{msg}");
+                }
+                done.push(Json::Str(n.clone()));
+            }
+            Ok(None) => {
+                if !a.flag("json") {
+                    println!("{n}: no sealed key; nothing to do");
+                }
+                skipped.push(Json::Str(n.clone()));
+            }
+            Err(e) => {
+                return emit_json(
+                    EXIT_FAIL,
+                    vec![("error", e.into()), ("unsealed", Json::Arr(done))],
+                )
+            }
+        }
+    }
+    if a.flag("json") {
+        return emit_json(
+            EXIT_OK,
+            vec![
+                ("unsealed", Json::Arr(done)),
+                ("not_sealed", Json::Arr(skipped)),
+            ],
+        );
+    }
+    println!(
+        "Remove {} and the passphrase secret from the compose file before the next start; otherwise the key is sealed again.",
+        crate::sealed::ENV
+    );
+    EXIT_OK
+}
+
 // ───────────────────────────── dispatch ─────────────────────────────────────
 
 /// Commands this binary answers (in the image). Returns None if `cmd` is not one.
@@ -2475,6 +2593,12 @@ pub fn run(cmd: &str, rest: &[String]) -> Option<i32> {
             rest,
         )
         .map_or_else(|c| c, |a| cmd_crypt(&a)),
+        "unseal-keys" => parse(
+            "hiddenforge unseal-keys",
+            &[o("--name", Kind::Value), o("--passphrase-file", Kind::Value), json],
+            rest,
+        )
+        .map_or_else(|c| c, |a| cmd_unseal_keys(&a)),
         "vanity" => cmd_vanity(rest),
         "status" | "verify-image" | "sbom" => emit_json(
             EXIT_USAGE,

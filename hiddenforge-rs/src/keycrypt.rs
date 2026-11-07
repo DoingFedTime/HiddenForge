@@ -327,6 +327,20 @@ pub fn read_passphrase(path: &str) -> Result<Secret, String> {
     Ok(d)
 }
 
+/// The passphrase from stdin (`--passphrase-file -`): same rules, same cap.
+pub fn read_passphrase_stdin() -> Result<Secret, String> {
+    use std::io::Read;
+    let mut d = Secret(Vec::new());
+    if std::io::stdin().take(4097).read_to_end(&mut d.0).is_err() || d.0.len() > 4096 {
+        return Err("cannot read the passphrase from stdin (at most 4096 bytes)".into());
+    }
+    while d.0.last().is_some_and(|b| *b == b'\n' || *b == b'\r') {
+        d.0.pop();
+    }
+    check_passphrase(&d.0)?;
+    Ok(d)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

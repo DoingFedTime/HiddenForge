@@ -2050,3 +2050,61 @@ def test_setup_refuses_an_odd_output_before_writing_anything(hf, tmp_path, capsy
     doc = json.loads(capsys.readouterr().out)
     assert rc != 0 and "not a regular file" in doc["error"]
     assert sorted(p.name for p in out.iterdir()) == ["README.txt"], "nothing written"
+
+
+# ── unseal-keys ─────────────────────────────────────────────────────────────
+
+def test_unseal_keys_needs_the_passphrase(hf, tmp_path, capsys, monkeypatch):
+    called = []
+    monkeypatch.setattr(hf.subprocess, "run", lambda *a, **k: called.append(a))
+    rc = hf.main(["unseal-keys", "--keys", str(tmp_path), "--json"])
+    doc = json.loads(capsys.readouterr().out)
+    assert rc == hf.EXIT_USAGE and "--passphrase-file is required" in doc["error"]
+    assert not called
+
+
+def test_unseal_keys_runs_confined_and_pipes_the_passphrase(hf, tmp_path, capsys,
+                                                            monkeypatch):
+    """The image does the work as the tor user with no network and no
+    capabilities, and the passphrase reaches it on stdin, never as a file or an
+    argument the host's process list would show."""
+    pp = tmp_path / "pp"
+    pp.write_text("correct horse battery staple\n")
+    keys = tmp_path / "keys"
+    keys.mkdir()
+    seen = {}
+
+    def fake_run(cmd, **k):
+        seen["cmd"], seen["input"] = cmd, k.get("input")
+        out = '{"exit_code": 0, "not_sealed": [], "ok": true, "unsealed": ["myapp"]}\n'
+        return hf.subprocess.CompletedProcess(cmd, 0, out, "")
+
+    monkeypatch.setattr(hf, "_engine", lambda: "podman")
+    monkeypatch.setattr(hf.subprocess, "run", fake_run)
+    rc = hf.main(["unseal-keys", "--keys", str(keys), "--name", "myapp",
+                  "--passphrase-file", str(pp), "--json"])
+    doc = json.loads(capsys.readouterr().out)
+    assert rc == 0 and doc["unsealed"] == ["myapp"] and doc["keys"] == str(keys)
+    cmd = seen["cmd"]
+    assert cmd[:2] == ["podman", "run"]
+    for flag in (["--network", "none"], ["--cap-drop", "ALL"], ["--user", "100:101"],
+                 ["--passphrase-file", "-"]):
+        i = cmd.index(flag[0])
+        assert cmd[i:i + 2] == flag
+    assert "--read-only" in cmd and "-i" in cmd
+    assert "correct horse" not in " ".join(cmd)
+    assert seen["input"] == "correct horse battery staple\n"
+
+
+def test_unseal_keys_reports_a_volume_that_was_never_sealed(hf, tmp_path, capsys,
+                                                            monkeypatch):
+    pp = tmp_path / "pp"
+    pp.write_text("correct horse battery staple\n")
+    out = '{"exit_code": 0, "not_sealed": ["myapp"], "ok": true, "unsealed": []}\n'
+    monkeypatch.setattr(hf, "_engine", lambda: "docker")
+    monkeypatch.setattr(hf.subprocess, "run",
+                        lambda cmd, **k: hf.subprocess.CompletedProcess(cmd, 0, out, ""))
+    rc = hf.main(["unseal-keys", "--keys", str(tmp_path), "--name", "myapp",
+                  "--passphrase-file", str(pp)])
+    assert rc == 0
+    assert "nothing to do" in capsys.readouterr().out
