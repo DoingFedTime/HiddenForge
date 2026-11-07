@@ -307,7 +307,10 @@ pub fn run() -> i32 {
         if pass.is_some() {
             // Tor's HiddenServiceDir moves to the tmpfs; the volume keeps only
             // the sealed key, the public key and the hostname.
-            fsops::mkdir_owned(sealed::RAM, tor_uid, tor_gid)?;
+            // Create every directory first and hand them to tor leaves-first:
+            // without DAC_OVERRIDE (rootless Podman) root cannot create inside a
+            // directory that already belongs to tor.
+            fsops::mkdir_owned(sealed::RAM, 0, 0)?;
             let mut ram_dirs = Vec::new();
             for d in &t.hs_dirs {
                 let name = d.rsplit('/').next().unwrap_or("").to_string();
@@ -316,6 +319,7 @@ pub fn run() -> i32 {
                 t.content = t.content.replace(&format!("HiddenServiceDir     {d}\n"), &format!("HiddenServiceDir     {ram}\n"));
                 ram_dirs.push(ram);
             }
+            fsops::mkdir_owned(sealed::RAM, tor_uid, tor_gid)?;
             t.hs_dirs = ram_dirs;
             println!("Key encryption at rest is on: keys are decrypted into {} at start.", sealed::RAM);
         }
