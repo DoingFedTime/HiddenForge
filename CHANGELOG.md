@@ -9,7 +9,7 @@ image of its own: its changes ship with 2.1.0.
 
 ---
 
-## [3.0.0] - Unreleased
+## [3.0.0] - 2026-11-07
 
 A new image from the ground up. Same compose files, same keys, same address,
 same commands. What is inside the container is different, and much smaller.
