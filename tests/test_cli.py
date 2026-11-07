@@ -2108,3 +2108,16 @@ def test_unseal_keys_reports_a_volume_that_was_never_sealed(hf, tmp_path, capsys
                   "--passphrase-file", str(pp)])
     assert rc == 0
     assert "nothing to do" in capsys.readouterr().out
+
+
+def test_unseal_keys_refuses_a_key_path_the_engine_cannot_mount(hf, tmp_path, capsys,
+                                                               monkeypatch):
+    pp = tmp_path / "pp"
+    pp.write_text("correct horse battery staple\n")
+    called = []
+    monkeypatch.setattr(hf.subprocess, "run", lambda *a, **k: called.append(a))
+    rc = hf.main(["unseal-keys", "--keys", str(tmp_path / "a:b"), "--name", "myapp",
+                  "--passphrase-file", str(pp), "--json"])
+    doc = json.loads(capsys.readouterr().out)
+    assert rc == hf.EXIT_USAGE and "contains ':'" in doc["error"]
+    assert not called

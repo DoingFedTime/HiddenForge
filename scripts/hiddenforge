@@ -2166,6 +2166,20 @@ def _rewrite_key_paths(doc: dict, keys: Path, container_prefix: str = "/keys/") 
     return doc
 
 
+def _unmountable(keys: Path) -> str | None:
+    """Why `-v <keys>:...` would fail, or None.
+
+    The path goes into `-v <path>:/keys`, and the engine splits that on
+    colons: the rest becomes a destination and mount options. It failed as
+    "invalid mode: /keys" from inside docker, exit 1, with no hint that the
+    path was the problem.
+    """
+    if ":" in str(keys):
+        return (f"key directory {str(keys)!r} contains ':', which the container "
+                "engine cannot mount with -v; use a path without one")
+    return None
+
+
 def cmd_unseal_keys(args) -> int:
     """Turn key encryption at rest off: the plaintext key goes back on the volume.
 
@@ -2189,11 +2203,8 @@ def cmd_unseal_keys(args) -> int:
         validate_keys_dir(str(keys))
     except ValueError as exc:
         return emit_json(EXIT_USAGE, error=str(exc))
-    if ":" in str(keys):
-        return emit_json(EXIT_USAGE, keys=str(keys),
-                         error=f"key directory {str(keys)!r} contains ':', which "
-                               "the container engine cannot mount with -v; use a "
-                               "path without one")
+    if (err := _unmountable(keys)) is not None:
+        return emit_json(EXIT_USAGE, keys=str(keys), error=err)
     if not keys.is_dir():
         return emit_json(EXIT_USAGE, keys=str(keys),
                          error=f"key directory {keys} does not exist")
@@ -2252,15 +2263,8 @@ def cmd_vanity(args) -> int:
         validate_keys_dir(str(keys))
     except ValueError as exc:
         return emit_json(EXIT_USAGE, error=str(exc))
-    if ":" in str(keys):
-        # The path goes into `-v <path>:/keys`, and the engine splits that on
-        # colons: the rest becomes a destination and mount options. It failed as
-        # "invalid mode: /keys" from inside docker, exit 1, with no hint that
-        # the path was the problem.
-        return emit_json(EXIT_USAGE, keys=str(keys),
-                         error=f"key directory {str(keys)!r} contains ':', which "
-                               "the container engine cannot mount with -v; use a "
-                               "path without one")
+    if (err := _unmountable(keys)) is not None:
+        return emit_json(EXIT_USAGE, keys=str(keys), error=err)
     keys.mkdir(parents=True, exist_ok=True)
     target = keys / args.name
     if (target.exists() or target.is_symlink()) and not args.force:
