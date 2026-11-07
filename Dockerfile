@@ -10,8 +10,8 @@
 #     `inputs` build context. Nothing is fetched while building.
 #   * Tor: compiled here from Tor Project's release tarball (signature checked
 #     against Tor's release keys before archiving; SHA-256 pinned below).
-#   * the runtime: one Rust binary (hiddenforge-rs/), whose only dependency is
-#     the libc crate, vendored and checked against Cargo.lock.
+#   * the runtime: one Rust binary (hiddenforge-rs/), whose only crate is libc
+#     (vendored, checked against Cargo.lock); it links the image's libcrypto.
 #
 # Build (reproducible):
 #   docker buildx build --builder reprobuilder --no-cache --provenance=false \
@@ -71,12 +71,20 @@ RUN echo "1f951ed82577436fe2c160c01f7754170010137c2182eae7e47fce65f000dc8d  /src
 FROM ${RUST_BUILDER} AS rbuild
 ARG SOURCE_DATE_EPOCH=0
 SHELL ["/bin/sh", "-eu", "-c"]
+COPY --from=inputs apk /repo
+COPY --from=inputs index/APKINDEX-x86_64.tar.gz /repo/x86_64/APKINDEX.tar.gz
+COPY --from=inputs index/APKINDEX-aarch64.tar.gz /repo/aarch64/APKINDEX.tar.gz
 COPY --from=inputs cargo/vendor /cargo/vendor
 COPY --from=inputs cargo/config.toml /root/.cargo/config.toml
 COPY hiddenforge-rs/Cargo.toml hiddenforge-rs/Cargo.lock /build/
 COPY hiddenforge-rs/src /build/src
 WORKDIR /build
-RUN RUSTFLAGS="-C target-feature=+crt-static --remap-path-prefix=/build=. --remap-path-prefix=/cargo/vendor=vendor -C link-arg=-Wl,--build-id=none" \
+# Linked against the image's own libcrypto (the one Tor uses, from the same
+# verified package), so there is one OpenSSL in the image and a CVE scan of
+# the libcrypto3 package covers the key-encryption code too.
+RUN echo /repo > /etc/apk/repositories; \
+    apk add --no-cache --no-network openssl-dev; \
+    RUSTFLAGS="--remap-path-prefix=/build=. --remap-path-prefix=/cargo/vendor=vendor -C link-arg=-Wl,--build-id=none" \
       cargo build --release --locked --offline; \
     install -D -m 0755 target/release/hiddenforge /out/usr/local/bin/hiddenforge
 

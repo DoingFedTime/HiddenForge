@@ -16,8 +16,10 @@ mod compat;
 mod fsops;
 mod guards;
 mod health;
+mod keycrypt;
 mod landlock;
 mod privs;
+mod sealed;
 mod py;
 mod sha3;
 mod supervisor;
@@ -72,7 +74,12 @@ fn hiddenforge(args: &[String]) -> i32 {
         ("__true", []) => 0,
         ("__is-socket", [p]) => compat::test(&["-S".into(), (*p).to_string()]),
         // Run as the tor user by the supervisor: the public hostname file only.
-        ("__read-hostname", [p]) if p.starts_with("/var/lib/tor/hidden_service/") && p.ends_with("/hostname") => {
+        ("__keys", [op, name]) => sealed::helper(op, name),
+        ("__read-hostname", [p])
+            if (p.starts_with("/var/lib/tor/hidden_service/") || p.starts_with("/var/lib/tor/hs-ram/"))
+                && p.ends_with("/hostname")
+                && !p.contains("/../") =>
+        {
             match fsops::read_small_regular_file(p, fsops::ADDRESS_FILE_MAX) {
                 Ok(d) => {
                     use std::io::Write;

@@ -1145,9 +1145,15 @@ def _append_key_checks(checks: list[dict], keys: Path) -> list[str]:
                              "to verify service dir/file modes", severity="warn"))
     for name in names:
         d = keys / name
+        sealed = False
         try:
             dmode = stat.S_IMODE(os.lstat(d).st_mode)
-            smode = stat.S_IMODE(os.lstat(d / SECRET_FILE).st_mode)
+            try:
+                smode = stat.S_IMODE(os.lstat(d / SECRET_FILE).st_mode)
+            except FileNotFoundError:
+                # Key encryption at rest (3.0): only the sealed envelope is kept.
+                smode = stat.S_IMODE(os.lstat(d / (SECRET_FILE + ".enc")).st_mode)
+                sealed = True
         except PermissionError:
             closed.append(name)
             continue
@@ -1156,7 +1162,8 @@ def _append_key_checks(checks: list[dict], keys: Path) -> list[str]:
             continue
         checks.append(_check(dmode == 0o700, f"key dir {name} is 0700",
                              f"mode={oct(dmode)}"))
-        checks.append(_check(smode == 0o600, f"secret key {name} is 0600",
+        checks.append(_check(smode == 0o600,
+                             f"{'sealed' if sealed else 'secret'} key {name} is 0600",
                              f"mode={oct(smode)}"))
         entry = address_for(keys, name)
         if entry["derived_matches"] is False:
@@ -1664,7 +1671,7 @@ def _yaml_double_quoted(value: str) -> str:
 
 def render_compose_fragment(services: dict[str, list[str]], image: str, keys: str,
                             container: str, runtime: str = "docker",
-                            no_root: bool = False) -> str:
+                            no_root: bool = False, passphrase_file: str | None = None) -> str:
     """Render the mergeable compose fragment for one or more services.
 
     `services` maps a service name to a list of ``onion_port:host:port``
@@ -1674,6 +1681,14 @@ def render_compose_fragment(services: dict[str, list[str]], image: str, keys: st
     env_lines = "".join(
         f'      {_env_var(n)}: "{",".join(v)}"\n' for n, v in sorted(services.items())
     )
+    secret_use = secret_def = ""
+    if passphrase_file is not None:
+        # Key encryption at rest: the passphrase reaches the container as a
+        # compose secret (a file), never as an environment value.
+        env_lines += "      HIDDENFORGE_KEY_PASSPHRASE_FILE: /run/secrets/hiddenforge_key_passphrase\n"
+        secret_use = "    secrets:\n      - hiddenforge_key_passphrase\n"
+        secret_def = ("\nsecrets:\n  hiddenforge_key_passphrase:\n"
+                      f"    file: {_yaml_double_quoted(passphrase_file)}\n")
     hosts = sorted({
         m.split(":")[1]
         for mappings in services.values() for m in mappings
@@ -1775,12 +1790,12 @@ services:
     # network, but a name that does not (a backend down or not up yet) is never
     # forwarded upstream. Tor itself needs no DNS.
     dns: 127.0.0.1
-{healthcheck}{dep_block}"""
+{secret_use}{healthcheck}{dep_block}{secret_def}"""
 
 
 def render_deploy_sh(services: dict[str, list[str]], keys_dir: str,
                      container: str, runtime: str = "docker",
-                     no_root: bool = False) -> str:
+                     no_root: bool = False, passphrase_file: str | None = None) -> str:
     names = " ".join(shlex.quote(n) for n in sorted(services))
     # Quoted for the shell, not interpolated into one. deploy.sh is written 0755
     # and the README tells the operator to run it.
@@ -1835,6 +1850,20 @@ fi"""
                     "    echo \"==> Handing the key directory to the tor user (100:101); sudo asks once\"\n"
                     f"    sudo chown -R 100:101 {keys_q}\n"
                     "fi\n")
+    if passphrase_file is not None:
+        pp_q = shlex.quote(passphrase_file)
+        own_step += (f"if [ ! -s {pp_q} ]; then\n"
+                     "    echo \"==> Creating a random key passphrase (keys are encrypted at rest)\"\n"
+                     f"    (umask 077; head -c 32 /dev/urandom | base64 > {pp_q})\n"
+                     "    echo \"    BACK IT UP, separately from the key directory: without it the\"\n"
+                     "    echo \"    address is lost. Kept on this disk it protects backups only.\"\n"
+                     "fi\n")
+        if no_root:
+            # The container runs as 100:101 and must be able to read it.
+            own_step += (f"podman unshare chown 100:101 {pp_q}\n" if runtime == "podman" else
+                         f"if [ \"$(stat -c %u:%g {pp_q})\" != \"100:101\" ]; then\n"
+                         f"    sudo chown 100:101 {pp_q}\n"
+                         "fi\n")
     # Where the address is kept on the host. Under rootless Podman the published
     # <name>.onion is never written (the supervisor cannot read `hostname`), so
     # saying it was would send the operator looking for a file that never comes.
@@ -2024,6 +2053,8 @@ def cmd_setup(args) -> int:
         container = validate_container(args.container)
         runtime = args.runtime
         no_root = bool(getattr(args, "no_root", False))
+        pp_file = (validate_keys_dir(args.passphrase_file) if getattr(args, "encrypt_keys", False)
+                   else None)
         if not 1 <= int(args.onion_port) <= 65535:
             raise ValueError(
                 f"--onion-port must be 1-65535, got {args.onion_port}. Emitting it "
@@ -2031,10 +2062,10 @@ def cmd_setup(args) -> int:
                 "drops at boot, with the reason only in the container log.")
         _write_text_nofollow(
             out / "compose.service.yml",
-            render_compose_fragment(services, image, keys, container, runtime, no_root))
+            render_compose_fragment(services, image, keys, container, runtime, no_root, pp_file))
         _write_text_nofollow(
             out / "deploy.sh",
-            render_deploy_sh(services, keys, container, runtime, no_root), mode=0o755)
+            render_deploy_sh(services, keys, container, runtime, no_root, pp_file), mode=0o755)
         _write_text_nofollow(
             out / "README.txt",
             render_readme_txt(services, image, keys, container, runtime))
@@ -2080,6 +2111,9 @@ def cmd_setup(args) -> int:
         }
         if no_root:
             descriptor["no_root"] = True
+        if pp_file is not None:
+            descriptor["encrypt_keys"] = True
+            descriptor["passphrase_file"] = pp_file
         _write_text_nofollow(
             out / "hiddenforge.json",
             json.dumps(descriptor, indent=2, sort_keys=True) + "\n")
@@ -3382,6 +3416,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--no-root", action="store_true",
                     help="run the container as the tor user (100:101) with no capabilities "
                          "at all; deploy.sh hands the key directory to 100:101 once")
+    sp.add_argument("--encrypt-keys", action="store_true",
+                    help="keep the onion keys encrypted at rest; the passphrase file is "
+                         "passed as a compose secret (deploy.sh creates one if missing)")
+    sp.add_argument("--passphrase-file", default="./key-passphrase.txt",
+                    help="with --encrypt-keys: the passphrase file (default ./key-passphrase.txt)")
     sp.add_argument("--force", action="store_true",
                     help="overwrite setup's own output files if they already exist")
     sp.add_argument("--non-interactive", action="store_true")

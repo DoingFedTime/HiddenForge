@@ -237,6 +237,30 @@ fn mkdir_p(path: &str) -> R<()> {
     Ok(())
 }
 
+/// mkdir (mode 0700) if missing, refuse anything that is not a real directory,
+/// then hand it to `uid:gid` through an O_NOFOLLOW descriptor.
+pub fn mkdir_owned(path: &str, uid: u32, gid: u32) -> R<()> {
+    match lstat(path) {
+        Ok(st) if !is_type(&st, libc::S_IFDIR) => {
+            return Err(PyErr::runtime(format!("{path} is not a directory; refusing to use it")));
+        }
+        Ok(_) => {}
+        Err(e) if e.errno == Some(libc::ENOENT) => {
+            let c = cpath(path);
+            // SAFETY: valid C string.
+            if unsafe { libc::mkdir(c.as_ptr(), 0o700) } != 0 {
+                return Err(PyErr::os_path(py::last_errno(), path));
+            }
+        }
+        Err(e) => return Err(e),
+    }
+    let fd = open_dir_nofollow(path)?;
+    fchmod(&fd, 0o700)?;
+    // SAFETY: fd is open; chown may be a no-op (same owner) in no-root mode.
+    unsafe { libc::fchown(fd.0, uid, gid) };
+    Ok(())
+}
+
 /// _prepare_hs_dir: create, refuse links/non-dirs, chmod 0700 first, then chown.
 pub fn prepare_hs_dir(hs_dir: &str, uid: u32, gid: u32, log: &mut Vec<String>) -> R<()> {
     match lstat(hs_dir) {

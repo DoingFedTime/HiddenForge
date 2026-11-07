@@ -7,6 +7,8 @@ use crate::fsops::{self, PublishState};
 use crate::health;
 use crate::landlock;
 use crate::privs::{self, AsUser};
+use crate::sealed;
+use crate::keycrypt::Secret;
 use crate::py::{self, Json};
 use crate::torrc;
 use std::process::Child;
@@ -219,6 +221,18 @@ pub fn run() -> i32 {
         landlock: false,
     };
 
+    // Sealed keys (opt-in): the passphrase is read once, now, and held only in memory.
+    let pass: Option<Secret> = match sealed::passphrase_file() {
+        None => None,
+        Some(f) => match crate::keycrypt::read_passphrase(&f) {
+            Ok(p) => Some(p),
+            Err(e) => {
+                println!("FATAL: key encryption at rest is enabled ({}) but {e}. Refusing to start: without the key Tor would create a new one, and the .onion address would change.", sealed::ENV);
+                return 1;
+            }
+        },
+    };
+
     if root {
         // _assert_can_drop_privileges: one probe turns an RLIMIT_NPROC failure into a named error.
         let pc = ctx.self_cmd("hiddenforge", &["__true"]);
@@ -269,12 +283,41 @@ pub fn run() -> i32 {
             fsops::chmod_dir_nofollow(torrc::KEYS_ROOT, 0o751, false)?;
         }
         let env = torrc::python_environ();
-        let t = torrc::build(&env, &torrc::libc_resolve);
+        let mut t = torrc::build(&env, &torrc::libc_resolve);
         log.extend(t.log.iter().cloned());
         say(&mut log);
         for d in &t.hs_dirs {
             fsops::prepare_hs_dir(d, tor_uid, tor_gid, &mut log)?;
             say(&mut log);
+        }
+        if pass.is_none() {
+            // A sealed key with no passphrase configured: Tor would see no key and
+            // create a new one, silently changing the address. Never let it.
+            for d in &t.hs_dirs {
+                if fsops::lstat(&format!("{d}/hs_ed25519_secret_key.enc")).is_ok()
+                    && fsops::lstat(&format!("{d}/hs_ed25519_secret_key")).is_err()
+                {
+                    return Err(fsops::PyErr::runtime(format!(
+                        "{d} holds an encrypted key (hs_ed25519_secret_key.enc) but {} is not set. Refusing to start: Tor would create a new key and the .onion address would change. Set it to the passphrase file (see `hiddenforge setup --encrypt-keys`).",
+                        sealed::ENV
+                    )));
+                }
+            }
+        }
+        if pass.is_some() {
+            // Tor's HiddenServiceDir moves to the tmpfs; the volume keeps only
+            // the sealed key, the public key and the hostname.
+            fsops::mkdir_owned(sealed::RAM, tor_uid, tor_gid)?;
+            let mut ram_dirs = Vec::new();
+            for d in &t.hs_dirs {
+                let name = d.rsplit('/').next().unwrap_or("").to_string();
+                let ram = format!("{}/{name}", sealed::RAM);
+                fsops::mkdir_owned(&ram, tor_uid, tor_gid)?;
+                t.content = t.content.replace(&format!("HiddenServiceDir     {d}\n"), &format!("HiddenServiceDir     {ram}\n"));
+                ram_dirs.push(ram);
+            }
+            t.hs_dirs = ram_dirs;
+            println!("Key encryption at rest is on: keys are decrypted into {} at start.", sealed::RAM);
         }
         fsops::write_nofollow(TORRC_PATH, t.content.as_bytes(), 0o640, Some((tor_uid, tor_gid)))?;
         println!("Generated Tor configuration at {TORRC_PATH}");
@@ -332,6 +375,31 @@ pub fn run() -> i32 {
         log.push(format!("No-root mode: running as uid {tor_uid} with no capabilities."));
     }
     say(&mut log);
+
+    // ── Sealed keys: decrypt into RAM before Tor starts ─────────────────────
+    let names: Vec<String> = conf.hs_dirs.iter().map(|d| d.rsplit('/').next().unwrap_or("").to_string()).collect();
+    if let Some(p) = pass.as_ref() {
+        for n in &names {
+            let r = if root {
+                let c = ctx.confined("hiddenforge", &["__keys", "unseal", n], &landlock::watcher_rules());
+                match privs::run_with_input(c.cmd, &p.0, Duration::from_secs(120)) {
+                    Ok((Some(0), out, _)) => Ok(String::from_utf8_lossy(&out).trim().to_string()),
+                    Ok((_, _, err)) => Err(String::from_utf8_lossy(&err).trim().to_string()),
+                    Err(e) => Err(e.to_string()),
+                }
+            } else {
+                sealed::unseal(n, &p.0).map(|o| o.unwrap_or_default())
+            };
+            match r {
+                Ok(note) if !note.is_empty() => println!("{note}"),
+                Ok(_) => {}
+                Err(e) => {
+                    println!("FATAL: cannot unseal the key for {n}: {e}. Refusing to start: Tor would create a new key and the .onion address would change.");
+                    return 1;
+                }
+            }
+        }
+    }
 
     // ── Landlock: confine the supervisor (and so Tor) to what they use ──────
     match landlock::build(&landlock::supervisor_rules(), false).and_then(|r| r.enforce().map(|()| r.abi)) {
@@ -411,6 +479,8 @@ pub fn run() -> i32 {
     let backend = BackendWatch::start(&conf.resolved, &conf.unresolved);
     let mut publish = PublishState::default();
     let mut gate_no_until: Option<f64> = None;
+    let mut next_seal = 0.0f64;
+    let mut seal_warned = false;
 
     loop {
         nap(Duration::from_secs(1));
@@ -453,6 +523,39 @@ pub fn run() -> i32 {
             privs::kill_proc(&mut watcher, "upload watcher", Duration::from_secs(5), &|p, s| ctx.signal_as_tor(p, s));
             privs::kill_proc(&mut guards, "Vanguards", Duration::from_secs(5), &|p, s| ctx.signal_as_tor(p, s));
             return if rc != 0 { rc } else { 1 };
+        }
+
+        if let Some(p) = pass.as_ref() {
+            if now_s(start) >= next_seal {
+                next_seal = now_s(start) + 5.0;
+                for n in &names {
+                    if sealed::settled(n) && root {
+                        continue;
+                    }
+                    let r = if root {
+                        let c = ctx.confined("hiddenforge", &["__keys", "seal", n], &landlock::watcher_rules());
+                        match privs::run_with_input(c.cmd, &p.0, Duration::from_secs(120)) {
+                            Ok((Some(0), out, _)) => Ok(String::from_utf8_lossy(&out).trim().to_string()),
+                            Ok((_, _, err)) => Err(String::from_utf8_lossy(&err).trim().to_string()),
+                            Err(e) => Err(e.to_string()),
+                        }
+                    } else if sealed::settled(n) {
+                        Ok(String::new())
+                    } else {
+                        sealed::seal_new(n, &p.0).map(|o| o.unwrap_or_default())
+                    };
+                    match r {
+                        Ok(note) if !note.is_empty() => println!("{note}"),
+                        Ok(_) => {}
+                        Err(e) => {
+                            if !seal_warned {
+                                seal_warned = true;
+                                println!("Warning: could not seal the key for {n} yet: {e} (retrying; reported once)");
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         let moved = backend.moved.lock().ok().and_then(|m| m.clone());

@@ -186,8 +186,14 @@ pub fn supervisor_rules() -> Vec<(&'static str, u64)> {
 
 /// The guards (bandguards/rendguard) read the consensus file and talk to the
 /// control socket; nothing else, and no TCP.
+/// The runtime binary links the image's libcrypto: every helper needs the
+/// loader and the shared libraries, read-only.
+const LIBS: [(&str, u64); 2] = [("/lib", READ | EXECUTE), ("/usr/lib", READ | EXECUTE)];
+
 pub fn guards_rules() -> Vec<(&'static str, u64)> {
     vec![
+        LIBS[0],
+        LIBS[1],
         ("/usr/local/bin/hiddenforge", EXECUTE | READ_FILE),
         ("/etc/localtime", READ_FILE),
         ("/usr/share/zoneinfo", READ),
@@ -197,13 +203,15 @@ pub fn guards_rules() -> Vec<(&'static str, u64)> {
 
 /// The upload watcher records addresses in the DataDirectory.
 pub fn watcher_rules() -> Vec<(&'static str, u64)> {
-    vec![("/usr/local/bin/hiddenforge", EXECUTE | READ_FILE), ("/var/lib/tor", RW)]
+    vec![LIBS[0], LIBS[1], ("/usr/local/bin/hiddenforge", EXECUTE | READ_FILE), ("/var/lib/tor", RW)]
 }
 
 /// The healthcheck and the small helpers read the torrc, the DataDirectory
 /// and /proc, and may signal (no file access needed for that).
 pub fn reader_rules() -> Vec<(&'static str, u64)> {
     vec![
+        LIBS[0],
+        LIBS[1],
         ("/usr/local/bin/hiddenforge", EXECUTE | READ_FILE),
         ("/etc/tor", READ),
         ("/etc/passwd", READ_FILE),

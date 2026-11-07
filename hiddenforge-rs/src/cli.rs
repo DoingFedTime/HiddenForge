@@ -678,13 +678,24 @@ fn cmd_doctor(a: &Args) -> i32 {
         }
         for name in names {
             let d = join(&keys, &name);
-            let modes = fsops::lstat(&d).and_then(|s| fsops::lstat(&format!("{d}/{SECRET_FILE}")).map(|k| (fsops::imode(&s), fsops::imode(&k))));
+            let mut sealed = false;
+            let modes = fsops::lstat(&d).and_then(|s| {
+                let k = match fsops::lstat(&format!("{d}/{SECRET_FILE}")) {
+                    Err(e) if e.errno == Some(libc::ENOENT) => {
+                        sealed = true;
+                        fsops::lstat(&format!("{d}/{SECRET_FILE}.enc"))?
+                    }
+                    other => other?,
+                };
+                Ok((fsops::imode(&s), fsops::imode(&k)))
+            });
             match modes {
                 Err(e) if e.is_permission() => closed.push(name),
                 Err(e) => checks.push(check(false, &format!("key modes for {name}"), &format!("cannot stat: {}", e.msg), "fail")),
                 Ok((dm, sm)) => {
                     checks.push(check(dm == 0o700, &format!("key dir {name} is 0700"), &format!("mode={}", oct(dm)), "fail"));
-                    checks.push(check(sm == 0o600, &format!("secret key {name} is 0600"), &format!("mode={}", oct(sm)), "fail"));
+                    let kind = if sealed { "sealed" } else { "secret" };
+                    checks.push(check(sm == 0o600, &format!("{kind} key {name} is 0600"), &format!("mode={}", oct(sm)), "fail"));
                     let e = address_for(&keys, &name);
                     if e.derived_matches == Some(false) {
                         checks.push(check(
@@ -838,11 +849,18 @@ pub struct SetupOpts<'a> {
     pub container: &'a str,
     pub runtime: &'a str,
     pub no_root: bool,
+    pub passphrase_file: Option<&'a str>,
 }
 
 fn render_compose(services: &Services, o: &SetupOpts) -> String {
     let svc = sorted(services);
-    let env_lines: String = svc.iter().map(|(n, v)| format!("      {}: \"{}\"\n", env_var(n), v.join(","))).collect();
+    let mut env_lines: String = svc.iter().map(|(n, v)| format!("      {}: \"{}\"\n", env_var(n), v.join(","))).collect();
+    let (mut secret_use, mut secret_def) = (String::new(), String::new());
+    if let Some(pp) = o.passphrase_file {
+        env_lines += "      HIDDENFORGE_KEY_PASSPHRASE_FILE: /run/secrets/hiddenforge_key_passphrase\n";
+        secret_use = "    secrets:\n      - hiddenforge_key_passphrase\n".into();
+        secret_def = format!("\nsecrets:\n  hiddenforge_key_passphrase:\n    file: {}\n", yaml_dq(pp));
+    }
     let mut hosts: Vec<String> = svc
         .iter()
         .flat_map(|(_, m)| m.iter())
@@ -946,7 +964,7 @@ services:
     # network, but a name that does not (a backend down or not up yet) is never
     # forwarded upstream. Tor itself needs no DNS.
     dns: 127.0.0.1
-{healthcheck}{dep_block}"
+{secret_use}{healthcheck}{dep_block}{secret_def}"
     )
 }
 
@@ -990,7 +1008,7 @@ fi"#
         )
     };
     let container_q = shlex_quote(o.container);
-    let own_step = if !o.no_root {
+    let mut own_step = if !o.no_root {
         String::new()
     } else if o.runtime == "podman" {
         format!("echo \"==> Handing the key directory to the tor user (100:101)\"\npodman unshare chown -R 100:101 {keys_q}\n")
@@ -999,6 +1017,19 @@ fi"#
             "if [ \"$(stat -c %u:%g {keys_q})\" != \"100:101\" ]; then\n    echo \"==> Handing the key directory to the tor user (100:101); sudo asks once\"\n    sudo chown -R 100:101 {keys_q}\nfi\n"
         )
     };
+    if let Some(pp) = o.passphrase_file {
+        let pp_q = shlex_quote(pp);
+        own_step += &format!(
+            "if [ ! -s {pp_q} ]; then\n    echo \"==> Creating a random key passphrase (keys are encrypted at rest)\"\n    (umask 077; head -c 32 /dev/urandom | base64 > {pp_q})\n    echo \"    BACK IT UP, separately from the key directory: without it the\"\n    echo \"    address is lost. Kept on this disk it protects backups only.\"\nfi\n"
+        );
+        if o.no_root {
+            if o.runtime == "podman" {
+                own_step += &format!("podman unshare chown 100:101 {pp_q}\n");
+            } else {
+                own_step += &format!("if [ \"$(stat -c %u:%g {pp_q})\" != \"100:101\" ]; then\n    sudo chown 100:101 {pp_q}\nfi\n");
+            }
+        }
+    }
     let status_line = shlex_quote(&format!("  hiddenforge status --container {} --keys {keys_q}", o.container));
     let persisted = if o.runtime == "podman" {
         format!("{disp}/$svc/hostname (read it with the exec command above)")
@@ -1212,7 +1243,12 @@ fn cmd_setup(a: &Args) -> i32 {
             )));
         }
         let no_root = a.flag("no_root");
-        let o = SetupOpts { image: &image, keys: &keys, container: &container, runtime: &runtime, no_root };
+        let pp_file = if a.flag("encrypt_keys") {
+            Some(validate_keys_dir(a.get("passphrase_file").unwrap_or("./key-passphrase.txt")).map_err(usage)?)
+        } else {
+            None
+        };
+        let o = SetupOpts { image: &image, keys: &keys, container: &container, runtime: &runtime, no_root, passphrase_file: pp_file.as_deref() };
         let fail = |e: String| (EXIT_FAIL, e);
         write_bytes_nofollow(&join(&out, "compose.service.yml"), render_compose(&services, &o).as_bytes(), 0o644).map_err(fail)?;
         write_bytes_nofollow(&join(&out, "deploy.sh"), render_deploy(&services, &o).as_bytes(), 0o755).map_err(fail)?;
@@ -1256,6 +1292,10 @@ fn cmd_setup(a: &Args) -> i32 {
         let mut descriptor = descriptor;
         if no_root {
             descriptor.set("no_root", true.into());
+        }
+        if let Some(pp) = &pp_file {
+            descriptor.set("encrypt_keys", true.into());
+            descriptor.set("passphrase_file", pp.as_str().into());
         }
         write_bytes_nofollow(&join(&out, "hiddenforge.json"), (py::dumps(&descriptor, true, Some(2)) + "\n").as_bytes(), 0o644)
             .map_err(fail)?;
@@ -1857,6 +1897,8 @@ pub fn run(cmd: &str, rest: &[String]) -> Option<i32> {
                 o("--container", Kind::Value),
                 Opt { choices: &["docker", "podman"], ..o("--runtime", Kind::Value) },
                 o("--no-root", Kind::Flag),
+                o("--encrypt-keys", Kind::Flag),
+                o("--passphrase-file", Kind::Value),
                 o("--force", Kind::Flag),
                 o("--non-interactive", Kind::Flag),
                 json,

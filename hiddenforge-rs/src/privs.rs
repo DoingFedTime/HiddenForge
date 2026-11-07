@@ -156,6 +156,47 @@ pub fn run_timeout(mut c: Command, timeout: Duration) -> std::io::Result<(Option
     Ok((code, t_out.join().unwrap_or_default(), t_err.join().unwrap_or_default()))
 }
 
+/// Run a command with `input` on its stdin (a pipe, never argv or the
+/// environment) and a deadline; returns (exit code, stdout, stderr).
+pub fn run_with_input(mut c: Command, input: &[u8], timeout: Duration) -> std::io::Result<(Option<i32>, Vec<u8>, Vec<u8>)> {
+    use std::io::{Read, Write};
+    use std::process::Stdio;
+    c.stdout(Stdio::piped()).stderr(Stdio::piped()).stdin(Stdio::piped());
+    let mut child = c.spawn()?;
+    if let Some(mut si) = child.stdin.take() {
+        let _ = si.write_all(input);
+    }
+    let mut out = child.stdout.take();
+    let mut err = child.stderr.take();
+    let t_out = std::thread::spawn(move || {
+        let mut v = Vec::new();
+        if let Some(o) = out.as_mut() {
+            let _ = o.read_to_end(&mut v);
+        }
+        v
+    });
+    let t_err = std::thread::spawn(move || {
+        let mut v = Vec::new();
+        if let Some(e) = err.as_mut() {
+            let _ = e.read_to_end(&mut v);
+        }
+        v
+    });
+    let deadline = Instant::now() + timeout;
+    let code = loop {
+        if let Some(st) = child.try_wait()? {
+            break st.code();
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            break None;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    Ok((code, t_out.join().unwrap_or_default(), t_err.join().unwrap_or_default()))
+}
+
 fn status_field<'a>(status: &'a str, key: &str) -> Option<&'a str> {
     status.lines().find_map(|l| l.strip_prefix(key)).map(str::trim)
 }

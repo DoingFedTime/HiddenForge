@@ -37,6 +37,9 @@ CASES = [
     ["--backend", "web:80", "--no-root"],
     ["--backend", "web:80", "--no-root", "--runtime", "podman"],
     ["--service", "a:80:web:80", "--no-root", "--keys", "/srv/k ey"],
+    ["--backend", "web:80", "--encrypt-keys"],
+    ["--backend", "web:80", "--encrypt-keys", "--no-root", "--runtime", "podman", "--passphrase-file", "/srv/pp'x"],
+    ["--backend", "web:80", "--encrypt-keys", "--no-root", "--passphrase-file", "pp\nX"],
 ]
 
 
