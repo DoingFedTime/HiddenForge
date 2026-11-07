@@ -1,0 +1,559 @@
+//! Byte-compatible reproductions of the few Python behaviours whose output the
+//! 2.x contract exposes: `_safe()` log escaping, `str(OSError)`, `str.strip()`,
+//! and `json.dumps`. 3.0 must answer every existing consumer with the bytes 2.1.6
+//! produced, so these are ported exactly rather than approximated.
+
+use std::ffi::CStr;
+use std::fmt::Write as _;
+
+/// A string the way CPython sees an environment value: valid UTF-8 decodes to
+/// characters, and each byte that is not valid UTF-8 becomes a lone surrogate
+/// U+DC80..U+DCFF (the `surrogateescape` handler `os.environ` uses).
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum PyChar {
+    C(char),
+    Surr(u8),
+}
+
+pub type PyStr = Vec<PyChar>;
+
+pub fn decode(bytes: &[u8]) -> PyStr {
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut rest = bytes;
+    while !rest.is_empty() {
+        match std::str::from_utf8(rest) {
+            Ok(s) => {
+                out.extend(s.chars().map(PyChar::C));
+                break;
+            }
+            Err(e) => {
+                let good = e.valid_up_to();
+                // SAFETY-free: the prefix was just validated.
+                out.extend(std::str::from_utf8(&rest[..good]).unwrap_or("").chars().map(PyChar::C));
+                let bad = e.error_len().unwrap_or(rest.len() - good);
+                for b in &rest[good..good + bad] {
+                    out.push(PyChar::Surr(*b));
+                }
+                rest = &rest[good + bad..];
+            }
+        }
+    }
+    out
+}
+
+/// Code point used for ordering and for `\x..` escapes (a surrogate is 0xDC00 + byte).
+pub fn ord(c: &PyChar) -> u32 {
+    match c {
+        PyChar::C(ch) => *ch as u32,
+        PyChar::Surr(b) => 0xDC00 + u32::from(*b),
+    }
+}
+
+pub fn from_str(s: &str) -> PyStr {
+    s.chars().map(PyChar::C).collect()
+}
+
+/// The valid-UTF-8 form, or None if the value holds a surrogate.
+pub fn to_string(s: &[PyChar]) -> Option<String> {
+    let mut out = String::with_capacity(s.len());
+    for c in s {
+        match c {
+            PyChar::C(ch) => out.push(*ch),
+            PyChar::Surr(_) => return None,
+        }
+    }
+    Some(out)
+}
+
+/// CPython's `str.isprintable()` for one character.
+///
+/// Exact for ASCII, Latin-1, every Unicode control, separator and format
+/// character, and surrogates. CPython also treats *unassigned* code points as
+/// non-printable; reproducing that needs the full Unicode database, so an
+/// unassigned code point here is passed through. That only affects what a log
+/// line shows for such a character: every character that can forge a line or
+/// move a terminal cursor (controls, separators, bidi/format) is escaped.
+fn is_printable(c: &PyChar) -> bool {
+    let ch = match c {
+        PyChar::Surr(_) => return false,
+        PyChar::C(ch) => *ch,
+    };
+    let u = ch as u32;
+    if u < 0x80 {
+        return (0x20..0x7f).contains(&u);
+    }
+    if ch.is_control() {
+        return false; // Cc
+    }
+    if ch.is_whitespace() {
+        return false; // Zs (other than ASCII space), Zl, Zp
+    }
+    // Cf (format) characters, and private use (Co) which CPython also refuses.
+    let format = matches!(u,
+        0x00AD | 0x0600..=0x0605 | 0x061C | 0x06DD | 0x070F | 0x0890..=0x0891 | 0x08E2
+        | 0x180E | 0x200B..=0x200F | 0x202A..=0x202E | 0x2060..=0x2064 | 0x2066..=0x206F
+        | 0xFEFF | 0xFFF9..=0xFFFB | 0x110BD | 0x110CD | 0x13430..=0x1343F
+        | 0x1BCA0..=0x1BCA3 | 0x1D173..=0x1D17A | 0xE0001 | 0xE0020..=0xE007F);
+    let private = matches!(u, 0xE000..=0xF8FF | 0xF0000..=0xFFFFD | 0x100000..=0x10FFFD);
+    !(format || private)
+}
+
+/// entrypoint._safe(): escape non-printable characters as `\x{ord:02x}`.
+pub fn safe(s: &[PyChar]) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s {
+        if is_printable(c) {
+            if let PyChar::C(ch) = c {
+                out.push(*ch);
+            }
+        } else {
+            let _ = write!(out, "\\x{:02x}", ord(c));
+        }
+    }
+    out
+}
+
+pub fn safe_str(s: &str) -> String {
+    safe(&from_str(s))
+}
+
+/// CPython's `str.isspace()` (what `str.strip()` removes).
+pub fn is_py_space(c: &PyChar) -> bool {
+    match c {
+        PyChar::Surr(_) => false,
+        PyChar::C(ch) => ch.is_whitespace() || matches!(*ch as u32, 0x1C..=0x1F),
+    }
+}
+
+pub fn strip(s: &[PyChar]) -> &[PyChar] {
+    let start = s.iter().position(|c| !is_py_space(c)).unwrap_or(s.len());
+    let end = s.iter().rposition(|c| !is_py_space(c)).map_or(start, |i| i + 1);
+    &s[start..end]
+}
+
+pub fn strip_str(s: &str) -> &str {
+    s.trim_matches(|ch: char| ch.is_whitespace() || matches!(ch as u32, 0x1C..=0x1F))
+}
+
+/// libc's message for an errno, exactly as `os.strerror()` returns it.
+pub fn strerror(errno: i32) -> String {
+    // SAFETY: strerror returns a pointer to a NUL-terminated static or
+    // thread-local buffer; it is copied out before any other libc call.
+    unsafe {
+        let p = libc::strerror(errno);
+        if p.is_null() {
+            return format!("Unknown error {errno}");
+        }
+        CStr::from_ptr(p).to_string_lossy().into_owned()
+    }
+}
+
+/// `str(OSError(errno, strerror))`: "[Errno 13] Permission denied".
+pub fn oserror(errno: i32) -> String {
+    format!("[Errno {errno}] {}", strerror(errno))
+}
+
+/// `str(OSError)` with a filename, as raised by `open()`/`os.open()`.
+pub fn oserror_path(errno: i32, path: &str) -> String {
+    format!("[Errno {errno}] {}: {}", strerror(errno), py_repr(path))
+}
+
+/// `repr(str)` for the plain printable strings that reach error messages.
+pub fn py_repr(s: &str) -> String {
+    let use_double = s.contains('\'') && !s.contains('"');
+    let q = if use_double { '"' } else { '\'' };
+    let mut out = String::new();
+    out.push(q);
+    for ch in s.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c == q => {
+                out.push('\\');
+                out.push(c);
+            }
+            c if (c as u32) < 0x20 || c as u32 == 0x7f => {
+                let _ = write!(out, "\\x{:02x}", c as u32);
+            }
+            c => out.push(c),
+        }
+    }
+    out.push(q);
+    out
+}
+
+/// errno from the last failed libc call.
+pub fn last_errno() -> i32 {
+    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
+}
+
+// ---------------------------------------------------------------------------
+// JSON, serialised exactly like CPython's json.dumps (ensure_ascii=True).
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Json {
+    Null,
+    Bool(bool),
+    Int(i64),
+    Str(String),
+    Arr(Vec<Json>),
+    /// Insertion-ordered; `dumps` sorts when asked, as `sort_keys=True` does.
+    Obj(Vec<(String, Json)>),
+}
+
+impl Json {
+    pub fn obj() -> Json {
+        Json::Obj(Vec::new())
+    }
+    /// Set a key, replacing an existing one (dict assignment semantics).
+    pub fn set(&mut self, k: &str, v: Json) {
+        if let Json::Obj(items) = self {
+            if let Some(slot) = items.iter_mut().find(|(key, _)| key == k) {
+                slot.1 = v;
+            } else {
+                items.push((k.to_string(), v));
+            }
+        }
+    }
+    pub fn with(mut self, k: &str, v: Json) -> Json {
+        self.set(k, v);
+        self
+    }
+    pub fn get(&self, k: &str) -> Option<&Json> {
+        match self {
+            Json::Obj(items) => items.iter().find(|(key, _)| key == k).map(|(_, v)| v),
+            _ => None,
+        }
+    }
+}
+
+impl From<bool> for Json {
+    fn from(v: bool) -> Self {
+        Json::Bool(v)
+    }
+}
+impl From<&str> for Json {
+    fn from(v: &str) -> Self {
+        Json::Str(v.to_string())
+    }
+}
+impl From<String> for Json {
+    fn from(v: String) -> Self {
+        Json::Str(v)
+    }
+}
+impl From<i64> for Json {
+    fn from(v: i64) -> Self {
+        Json::Int(v)
+    }
+}
+impl<T: Into<Json>> From<Option<T>> for Json {
+    fn from(v: Option<T>) -> Self {
+        v.map_or(Json::Null, Into::into)
+    }
+}
+
+fn write_json_str(out: &mut String, s: &str) {
+    out.push('"');
+    for ch in s.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\u{08}' => out.push_str("\\b"),
+            '\u{0c}' => out.push_str("\\f"),
+            c if (c as u32) < 0x20 || (c as u32) > 0x7e => {
+                let u = c as u32;
+                if u > 0xFFFF {
+                    let v = u - 0x10000;
+                    let _ = write!(out, "\\u{:04x}\\u{:04x}", 0xD800 + (v >> 10), 0xDC00 + (v & 0x3FF));
+                } else {
+                    let _ = write!(out, "\\u{u:04x}");
+                }
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+}
+
+/// json.dumps(value, sort_keys=sort, indent=indent).
+pub fn dumps(v: &Json, sort: bool, indent: Option<usize>) -> String {
+    let mut out = String::new();
+    dump_into(&mut out, v, sort, indent, 0);
+    out
+}
+
+fn dump_into(out: &mut String, v: &Json, sort: bool, indent: Option<usize>, level: usize) {
+    match v {
+        Json::Null => out.push_str("null"),
+        Json::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
+        Json::Int(i) => {
+            let _ = write!(out, "{i}");
+        }
+        Json::Str(s) => write_json_str(out, s),
+        Json::Arr(items) => {
+            if items.is_empty() {
+                out.push_str("[]");
+                return;
+            }
+            out.push('[');
+            for (i, item) in items.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                    if indent.is_none() {
+                        out.push(' ');
+                    }
+                }
+                newline(out, indent, level + 1);
+                dump_into(out, item, sort, indent, level + 1);
+            }
+            newline(out, indent, level);
+            out.push(']');
+        }
+        Json::Obj(items) => {
+            if items.is_empty() {
+                out.push_str("{}");
+                return;
+            }
+            let mut refs: Vec<&(String, Json)> = items.iter().collect();
+            if sort {
+                refs.sort_by(|a, b| a.0.cmp(&b.0));
+            }
+            out.push('{');
+            for (i, (k, val)) in refs.into_iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                    if indent.is_none() {
+                        out.push(' ');
+                    }
+                }
+                newline(out, indent, level + 1);
+                write_json_str(out, k);
+                out.push_str(": ");
+                dump_into(out, val, sort, indent, level + 1);
+            }
+            newline(out, indent, level);
+            out.push('}');
+        }
+    }
+}
+
+fn newline(out: &mut String, indent: Option<usize>, level: usize) {
+    if let Some(n) = indent {
+        out.push('\n');
+        for _ in 0..n * level {
+            out.push(' ');
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// A small, strict JSON parser (for reading documents this program wrote:
+// manifest.json, the healthcheck's own output).
+// ---------------------------------------------------------------------------
+
+pub fn parse(s: &str) -> Option<Json> {
+    let b = s.as_bytes();
+    let mut i = 0;
+    let v = parse_value(b, &mut i, 0)?;
+    skip_ws(b, &mut i);
+    (i == b.len()).then_some(v)
+}
+
+fn skip_ws(b: &[u8], i: &mut usize) {
+    while *i < b.len() && matches!(b[*i], b' ' | b'\t' | b'\n' | b'\r') {
+        *i += 1;
+    }
+}
+
+fn parse_value(b: &[u8], i: &mut usize, depth: usize) -> Option<Json> {
+    if depth > 64 {
+        return None;
+    }
+    skip_ws(b, i);
+    match *b.get(*i)? {
+        b'n' => lit(b, i, "null", Json::Null),
+        b't' => lit(b, i, "true", Json::Bool(true)),
+        b'f' => lit(b, i, "false", Json::Bool(false)),
+        b'"' => parse_string(b, i).map(Json::Str),
+        b'[' => {
+            *i += 1;
+            let mut items = Vec::new();
+            skip_ws(b, i);
+            if b.get(*i) == Some(&b']') {
+                *i += 1;
+                return Some(Json::Arr(items));
+            }
+            loop {
+                items.push(parse_value(b, i, depth + 1)?);
+                skip_ws(b, i);
+                match *b.get(*i)? {
+                    b',' => *i += 1,
+                    b']' => {
+                        *i += 1;
+                        return Some(Json::Arr(items));
+                    }
+                    _ => return None,
+                }
+            }
+        }
+        b'{' => {
+            *i += 1;
+            let mut items: Vec<(String, Json)> = Vec::new();
+            skip_ws(b, i);
+            if b.get(*i) == Some(&b'}') {
+                *i += 1;
+                return Some(Json::Obj(items));
+            }
+            loop {
+                skip_ws(b, i);
+                let k = parse_string(b, i)?;
+                skip_ws(b, i);
+                if *b.get(*i)? != b':' {
+                    return None;
+                }
+                *i += 1;
+                let v = parse_value(b, i, depth + 1)?;
+                if let Some(slot) = items.iter_mut().find(|(key, _)| *key == k) {
+                    slot.1 = v;
+                } else {
+                    items.push((k, v));
+                }
+                skip_ws(b, i);
+                match *b.get(*i)? {
+                    b',' => *i += 1,
+                    b'}' => {
+                        *i += 1;
+                        return Some(Json::Obj(items));
+                    }
+                    _ => return None,
+                }
+            }
+        }
+        b'-' | b'0'..=b'9' => {
+            let start = *i;
+            if b[*i] == b'-' {
+                *i += 1;
+            }
+            while *i < b.len() && b[*i].is_ascii_digit() {
+                *i += 1;
+            }
+            std::str::from_utf8(&b[start..*i]).ok()?.parse::<i64>().ok().map(Json::Int)
+        }
+        _ => None,
+    }
+}
+
+fn lit(b: &[u8], i: &mut usize, word: &str, v: Json) -> Option<Json> {
+    if b.get(*i..*i + word.len())? == word.as_bytes() {
+        *i += word.len();
+        Some(v)
+    } else {
+        None
+    }
+}
+
+fn parse_string(b: &[u8], i: &mut usize) -> Option<String> {
+    if *b.get(*i)? != b'"' {
+        return None;
+    }
+    *i += 1;
+    let mut out: Vec<u16> = Vec::new();
+    let mut raw: Vec<u8> = Vec::new();
+    let flush = |raw: &mut Vec<u8>, out: &mut Vec<u16>| -> Option<()> {
+        if !raw.is_empty() {
+            out.extend(std::str::from_utf8(raw).ok()?.encode_utf16());
+            raw.clear();
+        }
+        Some(())
+    };
+    loop {
+        let c = *b.get(*i)?;
+        *i += 1;
+        match c {
+            b'"' => {
+                flush(&mut raw, &mut out)?;
+                return String::from_utf16(&out).ok();
+            }
+            b'\\' => {
+                flush(&mut raw, &mut out)?;
+                let e = *b.get(*i)?;
+                *i += 1;
+                match e {
+                    b'"' => out.push(u16::from(b'"')),
+                    b'\\' => out.push(u16::from(b'\\')),
+                    b'/' => out.push(u16::from(b'/')),
+                    b'b' => out.push(8),
+                    b'f' => out.push(12),
+                    b'n' => out.push(10),
+                    b'r' => out.push(13),
+                    b't' => out.push(9),
+                    b'u' => {
+                        let hex = std::str::from_utf8(b.get(*i..*i + 4)?).ok()?;
+                        out.push(u16::from_str_radix(hex, 16).ok()?);
+                        *i += 4;
+                    }
+                    _ => return None,
+                }
+            }
+            c if c < 0x20 => return None,
+            c => raw.push(c),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn safe_matches_python() {
+        assert_eq!(safe_str("ok-name"), "ok-name");
+        assert_eq!(safe_str("a\nb\x1b[1m"), "a\\x0ab\\x1b[1m");
+        assert_eq!(safe_str("\u{200b}x"), "\\x200bx");
+        assert_eq!(safe(&decode(b"a\xffb")), "a\\xdcffb");
+        assert_eq!(safe_str("é"), "é");
+    }
+
+    #[test]
+    fn strip_matches_python() {
+        assert_eq!(to_string(strip(&from_str("\x1c 80 \t"))).unwrap(), "80");
+        assert_eq!(strip_str("\u{a0}x\u{3000}"), "x");
+    }
+
+    #[test]
+    fn dumps_matches_python() {
+        let v = Json::obj()
+            .with("version", "2.1.6".into())
+            .with("ok", true.into())
+            .with("exit_code", Json::Int(0))
+            .with("name", "hiddenforge".into())
+            .with("contract_version", Json::Int(1));
+        assert_eq!(
+            dumps(&v, true, None),
+            r#"{"contract_version": 1, "exit_code": 0, "name": "hiddenforge", "ok": true, "version": "2.1.6"}"#
+        );
+        assert_eq!(dumps(&Json::Str("é\u{1F600}\"".into()), false, None), r#""\u00e9\ud83d\ude00\"""#);
+        let nested = Json::obj().with("a", Json::Arr(vec![Json::Int(1), Json::obj()]));
+        assert_eq!(dumps(&nested, false, Some(2)), "{\n  \"a\": [\n    1,\n    {}\n  ]\n}");
+    }
+
+    #[test]
+    fn parse_roundtrip() {
+        let s = r#"{"a": [1, true, null, "xé"], "b": {}}"#;
+        let v = parse(s).unwrap();
+        assert_eq!(dumps(&v, false, None), r#"{"a": [1, true, null, "x\u00e9"], "b": {}}"#);
+        assert!(parse("{\"a\": 1,}").is_none());
+    }
+
+    #[test]
+    fn oserror_format() {
+        assert!(oserror(2).starts_with("[Errno 2] "));
+    }
+}
