@@ -200,14 +200,17 @@ pub fn signal(pid: u32, sig: i32, as_owner: &dyn Fn(u32, i32) -> bool) -> bool {
     py::last_errno() == libc::EPERM && as_owner(pid, sig)
 }
 
-/// _kill_proc: SIGTERM, wait up to `timeout`, then SIGKILL. Never blocks for ever.
+/// _kill_proc: SIGTERM (SIGINT for Tor), wait up to `timeout`, then SIGKILL. Never blocks for ever.
 pub fn kill_proc(child: &mut Option<Child>, name: &str, timeout: Duration, as_owner: &dyn Fn(u32, i32) -> bool) {
     let Some(c) = child.as_mut() else { return };
     if c.try_wait().ok().flatten().is_some() {
         return;
     }
     let pid = c.id();
-    signal(pid, libc::SIGTERM, as_owner);
+    // Tor blocks SIGTERM in practice and exits cleanly on SIGINT ("Interrupt:
+    // exiting cleanly", measured ~2 s); everything else here takes SIGTERM.
+    let first = if name == "Tor" { libc::SIGINT } else { libc::SIGTERM };
+    signal(pid, first, as_owner);
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
         if c.try_wait().ok().flatten().is_some() {

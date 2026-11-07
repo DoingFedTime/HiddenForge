@@ -382,6 +382,36 @@ fn random_hex8() -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
+fn openat(dirfd: &Fd, name: &str, flags: i32, mode: u32, shown: &str) -> R<Fd> {
+    let c = cpath(name);
+    // SAFETY: dirfd is an open directory; name is a single component.
+    let fd = unsafe { libc::openat(dirfd.0, c.as_ptr(), flags | libc::O_CLOEXEC, mode as libc::c_uint) };
+    if fd < 0 {
+        Err(PyErr::os_path(py::last_errno(), shown))
+    } else {
+        Ok(Fd(fd))
+    }
+}
+
+/// read_small_regular_file relative to a held directory descriptor.
+fn read_small_at(dirfd: &Fd, name: &str, shown: &str, max_bytes: usize) -> R<Vec<u8>> {
+    let fd = openat(dirfd, name, libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK, 0, shown)?;
+    if !is_type(&fstat(&fd)?, libc::S_IFREG) {
+        return Err(PyErr { errno: Some(libc::EINVAL), msg: format!("[Errno 22] {shown} is not a regular file") });
+    }
+    let mut buf = vec![0u8; max_bytes + 1];
+    // SAFETY: reading into a live buffer.
+    let n = unsafe { libc::read(fd.0, buf.as_mut_ptr().cast(), buf.len()) };
+    if n < 0 {
+        return Err(PyErr::os(py::last_errno()));
+    }
+    buf.truncate(n as usize);
+    if buf.len() > max_bytes {
+        return Err(PyErr { errno: Some(libc::EFBIG), msg: format!("[Errno 27] {shown} is larger than {max_bytes} bytes") });
+    }
+    Ok(buf)
+}
+
 /// Remembers which publication failures were already reported.
 #[derive(Default)]
 pub struct PublishState {
@@ -410,18 +440,35 @@ impl PublishState {
 
 /// _publish_addresses: copy each valid hostname to <keys_root>/<name>.onion, atomically,
 /// once the gate says the service is reachable.
+///
+/// `read_as_owner` reads a hostname file the supervisor itself may not open:
+/// under rootless Podman root holds no DAC_OVERRIDE and the service directory
+/// is the tor user's 0700, so 2.x never published the address there at all.
+/// The file read is the same no-follow, regular-file, size-capped read, done
+/// by a process running as the directory's owner; only the public address
+/// comes back, and it is validated here exactly as a direct read is.
 pub fn publish_addresses(
     hs_dirs: &[String],
     keys_root: &str,
+    keys_fd: &Fd,
     gate: &mut dyn FnMut() -> bool,
+    read_as_owner: &dyn Fn(&str) -> Option<Vec<u8>>,
     state: &mut PublishState,
     log: &mut Vec<String>,
 ) {
     let mut pending = Vec::new();
     for hs_dir in hs_dirs {
         let name = hs_dir.rsplit('/').next().unwrap_or(hs_dir).to_string();
-        let raw = match read_small_regular_file(&format!("{hs_dir}/hostname"), ADDRESS_FILE_MAX) {
+        let path = format!("{hs_dir}/hostname");
+        let raw = match read_small_regular_file(&path, ADDRESS_FILE_MAX) {
             Ok(r) => r,
+            Err(e) if e.is_permission() => match read_as_owner(&path) {
+                Some(r) => r,
+                None => {
+                    state.warn_once(&name, "read hostname", &e, keys_root, log);
+                    continue;
+                }
+            },
             Err(e) => {
                 state.warn_once(&name, "read hostname", &e, keys_root, log);
                 continue;
@@ -432,7 +479,7 @@ pub fn publish_addresses(
             continue;
         }
         let target = format!("{keys_root}/{name}.onion");
-        if let Ok(cur) = read_small_regular_file(&target, ADDRESS_FILE_MAX) {
+        if let Ok(cur) = read_small_at(keys_fd, &format!("{name}.onion"), &target, ADDRESS_FILE_MAX) {
             if ascii_strip(&cur).as_deref() == Some(onion.as_str()) {
                 continue;
             }
@@ -443,17 +490,23 @@ pub fn publish_addresses(
         return;
     }
     for (name, onion, target) in pending {
-        let tmp = format!("{keys_root}/.{name}.onion.{}.tmp", random_hex8());
+        // Every operation is relative to `keys_fd`, opened once at startup: under
+        // rootless Podman root cannot traverse the tor-owned DataDirectory that
+        // holds the key volume, so a path would fail where the descriptor works,
+        // and a descriptor cannot be redirected by a planted link either.
+        let tmp_name = format!(".{name}.onion.{}.tmp", random_hex8());
+        let tmp = format!("{keys_root}/{tmp_name}");
+        let target_name = format!("{name}.onion");
         let mut created = false;
         let r = (|| -> R<()> {
-            let fd = open(&tmp, libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW, 0o644)?;
+            let fd = openat(keys_fd, &tmp_name, libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW, 0o644, &tmp)?;
             created = true;
             write_all(&fd, format!("{onion}\n").as_bytes())?;
             fchmod(&fd, 0o644)?;
             drop(fd);
-            let (a, b) = (cpath(&tmp), cpath(&target));
-            // SAFETY: valid C strings.
-            if unsafe { libc::rename(a.as_ptr(), b.as_ptr()) } != 0 {
+            let (a, b) = (cpath(&tmp_name), cpath(&target_name));
+            // SAFETY: both names are single components relative to the same open directory.
+            if unsafe { libc::renameat(keys_fd.0, a.as_ptr(), keys_fd.0, b.as_ptr()) } != 0 {
                 let e = py::last_errno();
                 return Err(PyErr { errno: Some(e), msg: format!("[Errno {e}] {}: {} -> {}", py::strerror(e), py::py_repr(&tmp), py::py_repr(&target)) });
             }
@@ -461,9 +514,9 @@ pub fn publish_addresses(
         })();
         if let Err(e) = r {
             if created {
-                let c = cpath(&tmp);
-                // SAFETY: valid C string; failure is ignored as in 2.x.
-                unsafe { libc::unlink(c.as_ptr()) };
+                let c = cpath(&tmp_name);
+                // SAFETY: relative to the held directory; failure is ignored as in 2.x.
+                unsafe { libc::unlinkat(keys_fd.0, c.as_ptr(), 0) };
             }
             state.warn_once(&name, &format!("write {target}"), &e, keys_root, log);
             continue;
@@ -538,15 +591,16 @@ mod tests {
         unsafe { libc::mkfifo(c.as_ptr(), 0o600) };
         let mut st = PublishState::default();
         let mut log = vec![];
-        publish_addresses(&[svc.clone()], &d, &mut || true, &mut st, &mut log);
+        let kfd = open_dir_nofollow(&d).unwrap();
+        publish_addresses(&[svc.clone()], &d, &kfd, &mut || true, &|_| None, &mut st, &mut log);
         assert!(log.iter().any(|l| l.contains("read hostname failed")));
         std::fs::remove_file(format!("{svc}/hostname")).unwrap();
         let onion = format!("{}.onion", "a".repeat(56));
         std::fs::write(format!("{svc}/hostname"), format!("{onion}\n")).unwrap();
         let mut log = vec![];
-        publish_addresses(&[svc.clone()], &d, &mut || false, &mut st, &mut log);
+        publish_addresses(&[svc.clone()], &d, &kfd, &mut || false, &|_| None, &mut st, &mut log);
         assert!(std::fs::metadata(format!("{d}/a.onion")).is_err(), "gate said no");
-        publish_addresses(&[svc], &d, &mut || true, &mut st, &mut log);
+        publish_addresses(&[svc], &d, &kfd, &mut || true, &|_| None, &mut st, &mut log);
         assert_eq!(std::fs::read_to_string(format!("{d}/a.onion")).unwrap(), format!("{onion}\n"));
         assert_eq!(std::fs::metadata(format!("{d}/a.onion")).unwrap().permissions().mode() & 0o777, 0o644);
     }

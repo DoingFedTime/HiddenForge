@@ -70,9 +70,19 @@ fn hiddenforge(args: &[String]) -> i32 {
     match (cmd.as_str(), rest.iter().map(String::as_str).collect::<Vec<_>>().as_slice()) {
         ("__true", []) => 0,
         ("__is-socket", [p]) => compat::test(&["-S".into(), (*p).to_string()]),
+        // Run as the tor user by the supervisor: the public hostname file only.
+        ("__read-hostname", [p]) if p.starts_with("/var/lib/tor/hidden_service/") && p.ends_with("/hostname") => {
+            match fsops::read_small_regular_file(p, fsops::ADDRESS_FILE_MAX) {
+                Ok(d) => {
+                    use std::io::Write;
+                    i32::from(std::io::stdout().write_all(&d).is_err())
+                }
+                Err(_) => 1,
+            }
+        }
         // Run as the tor user by the supervisor, which holds no CAP_KILL.
         ("__kill", [pid, sig]) => match (pid.parse::<i32>(), sig.parse::<i32>()) {
-            (Ok(p), Ok(s)) if p > 1 && (s == libc::SIGTERM || s == libc::SIGKILL) => {
+            (Ok(p), Ok(s)) if p > 1 && (s == libc::SIGTERM || s == libc::SIGINT || s == libc::SIGKILL) => {
                 // SAFETY: kill(2); the kernel enforces that we only reach our own processes.
                 i32::from(unsafe { libc::kill(p, s) } != 0)
             }

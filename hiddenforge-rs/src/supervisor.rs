@@ -241,6 +241,17 @@ pub fn run() -> i32 {
         }
     };
 
+    // Held for the container's life: once /var/lib/tor is the tor user's 0700,
+    // root (without DAC_OVERRIDE, as under rootless Podman) cannot reach the key
+    // volume by path any more, but this descriptor still reaches it.
+    let keys_fd = match fsops::open_dir_nofollow(torrc::KEYS_ROOT) {
+        Ok(fd) => Some(fd),
+        Err(e) => {
+            println!("Warning: cannot open {}: {e}; addresses will not be published.", torrc::KEYS_ROOT);
+            None
+        }
+    };
+
     fsops::write_dropped_mappings(DROPPED_MAPPINGS, &conf.dropped, tor_uid, tor_gid, &mut log);
     say(&mut log);
 
@@ -261,7 +272,14 @@ pub fn run() -> i32 {
     }
 
     // ── Give up the capabilities setup needed ───────────────────────────────
-    privs::drop_setup_capabilities(privs::POST_SETUP_CAPS, &mut log);
+    if root {
+        privs::drop_setup_capabilities(privs::POST_SETUP_CAPS, &mut log);
+    } else {
+        // No-root mode: there is nothing to keep. Clear whatever the runtime left.
+        privs::drop_setup_capabilities(0, &mut log);
+        log.retain(|l| !l.starts_with("Note: this runtime did not grant"));
+        log.push(format!("No-root mode: running as uid {tor_uid} with no capabilities."));
+    }
     say(&mut log);
 
     // ── Start Tor ───────────────────────────────────────────────────────────
@@ -356,7 +374,17 @@ pub fn run() -> i32 {
                 false
             }
         };
-        fsops::publish_addresses(&conf.hs_dirs, torrc::KEYS_ROOT, &mut gate, &mut publish, &mut log);
+        let read_as_tor = |path: &str| -> Option<Vec<u8>> {
+            ctx.tor?; // only meaningful when we are root and tor is someone else
+            let c = ctx.self_cmd("hiddenforge", &["__read-hostname", path]);
+            match privs::run_timeout(c, Duration::from_secs(10)) {
+                Ok((Some(0), out, _)) => Some(out),
+                _ => None,
+            }
+        };
+        if let Some(kfd) = keys_fd.as_ref() {
+            fsops::publish_addresses(&conf.hs_dirs, torrc::KEYS_ROOT, kfd, &mut gate, &read_as_tor, &mut publish, &mut log);
+        }
         say(&mut log);
 
         if let Some(Ok(Some(st))) = tor.as_mut().map(Child::try_wait) {
