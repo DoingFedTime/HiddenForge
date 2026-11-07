@@ -221,8 +221,14 @@ jobs:
           set -euo pipefail
           img=sambent.dev/sam/hiddenforge:ci
           docker run --rm --entrypoint su-exec "$img" tor true
-          ! docker run --rm --entrypoint sh "$img" -c id
-          ! docker run --rm --entrypoint python3 "$img" -c 'print(1)'
+          # `! cmd` never trips `set -e`, so a shell that answered would pass
+          # silently. Test the refusal explicitly.
+          if docker run --rm --entrypoint sh "$img" -c id; then
+            echo "FAIL: sh -c answered: the image has a general-purpose shell"; exit 1
+          fi
+          if docker run --rm --entrypoint python3 "$img" -c 'print(1)'; then
+            echo "FAIL: python3 -c answered: the image has a Python interpreter"; exit 1
+          fi
           docker run --rm --entrypoint /usr/local/bin/hiddenforge "$img" version --json
 
       - name: CLI machine contract (as root and as the tor user)
