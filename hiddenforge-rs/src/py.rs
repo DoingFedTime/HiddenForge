@@ -198,6 +198,7 @@ pub enum Json {
     Null,
     Bool(bool),
     Int(i64),
+    Float(f64),
     Str(String),
     Arr(Vec<Json>),
     /// Insertion-ordered; `dumps` sorts when asked, as `sort_keys=True` does.
@@ -296,6 +297,7 @@ fn dump_into(out: &mut String, v: &Json, sort: bool, indent: Option<usize>, leve
         Json::Int(i) => {
             let _ = write!(out, "{i}");
         }
+        Json::Float(f) => out.push_str(&float_json(*f)),
         Json::Str(s) => write_json_str(out, s),
         Json::Arr(items) => {
             if items.is_empty() {
@@ -342,6 +344,61 @@ fn dump_into(out: &mut String, v: &Json, sort: bool, indent: Option<usize>, leve
             out.push('}');
         }
     }
+}
+
+/// CPython `repr(float)`: shortest round-trip digits, positional when the
+/// decimal exponent is in [-4, 16), scientific ("1e+16", "1e-05") otherwise.
+pub fn float_repr(x: f64) -> String {
+    if x.is_nan() {
+        return "nan".into();
+    }
+    if x.is_infinite() {
+        return if x > 0.0 { "inf".into() } else { "-inf".into() };
+    }
+    if x == 0.0 {
+        return if x.is_sign_negative() { "-0.0".into() } else { "0.0".into() };
+    }
+    let e = format!("{:e}", x.abs()); // e.g. "1.23456e2" (shortest digits)
+    let (mant, exp) = e.split_once('e').unwrap_or((&e, "0"));
+    let exp: i32 = exp.parse().unwrap_or(0);
+    let digits: String = mant.chars().filter(|c| *c != '.').collect();
+    let sign = if x < 0.0 { "-" } else { "" };
+    if (-4..16).contains(&exp) {
+        let n = digits.len() as i32;
+        let s = if exp >= 0 {
+            let int_len = exp + 1;
+            if n <= int_len {
+                format!("{digits}{}.0", "0".repeat((int_len - n) as usize))
+            } else {
+                format!("{}.{}", &digits[..int_len as usize], &digits[int_len as usize..])
+            }
+        } else {
+            format!("0.{}{digits}", "0".repeat((-exp - 1) as usize))
+        };
+        format!("{sign}{s}")
+    } else {
+        let m = if digits.len() > 1 { format!("{}.{}", &digits[..1], &digits[1..]) } else { digits.clone() };
+        let es = if exp < 0 { "-" } else { "+" };
+        format!("{sign}{m}e{es}{:02}", exp.abs())
+    }
+}
+
+/// json.dumps of a float (allow_nan=True: Infinity / -Infinity / NaN).
+pub fn float_json(x: f64) -> String {
+    if x.is_nan() {
+        "NaN".into()
+    } else if x.is_infinite() {
+        if x > 0.0 { "Infinity".into() } else { "-Infinity".into() }
+    } else {
+        float_repr(x)
+    }
+}
+
+/// Python round(x, n) for the small n used here (round-half-even on the
+/// decimal representation, as CPython does via correctly rounded strings).
+pub fn py_round(x: f64, n: i32) -> f64 {
+    let s = format!("{:.*}", n as usize, x);
+    s.parse().unwrap_or(x)
 }
 
 fn newline(out: &mut String, indent: Option<usize>, level: usize) {
@@ -542,6 +599,16 @@ mod tests {
         assert_eq!(dumps(&Json::Str("é\u{1F600}\"".into()), false, None), r#""\u00e9\ud83d\ude00\"""#);
         let nested = Json::obj().with("a", Json::Arr(vec![Json::Int(1), Json::obj()]));
         assert_eq!(dumps(&nested, false, Some(2)), "{\n  \"a\": [\n    1,\n    {}\n  ]\n}");
+    }
+
+    #[test]
+    fn float_repr_matches_python() {
+        for (x, want) in [(123.0, "123.0"), (0.0001, "0.0001"), (0.00001, "1e-05"), (1e16, "1e+16"),
+                          (1.5e16, "1.5e+16"), (123.456, "123.456"), (2.5, "2.5"), (1e15, "1000000000000000.0"),
+                          (0.1, "0.1"), (33554432.0, "33554432.0"), (-2.75, "-2.75")] {
+            assert_eq!(float_repr(x), want, "{x}");
+        }
+        assert_eq!(float_json(f64::INFINITY), "Infinity");
     }
 
     #[test]
