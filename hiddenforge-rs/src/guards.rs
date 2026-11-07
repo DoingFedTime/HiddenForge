@@ -18,6 +18,7 @@
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
+use crate::py;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 // ── bandguards options (Vanguards 0.3.1 defaults) ───────────────────────────
@@ -528,7 +529,14 @@ impl Bandguards {
             sink.log(Level::Info, &format!("Tor bug #{bug}: Got a dropped cell on circ {} {}.", c.circ_id, c.states()));
         }
         if CIRC_MAX_MEGABYTES > 0.0 && c.total_bytes() > CIRC_MAX_MEGABYTES * BYTES_PER_MB {
-            limit_exceeded(sink, Level::Notice, "CIRC_MAX_MEGABYTES", &c.circ_id, c.total_bytes(), CIRC_MAX_MEGABYTES * BYTES_PER_MB);
+            limit_exceeded(
+                sink,
+                Level::Notice,
+                "CIRC_MAX_MEGABYTES",
+                &c.circ_id,
+                &py_int_str(c.total_bytes()),
+                &py_int_str(CIRC_MAX_MEGABYTES * BYTES_PER_MB),
+            );
             sink.close_circuit(&c.circ_id);
         }
         if CIRC_MAX_HSDESC_KILOBYTES > 0.0 && c.is_hsdir && c.total_bytes() > CIRC_MAX_HSDESC_KILOBYTES * BYTES_PER_KB {
@@ -537,8 +545,8 @@ impl Bandguards {
                 Level::Warn,
                 "CIRC_MAX_HSDESC_KILOBYTES",
                 &c.circ_id,
-                c.total_bytes(),
-                CIRC_MAX_HSDESC_KILOBYTES * BYTES_PER_KB,
+                &py_int_str(c.total_bytes()),
+                &py_int_str(CIRC_MAX_HSDESC_KILOBYTES * BYTES_PER_KB),
             );
             sink.close_circuit(&c.circ_id);
         }
@@ -594,8 +602,8 @@ impl Bandguards {
                 Level::Notice,
                 "CIRC_MAX_AGE_HOURS",
                 &c.circ_id,
-                (t - c.created_at) / SECS_PER_HOUR,
-                CIRC_MAX_AGE_HOURS,
+                &py::float_repr((t - c.created_at) / SECS_PER_HOUR),
+                &py_int_str(CIRC_MAX_AGE_HOURS),
             );
             sink.close_circuit(&c.circ_id);
         }
@@ -615,18 +623,13 @@ impl Bandguards {
     }
 }
 
-/// Python str() of a number: ints print bare, floats as repr.
-fn py_num(x: f64) -> String {
-    if x.fract() == 0.0 && x.abs() < 1e16 {
-        // A float that happens to be whole still prints as "123.0" in Python.
-        format!("{x:.1}")
-    } else {
-        format!("{x}")
-    }
+/// str() of a byte count (Python ints) or of an age in hours (a Python float).
+fn py_int_str(x: f64) -> String {
+    py_int(x).to_string()
 }
 
-fn limit_exceeded(sink: &mut dyn Sink, level: Level, name: &str, id: &str, cur: f64, max: f64) {
-    sink.log(level, &format!("Circ {id} exceeded {name}: {} > {}. ", py_num(cur), py_num(max)));
+fn limit_exceeded(sink: &mut dyn Sink, level: Level, name: &str, id: &str, cur: &str, max: &str) {
+    sink.log(level, &format!("Circ {id} exceeded {name}: {cur} > {max}. "));
 }
 
 // ───────────────────────────── rendguard ────────────────────────────────────
@@ -1174,7 +1177,7 @@ mod tests {
         b.circ_event(&ev(&format!("650 CIRC 8 BUILT {G},{R} PURPOSE=HS_SERVICE_HSDIR")), &mut s);
         b.circbw_event(&ev("650 CIRC_BW ID=8 READ=0 WRITTEN=31745 DELIVERED_READ=0 OVERHEAD_READ=0 DELIVERED_WRITTEN=0 OVERHEAD_WRITTEN=0"), &mut s);
         assert_eq!(s.closes, vec!["8"]);
-        assert!(s.logs.iter().any(|(_, m)| m == "Circ 8 exceeded CIRC_MAX_HSDESC_KILOBYTES: 31745.0 > 30720.0. "));
+        assert!(s.logs.iter().any(|(_, m)| m == "Circ 8 exceeded CIRC_MAX_HSDESC_KILOBYTES: 31745 > 30720. "));
     }
 
     #[test]

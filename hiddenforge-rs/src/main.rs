@@ -70,6 +70,14 @@ fn hiddenforge(args: &[String]) -> i32 {
     match (cmd.as_str(), rest.iter().map(String::as_str).collect::<Vec<_>>().as_slice()) {
         ("__true", []) => 0,
         ("__is-socket", [p]) => compat::test(&["-S".into(), (*p).to_string()]),
+        // Run as the tor user by the supervisor, which holds no CAP_KILL.
+        ("__kill", [pid, sig]) => match (pid.parse::<i32>(), sig.parse::<i32>()) {
+            (Ok(p), Ok(s)) if p > 1 && (s == libc::SIGTERM || s == libc::SIGKILL) => {
+                // SAFETY: kill(2); the kernel enforces that we only reach our own processes.
+                i32::from(unsafe { libc::kill(p, s) } != 0)
+            }
+            _ => 2,
+        },
         ("torrc-preview", []) => torrc_preview(),
         ("healthcheck", _) => healthcheck(rest),
         _ => cli::run(cmd, rest).unwrap_or_else(|| {

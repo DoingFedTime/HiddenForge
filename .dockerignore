@@ -1,13 +1,8 @@
 # Exclude everything by default, then whitelist only what the build needs.
 *
-
-# The files the Dockerfile COPYs into the image:
-!entrypoint.py
-!healthcheck.py
-!requirements.txt
-!vanity.py
+!hiddenforge-rs/Cargo.toml
+!hiddenforge-rs/Cargo.lock
+!hiddenforge-rs/src/
 !manifest.json
-!scripts/
-!vendor/
-!tests/test_torrc.py
+!vendor/mkp224o-5172c0fd.tar.gz
 !LICENSE

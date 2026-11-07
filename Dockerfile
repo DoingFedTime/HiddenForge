@@ -1,211 +1,143 @@
-# ── Stage 1: mkp224o, the vanity-address generator ──────────────────────────
-# Vendored and built here so the runtime image ships one static, self-contained
-# binary and needs no libsodium. The generator source is a deterministic
-# `git archive` of cathugger/mkp224o @ 5172c0fd, verified by SHA256 before use;
-# see vendor/README.md (licence: CC0-1.0).
-FROM alpine:3.23.5@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc2d6daf40 AS mkp224o-build
+# HiddenForge 3.0
+#
+# Every input is pinned and comes from places this project controls or verifies:
+#   * base and build images: Docker Hardened Images, by digest, used UNCHANGED
+#     (Docker's signed provenance verified before adoption; copies kept on
+#     sambent.dev). The runtime base is dhi.io/static (musl): no shell, no
+#     package manager, no Python.
+#   * packages: the exact .apk files, verified against Docker's signed APKINDEX
+#     (and, for zlib, Alpine's), installed with --no-network from the
+#     `inputs` build context. Nothing is fetched while building.
+#   * Tor: compiled here from Tor Project's release tarball (signature checked
+#     against Tor's release keys before archiving; SHA-256 pinned below).
+#   * the runtime: one Rust binary (hiddenforge-rs/), whose only dependency is
+#     the libc crate, vendored and checked against Cargo.lock.
+#
+# Build (reproducible):
+#   docker buildx build --builder reprobuilder --no-cache --provenance=false \
+#     --build-context inputs=<inputs dir> \
+#     --build-arg SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) \
+#     --output type=oci,dest=hf.tar,rewrite-timestamp=true .
+
+ARG C_BUILDER=dhi.io/python@sha256:11c956fbc326c0aab95d9b913e77d25280855a494029bc63dac1824101b48766
+ARG RUST_BUILDER=dhi.io/rust@sha256:cd4666a1b76c2a8a9c9e01282183e25703fe8c81a42e208be1a44f50467362b6
+ARG RUNTIME=dhi.io/static@sha256:36ef09f98be60351289f3aaf36a4328e2121821dce7f8f85ba099efef43bd329
+
+FROM ${RUNTIME} AS runtime
+
+# ── C builds: Tor and mkp224o ───────────────────────────────────────────────
+FROM ${C_BUILDER} AS cbuild
 ARG SOURCE_DATE_EPOCH=0
-# pipefail, so a failing `sha256sum -c` in the pipeline cannot be masked.
-SHELL ["/bin/ash", "-eo", "pipefail", "-c"]
-WORKDIR /src
-COPY --chmod=0644 vendor/mkp224o-5172c0fd.tar.gz /tmp/mkp224o.tar.gz
-# DL3018: these are BUILD-ONLY dependencies and are deliberately not
-# version-pinned. Alpine prunes superseded versions from its index (which has
-# repeatedly broken this image's pinned runtime packages), and none of them
-# ship in the final image -- the static mkp224o binary is the only artefact that
-# does. The runtime stage's apk add IS pinned, because those packages ship.
-# hadolint ignore=DL3018
-RUN echo "1f951ed82577436fe2c160c01f7754170010137c2182eae7e47fce65f000dc8d  /tmp/mkp224o.tar.gz" \
-      | sha256sum -c - && \
-    apk add --no-cache build-base autoconf libsodium-dev libsodium-static && \
-    tar -xzf /tmp/mkp224o.tar.gz -C /src --strip-components=1 && \
-    ./autogen.sh && \
-    # CFLAGS pinned to -O3: upstream configure otherwise injects -march=native,
-    # which breaks bit-for-bit reproducibility and can emit instructions that
-    # fault on a different CPU than the build host.
-    CFLAGS="-O3" ./configure LDFLAGS="-static" && \
-    make -j"$(nproc)" && \
-    strip mkp224o && \
-    cp mkp224o /mkp224o && \
+SHELL ["/bin/sh", "-eu", "-c"]
+COPY --from=inputs apk /repo
+COPY --from=inputs apk-alpine /repo-alpine
+COPY --from=inputs index/APKINDEX-x86_64.tar.gz /repo/x86_64/APKINDEX.tar.gz
+COPY --from=inputs index/APKINDEX-aarch64.tar.gz /repo/aarch64/APKINDEX.tar.gz
+COPY --from=inputs index/APKINDEX-alpine-main-x86_64.tar.gz /repo-alpine/x86_64/APKINDEX.tar.gz
+COPY --from=inputs index/APKINDEX-alpine-main-aarch64.tar.gz /repo-alpine/aarch64/APKINDEX.tar.gz
+COPY --from=inputs tor/tor-0.4.9.16.tar.gz /src/tor.tar.gz
+COPY --chmod=0644 vendor/mkp224o-5172c0fd.tar.gz /src/mkp224o.tar.gz
+# Offline, from the verified local repositories only.
+RUN printf '/repo\n/repo-alpine\n' > /etc/apk/repositories; \
+    apk add --no-cache --no-network \
+        make fortify-headers libevent-dev openssl-dev zlib-dev=1.4-r0 zlib=1.4-r0 zstd-dev xz-dev \
+        libseccomp-dev libcap-dev autoconf automake libsodium-dev libsodium-static; \
     rm -f /var/log/apk.log
+# Tor: relay and directory-authority code compiled out (an onion service never
+# runs it); --enable-gpl is required for the proof-of-work DoS defence.
+RUN echo "6180e193152f4525bdca5475168419b2a2035b963c3c60162a187f86e6160e48  /src/tor.tar.gz" | sha256sum -c -; \
+    mkdir /src/tor && tar -xzf /src/tor.tar.gz -C /src/tor --strip-components=1; \
+    cd /src/tor; \
+    CFLAGS="-O2 -D_FORTIFY_SOURCE=3 -fstack-clash-protection -ffile-prefix-map=/src/tor=. -fno-ident" \
+    LDFLAGS="-Wl,--build-id=none" \
+      ./configure --prefix=/usr --sysconfdir=/etc --localstatedir=/var \
+        --enable-gpl --disable-module-relay --disable-asciidoc --disable-html-manual \
+        --disable-manpage --disable-unittests >/dev/null; \
+    make -j"$(nproc)" >/dev/null; \
+    strip src/app/tor; \
+    mkdir -p /out/usr/bin /out/usr/share/tor; \
+    cp src/app/tor /out/usr/bin/tor; \
+    cp src/config/geoip src/config/geoip6 /out/usr/share/tor/; \
+    /out/usr/bin/tor --list-modules
+# mkp224o: the vanity-address generator, one static binary (CC0-1.0).
+RUN echo "1f951ed82577436fe2c160c01f7754170010137c2182eae7e47fce65f000dc8d  /src/mkp224o.tar.gz" | sha256sum -c -; \
+    mkdir /src/mkp && tar -xzf /src/mkp224o.tar.gz -C /src/mkp --strip-components=1; \
+    cd /src/mkp; ./autogen.sh; \
+    CFLAGS="-O3 -ffile-prefix-map=/src/mkp=. -fno-ident" ./configure LDFLAGS="-static -Wl,--build-id=none" >/dev/null; \
+    make -j"$(nproc)" >/dev/null; strip mkp224o; \
+    mkdir -p /out/usr/local/bin; cp mkp224o /out/usr/local/bin/mkp224o
 
-# ── Stage 2: the runtime image ────────────────────────────────────────────
-FROM alpine:3.23.5@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc2d6daf40
-
-# SOURCE_DATE_EPOCH: a UNIX timestamp (set by the build to the source commit
-# time) used to make the image reproducible. Consumed below to pin the one
-# clock-derived field apk writes into /etc/shadow when it creates the tor user.
+# ── Rust build: the runtime binary ──────────────────────────────────────────
+FROM ${RUST_BUILDER} AS rbuild
 ARG SOURCE_DATE_EPOCH=0
+SHELL ["/bin/sh", "-eu", "-c"]
+COPY --from=inputs cargo/vendor /cargo/vendor
+COPY --from=inputs cargo/config.toml /root/.cargo/config.toml
+COPY hiddenforge-rs/Cargo.toml hiddenforge-rs/Cargo.lock /build/
+COPY hiddenforge-rs/src /build/src
+WORKDIR /build
+RUN RUSTFLAGS="-C target-feature=+crt-static --remap-path-prefix=/build=. --remap-path-prefix=/cargo/vendor=vendor -C link-arg=-Wl,--build-id=none" \
+      cargo build --release --locked --offline; \
+    install -D -m 0755 target/release/hiddenforge /out/usr/local/bin/hiddenforge
 
-# Static labels only: a build date or commit id here would change the digest
-# from one build of the same source to the next.
+# ── Assemble: the extra runtime libraries, installed into a copy of the base ─
+FROM cbuild AS assemble
+ARG SOURCE_DATE_EPOCH=0
+COPY --from=runtime / /rt
+COPY --from=rbuild /out/ /stage/
+COPY --chmod=0644 manifest.json /stage/opt/hiddenforge/manifest.json
+COPY --chmod=0644 LICENSE /stage/usr/share/licenses/hiddenforge/LICENSE
+RUN cp -a /out/. /stage/; \
+    # Installed through apk into the copy, so the base's package database
+    # records them and every scanner sees exactly what the image holds.
+    apk --root /rt --keys-dir /etc/apk/keys --repositories-file /etc/apk/repositories \
+        add --no-cache --no-network --no-scripts \
+        libevent libssl3 libcrypto3 zlib=1.4-r0 zstd-libs xz-libs libseccomp libcap2; \
+    mkdir /delta; \
+    for p in libevent libssl3 libcrypto3 zlib zstd-libs xz-libs libseccomp libcap2; do \
+      apk --root /rt info -q -L "$p" | grep -v '^$' | while read -r f; do \
+        mkdir -p "/delta/$(dirname "$f")"; cp -a "/rt/$f" "/delta/$f"; \
+      done; \
+    done; \
+    mkdir -p /delta/lib/apk/db; cp -a /rt/lib/apk/db/installed /delta/lib/apk/db/installed; \
+    cp -a /stage/. /delta/; \
+    # The tor user: uid 100, gid 101, exactly as 2.x (live key volumes depend on it).
+    mkdir -p /delta/etc; \
+    { cat /rt/etc/passwd; echo 'tor:x:100:101:tor:/var/lib/tor:/sbin/nologin'; } > /delta/etc/passwd; \
+    { cat /rt/etc/group; echo 'tor:x:101:tor'; } > /delta/etc/group; \
+    chmod 0644 /delta/etc/passwd /delta/etc/group; \
+    # One binary, many names: the image ENTRYPOINT, the CLI, and the exact 2.x
+    # forms (healthcheck.py, su-exec, python3, cat, sh, test, true). Each name
+    # answers only what 2.x ran; see hiddenforge-rs/src/compat.rs.
+    cd /delta; \
+    for l in usr/local/bin/entrypoint.py usr/local/bin/healthcheck.py usr/local/bin/vanity.py \
+             sbin/su-exec usr/bin/python3 bin/cat bin/sh usr/bin/test bin/true; do \
+      mkdir -p "$(dirname "$l")"; ln -s /usr/local/bin/hiddenforge "$l"; \
+    done; \
+    mkdir -p var/lib/tor/hidden_service etc/tor tmp; \
+    chown 100:101 var/lib/tor; chmod 0700 var/lib/tor; chmod 1777 tmp; \
+    find /delta -exec touch -h -d "@${SOURCE_DATE_EPOCH}" {} +
+
+# ── The image: DHI static, unchanged, plus one layer ────────────────────────
+FROM runtime
+ARG SOURCE_DATE_EPOCH=0
 LABEL org.opencontainers.image.title="HiddenForge" \
-      org.opencontainers.image.description="Hardened Tor v3 onion service container with the Vanguards addon" \
-      org.opencontainers.image.version="2.1.6" \
+      org.opencontainers.image.description="Hardened Tor v3 onion service container" \
+      org.opencontainers.image.version="3.0.0" \
       org.opencontainers.image.source="https://sambent.dev/sam/HiddenForge" \
-      org.opencontainers.image.licenses="GPL-3.0-only"
-
-ENV HOME=/var/lib/tor
-ENV PYTHONUNBUFFERED=1
-# Default key volume used by the in-image CLI (scripts/hiddenforge).
-ENV HIDDENFORGE_KEYS_DIR=/var/lib/tor/hidden_service
-# Lets the CLI give host-specific guidance when a command needs tooling that the
-# image deliberately does not ship (age/gpg for backup/encrypt-key).
-ENV HIDDENFORGE_IN_CONTAINER=1
-# Suppress .pyc file generation: no bytecode debris on disk
-ENV PYTHONDONTWRITEBYTECODE=1
-# Silence the pip self-update check at build time
-ENV PIP_DISABLE_PIP_VERSION_CHECK=1
-
-# Install Tor and Python runtime with pinned package versions.
-# py3-pip is a build-only dep, removed after the venv is bootstrapped, leaving
-# no pip/installer tooling in the final image. (The Python stdlib still ships
-# urllib/ssl; what we remove are the third-party package manager and HTTP
-# clients, not the language's built-in modules.)
-#
-# py3-pip is installed DIRECTLY, not via `apk add --virtual .build-deps`.
-# A virtual package would be the conventional way to drop a build dep and its
-# orphans in one go, but apk assigns every virtual package a self-generated
-# checksum in /lib/apk/db/installed, and that checksum was observed to differ
-# between two builds of identical source, producing different image digests
-# and silently breaking the reproducible-build guarantee (the failure looks
-# exactly like image tampering to anyone verifying it). Installing py3-pip by
-# name removes that record entirely; `apk del py3-pip` below still reclaims all
-# eight packages (py3-pip plus the py3-packaging/py3-parsing/py3-setuptools
-# tree it pulls in), because apk already tracks auto-installed dependencies.
-# Verified: nothing is left behind versus the pre-pip package set.
-#
-# rm apk.log because it records wall-clock operation times, which would also
-# break reproducibility.
-# openssl is pinned EXPLICITLY rather than inherited from the base digest. The
-# base image ships 3.5.7-r0, against which Alpine's index now carries 3.5.9-r0
-# (3.5.8-r0 was pruned; it was the first pin here for CVE-2026-14456 and a batch
-# of other OpenSSL issues). Pin the fix so the image
-# does not silently depend on whichever OpenSSL the base happens to contain.
-# zlib is pinned for the same reason: the base ships 1.3.2-r0, which carries
-# CVE-2026-85091 (heap buffer overflow), and Tor links it to decompress directory
-# documents it receives from relays, so the bug is reachable from the network.
-# libexpat is pinned for the same reason: python3 depends on it, the base ships
-# 2.9.0-r0, and 2.10.0-r0 fixes CVE-2026-117610 and CVE-2026-118370. Nothing in
-# this image parses XML, but a scanner reads the installed version.
-# musl (the C library) and musl-utils come from the base too; 1.2.5-r24 fixes
-# CVE-2026-107891.
-RUN apk add --no-cache \
-    tor=0.4.9.15-r0 \
-    python3=3.12.16-r0 \
-    su-exec=0.3-r0 \
-    py3-pip=25.1.1-r1 \
-    openssl=3.5.9-r0 \
-    zlib=1.3.2-r1 \
-    libexpat=2.10.0-r0 \
-    musl=1.2.5-r24 \
-    musl-utils=1.2.5-r24 && \
-    rm -f /var/log/apk.log && \
-    # apk stamps a new account's shadow "last-change" field with the current day
-    # (days since 1970) when it creates the tor user. Pin every account's field
-    # to the SOURCE_DATE_EPOCH day so /etc/shadow is byte-identical regardless of
-    # build date. Applied to all rows (not just tor) so a future package that
-    # adds a user cannot silently reintroduce nondeterminism. Only affects
-    # reproducibility; these are locked system accounts with no login.
-    sed -i "s#^\([^:]*:[^:]*\):[0-9]*:#\1:$(( SOURCE_DATE_EPOCH / 86400 )):#" /etc/shadow
-
-# Install Vanguards guard-protection addon in an isolated venv.
-# vanguards 0.3.1 (PyPI) uses the removed SafeConfigParser API from Python
-# 3.12; upstream PR #105 has been unmerged since 2024, so we patch it here.
-#
-# All packages are installed with --require-hashes so pip will abort if any
-# downloaded file does not match the SHA256 recorded in requirements.txt.
-#
-# After install we strip pip, setuptools, and any test / cache artefacts from
-# the venv so no third-party installer or HTTP-client packages remain in the
-# final image (the Python stdlib's urllib/ssl cannot be removed and still ship).
-COPY --chmod=0644 requirements.txt /tmp/requirements.txt
-RUN python3 -m venv /opt/vanguards-venv && \
-    /opt/vanguards-venv/bin/pip install \
-      --no-cache-dir \
-      --no-deps \
-      --require-hashes \
-      -r /tmp/requirements.txt && \
-    sed -i \
-      's/from configparser import SafeConfigParser/from configparser import RawConfigParser as SafeConfigParser/' \
-      /opt/vanguards-venv/lib/python3.12/site-packages/vanguards/config.py && \
-    # Fail the build loudly if the patch did not apply (sed exits 0 even on no
-    # match). A future vanguards release that changes this import would otherwise
-    # ship a broken venv silently.
-    grep -q 'from configparser import RawConfigParser as SafeConfigParser' \
-      /opt/vanguards-venv/lib/python3.12/site-packages/vanguards/config.py && \
-    # Each tolerated failure is GROUPED. Written bare, `A && B || true && C`
-    # parses as `(A && B) || true && C`, so the `|| true` meant for one cleanup
-    # step also swallowed a --require-hashes mismatch in the pip install and the
-    # grep above: the build succeeded and shipped a broken venv.
-    { /opt/vanguards-venv/bin/pip uninstall -y pip setuptools wheel 2>/dev/null || true; } && \
-    { find /opt/vanguards-venv -type d -name 'test'  -exec rm -rf {} + 2>/dev/null || true; } && \
-    { find /opt/vanguards-venv -type d -name 'tests' -exec rm -rf {} + 2>/dev/null || true; } && \
-    { find /opt/vanguards-venv -type d -name '__pycache__' -exec rm -rf {} + 2>/dev/null || true; } && \
-    find /opt/vanguards-venv -name '*.pyc' -delete && \
-    find /opt/vanguards-venv -name '*.pyo' -delete && \
-    rm /tmp/requirements.txt && \
-    apk del py3-pip && \
-    rm -f /var/log/apk.log
-
-# Set up Tor data directory and config directory.
-# DataDirectory must be mode 700: Tor refuses to create a ControlSocket in a
-# world-readable directory (it validates this before starting).
-#
-# /opt/hiddenforge and /usr/local/bin/tests are created here, 0755, because a
-# directory that `COPY --chmod` creates gets the FILE's mode: COPY --chmod=0644
-# into a missing directory made it 0644, which no non-root user can enter.
-RUN mkdir -p ${HOME}/.tor /etc/tor /opt/hiddenforge /usr/local/bin/tests /usr/share/licenses/hiddenforge && \
-    chmod 755 /opt/hiddenforge /usr/local/bin/tests /usr/share/licenses /usr/share/licenses/hiddenforge && \
-    chown -R tor:tor ${HOME} && \
-    chmod 700 ${HOME}
-
-# Copy entrypoint, healthcheck, the operator CLI, the vanity wrapper, the
-# machine contract, and the in-container smoke test only.
-# The host unit suite runs on the build host / in CI - it is deliberately NOT
-# shipped in the image.
-#
-# Every COPY states its mode. Without --chmod a layer records the mode the file
-# had in the build context, which is whatever the builder's checkout and umask
-# produced: a clone under umask 007 and one under 022 built different layers,
-# so different image digests, from the same commit. A later `RUN chmod` cannot
-# repair that, because it adds a layer and leaves the COPY layer as it was.
-# 0755 lets the unprivileged tor user read and run the scripts and the CLI;
-# none of them holds a secret.
-COPY --chmod=0755 --from=mkp224o-build /mkp224o /usr/local/bin/mkp224o
-COPY --chmod=0755 entrypoint.py /usr/local/bin/entrypoint.py
-COPY --chmod=0755 healthcheck.py /usr/local/bin/healthcheck.py
-COPY --chmod=0755 vanity.py /usr/local/bin/vanity.py
-COPY --chmod=0755 scripts/hiddenforge /usr/local/bin/hiddenforge
-COPY --chmod=0644 manifest.json /opt/hiddenforge/manifest.json
-COPY --chmod=0644 LICENSE /usr/share/licenses/hiddenforge/LICENSE
-COPY --chmod=0644 tests/test_torrc.py /usr/local/bin/tests/test_torrc.py
-
-# Persist hidden service keys across container restarts
+      org.opencontainers.image.licenses="GPL-3.0-only" \
+      org.opencontainers.image.base.name="dhi.io/static:20261020-musl-alpine3.23" \
+      org.opencontainers.image.base.digest="sha256:36ef09f98be60351289f3aaf36a4328e2121821dce7f8f85ba099efef43bd329"
+COPY --from=assemble /delta/ /
+ENV HOME=/var/lib/tor \
+    HIDDENFORGE_KEYS_DIR=/var/lib/tor/hidden_service \
+    HIDDENFORGE_IN_CONTAINER=1 \
+    PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+# Root at start (default mode) only to hand the key volume to tor and drop;
+# Tor and the guards run as uid 100 with no capabilities. No-root mode: start
+# the container as 100:101 (see `hiddenforge setup --no-root`).
+USER 0
 VOLUME ["/var/lib/tor/hidden_service/"]
-
-# Health check: Tor must have bootstrapped (100%) AND established a circuit,
-# not merely be running. Queried over the control socket as the tor user (the
-# socket lives in the 0700 DataDirectory). No pidof fallback: a pidof check
-# would report healthy the instant the process exists, masking a Tor that is
-# alive but wedged, which is exactly the failure this probe must catch.
-# start-period is 120s: circuit-establish + descriptor publish with PoW and 6
-# intro points can exceed the previous 90s; failures during it don't count.
 HEALTHCHECK --interval=60s --timeout=10s --start-period=120s --retries=3 \
     CMD ["su-exec", "tor", "python3", "/usr/local/bin/healthcheck.py"]
-
-# NO `USER` INSTRUCTION, DELIBERATELY. This container MUST start as root: the
-# entrypoint chowns the operator's key bind mount to the tor user and then drops
-# privileges with su-exec. A non-root USER would make both impossible. Everything
-# that faces the network (Tor, Vanguards) runs as `tor`; the entrypoint asserts
-# the drop actually happened by reading the child's uid from /proc before it
-# trusts the process with the onion key. Scanners flag DS-0002 /
-# missing-user-entrypoint here; .trivyignore and the semgrep exclusion carry the
-# same reason, and SECURITY.md explains it. The cap set is dropped to ALL then
-# re-added minimally in the compose files, and `hiddenforge doctor` verifies it.
-# The same reason inline, for scanners run without this repo's ignore files.
-# (Trivy reports DS002 against the whole file, with no line an inline comment
-# could name; a plain `trivy config .` from the repo root reads .trivyignore.)
-# checkov:skip=CKV_DOCKER_3:starts as root to chown the key mount, then su-exec tor
-# nosemgrep: dockerfile.security.missing-user-entrypoint.missing-user-entrypoint
-ENTRYPOINT ["python3", "/usr/local/bin/entrypoint.py"]
+ENTRYPOINT ["/usr/local/bin/entrypoint.py"]

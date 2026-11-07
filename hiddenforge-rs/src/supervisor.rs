@@ -130,10 +130,19 @@ fn now_s(start: Instant) -> f64 {
     start.elapsed().as_secs_f64()
 }
 
-fn shutdown(watcher: &mut Option<Child>, guards: &mut Option<Child>, tor: &mut Option<Child>) {
-    privs::kill_proc(watcher, "upload watcher", Duration::from_secs(5));
-    privs::kill_proc(guards, "Vanguards", Duration::from_secs(5));
-    privs::kill_proc(tor, "Tor", Duration::from_secs(10));
+impl Ctx {
+    /// Deliver a signal as the tor user (see privs::signal).
+    fn signal_as_tor(&self, pid: u32, sig: i32) -> bool {
+        let c = self.self_cmd("hiddenforge", &["__kill", &pid.to_string(), &sig.to_string()]);
+        matches!(privs::run_timeout(c, Duration::from_secs(5)), Ok((Some(0), _, _)))
+    }
+}
+
+fn shutdown(ctx: &Ctx, watcher: &mut Option<Child>, guards: &mut Option<Child>, tor: &mut Option<Child>) {
+    let k = |p: u32, s: i32| ctx.signal_as_tor(p, s);
+    privs::kill_proc(watcher, "upload watcher", Duration::from_secs(5), &k);
+    privs::kill_proc(guards, "Vanguards", Duration::from_secs(5), &k);
+    privs::kill_proc(tor, "Tor", Duration::from_secs(10), &k);
 }
 
 fn start_guards(ctx: &Ctx) -> std::io::Result<Child> {
@@ -268,7 +277,7 @@ pub fn run() -> i32 {
         if let Some(t) = tor.as_ref() {
             if !privs::assert_process_dropped(t, "Tor", &mut log) {
                 say(&mut log);
-                privs::kill_proc(&mut tor, "Tor", Duration::from_secs(5));
+                privs::kill_proc(&mut tor, "Tor", Duration::from_secs(5), &|p, s| ctx.signal_as_tor(p, s));
                 return 1;
             }
         }
@@ -330,7 +339,7 @@ pub fn run() -> i32 {
         let sig = SIGNAL.load(Ordering::SeqCst);
         if sig != 0 {
             println!("Received signal {sig}, shutting down...");
-            shutdown(&mut watcher, &mut guards, &mut tor);
+            shutdown(&ctx, &mut watcher, &mut guards, &mut tor);
             return 0;
         }
 
@@ -353,8 +362,8 @@ pub fn run() -> i32 {
         if let Some(Ok(Some(st))) = tor.as_mut().map(Child::try_wait) {
             let rc = st.code().unwrap_or(1);
             println!("Tor exited with code {rc}, shutting down.");
-            privs::kill_proc(&mut watcher, "upload watcher", Duration::from_secs(5));
-            privs::kill_proc(&mut guards, "Vanguards", Duration::from_secs(5));
+            privs::kill_proc(&mut watcher, "upload watcher", Duration::from_secs(5), &|p, s| ctx.signal_as_tor(p, s));
+            privs::kill_proc(&mut guards, "Vanguards", Duration::from_secs(5), &|p, s| ctx.signal_as_tor(p, s));
             return if rc != 0 { rc } else { 1 };
         }
 
@@ -374,7 +383,7 @@ pub fn run() -> i32 {
                     current.join(", ")
                 ),
             }
-            shutdown(&mut watcher, &mut guards, &mut tor);
+            shutdown(&ctx, &mut watcher, &mut guards, &mut tor);
             return 1;
         }
 

@@ -188,27 +188,43 @@ pub fn assert_process_dropped(child: &Child, name: &str, log: &mut Vec<String>) 
     false
 }
 
-/// _kill_proc: SIGTERM, wait, then SIGKILL.
-pub fn kill_proc(child: &mut Option<Child>, name: &str, timeout: Duration) {
+/// Send `sig` to `pid`; true if delivered. The supervisor is root but holds no
+/// CAP_KILL (no compose file grants it), so it cannot signal the tor-owned
+/// children itself: when that is refused, `as_owner` delivers it from a
+/// process running as the children's own user.
+pub fn signal(pid: u32, sig: i32, as_owner: &dyn Fn(u32, i32) -> bool) -> bool {
+    // SAFETY: kill(2) on a pid we started.
+    if unsafe { libc::kill(pid as i32, sig) } == 0 {
+        return true;
+    }
+    py::last_errno() == libc::EPERM && as_owner(pid, sig)
+}
+
+/// _kill_proc: SIGTERM, wait up to `timeout`, then SIGKILL. Never blocks for ever.
+pub fn kill_proc(child: &mut Option<Child>, name: &str, timeout: Duration, as_owner: &dyn Fn(u32, i32) -> bool) {
     let Some(c) = child.as_mut() else { return };
     if c.try_wait().ok().flatten().is_some() {
         return;
     }
-    // SAFETY: signalling our own child by pid.
-    unsafe { libc::kill(c.id() as i32, libc::SIGTERM) };
+    let pid = c.id();
+    signal(pid, libc::SIGTERM, as_owner);
     let deadline = Instant::now() + timeout;
-    loop {
+    while Instant::now() < deadline {
         if c.try_wait().ok().flatten().is_some() {
-            return;
-        }
-        if Instant::now() >= deadline {
-            println!("{name} did not stop in time, killing...");
-            let _ = c.kill();
-            let _ = c.wait();
             return;
         }
         std::thread::sleep(Duration::from_millis(50));
     }
+    println!("{name} did not stop in time, killing...");
+    signal(pid, libc::SIGKILL, as_owner);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline {
+        if c.try_wait().ok().flatten().is_some() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    // Still there: leave it. PID 1 exiting next takes the whole namespace down.
 }
 
 #[cfg(test)]
