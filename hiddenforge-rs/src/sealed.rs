@@ -25,6 +25,7 @@ const SECRET: &str = "hs_ed25519_secret_key";
 const SEALED: &str = "hs_ed25519_secret_key.enc";
 const PUBLIC: &str = "hs_ed25519_public_key";
 const HOSTNAME: &str = "hostname";
+const AUTH_DIR: &str = "authorized_clients";
 
 pub fn passphrase_file() -> Option<String> {
     std::env::var(ENV).ok().filter(|v| !v.is_empty())
@@ -121,7 +122,50 @@ pub fn unseal(name: &str, pass: &[u8]) -> Result<Option<String>, String> {
     }
     copy_if_present(&vol, &ram, PUBLIC, 0o600)?;
     copy_if_present(&vol, &ram, HOSTNAME, 0o600)?;
+    sync_authorized_clients(&vol, &ram)?;
     Ok(note)
+}
+
+/// Client authorization lives on the volume (`authorized_clients/*.auth`, public
+/// keys only), but Tor reads it from its HiddenServiceDir, which here is the RAM
+/// copy: mirror it exactly, so a client removed from the volume loses access too.
+fn sync_authorized_clients(vol: &str, ram: &str) -> Result<(), String> {
+    let (from, to) = (format!("{vol}/{AUTH_DIR}"), format!("{ram}/{AUTH_DIR}"));
+    let wanted: Vec<String> = match std::fs::read_dir(&from) {
+        Ok(rd) => rd
+            .flatten()
+            .filter_map(|e| e.file_name().to_str().map(String::from))
+            .filter(|n| {
+                n.strip_suffix(".auth")
+                    .is_some_and(crate::clientauth::client_name_ok)
+            })
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+    if wanted.is_empty() && fsops::lstat(&to).is_err() {
+        return Ok(());
+    }
+    if fsops::lstat(&to).is_err() {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&to)
+            .map_err(|e| format!("cannot create {to}: {e}"))?;
+    }
+    for n in &wanted {
+        copy_if_present(&from, &to, n, 0o600)?;
+    }
+    if let Ok(rd) = std::fs::read_dir(&to) {
+        for e in rd.flatten() {
+            if let Some(n) = e.file_name().to_str() {
+                if !wanted.iter().any(|w| w == n) {
+                    std::fs::remove_file(format!("{to}/{n}"))
+                        .map_err(|err| format!("cannot remove {to}/{n}: {err}"))?;
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// While Tor runs: seal a newly generated key, and keep the volume's public key

@@ -12,6 +12,7 @@
 //!                        the exact 2.x forms that compose files, deploy
 //!                        scripts and older CLIs run; nothing else (compat.rs)
 mod cli;
+mod clientauth;
 mod compat;
 mod fsops;
 mod guards;
@@ -42,6 +43,7 @@ const SUBCOMMANDS: &[&str] = &[
     "restore",
     "rotate",
     "unseal-keys",
+    "client-auth",
 ];
 /// Subcommands that read the tor-owned key directories, so they run as tor.
 const AS_TOR: &[&str] = &["show", "doctor"];

@@ -35,7 +35,7 @@ In scope:
 - The runtime binary (`hiddenforge-rs/`): torrc generation, the supervisor,
   the guard monitors, key sealing, the 2.x compatibility names
 - The operator CLI (`scripts/hiddenforge`): `setup`'s generated files, key
-  handling in `backup`/`restore`/`encrypt-key`/`decrypt-key`/`unseal-keys`/`vanity`,
+  handling in `backup`/`restore`/`encrypt-key`/`decrypt-key`/`unseal-keys`/`vanity`/`client-auth`,
   and `verify-image`'s signature checking
 - The offline setup wizard (`wizard/`)
 - Tor configuration hardening gaps

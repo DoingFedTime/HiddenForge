@@ -337,6 +337,17 @@ refuses to start rather than generate a new address. `unseal-keys` turns it off:
 it restores the plaintext key, checks it reads back as the sealed content, and
 only then removes the sealed copy.
 
+### Client authorization (opt-in)
+
+By default anyone who learns the address can reach the service, and an address
+leaks (screenshots, logs, a seized phone). With `client-auth`, Tor encrypts the
+descriptor to the authorized clients' keys, so the address alone is useless:
+without a key the service's introduction points cannot even be found. The
+service holds only public keys, so its volume leaking does not let anyone in.
+What it does not do: protect a client whose own key is stolen, or replace
+authentication inside the application. A removed client keeps access until the
+next restart.
+
 ### No shell in the image
 
 The runtime image has no shell, no busybox and no package manager. Someone who

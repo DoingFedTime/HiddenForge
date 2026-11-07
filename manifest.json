@@ -11,6 +11,7 @@
   },
   "commands": [
     "backup",
+    "client-auth",
     "decrypt-key",
     "doctor",
     "encrypt-key",

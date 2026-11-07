@@ -2403,6 +2403,145 @@ fn cmd_vanity(argv: &[String]) -> i32 {
     }
 }
 
+// ── client-auth: restricted discovery (opt-in) ─────────────────────────────
+
+fn cmd_client_auth(a: &Args, op: &str) -> i32 {
+    let keys = py_path(&a.get("keys").map_or_else(default_keys_env, String::from));
+    let name = a.get("name").unwrap_or(DEFAULT_NAME);
+    if let Err(e) = validate_name(name) {
+        return emit_json(EXIT_USAGE, vec![("error", e.into())]);
+    }
+    // The files belong to the tor user, who must be able to read them and whose
+    // directory they live in; written as root they would be root's.
+    if crate::privs::is_root() {
+        if let Err(e) = crate::compat::become_tor() {
+            return emit_json(
+                EXIT_FAIL,
+                vec![(
+                    "error",
+                    format!("cannot switch to the tor user: {e}").into(),
+                )],
+            );
+        }
+    }
+    let svc = join(&keys, name);
+    if !is_dir(&svc) {
+        return emit_json(
+            EXIT_USAGE,
+            vec![("error", format!("no service {name} in {keys}: start it once, or generate its key, before authorizing clients").into())],
+        );
+    }
+    let restart = "Restart the container: Tor reads the authorized clients when it starts.";
+    match op {
+        "list" => match crate::clientauth::list(&keys, name) {
+            Ok(c) => {
+                if a.flag("json") {
+                    return emit_json(
+                        EXIT_OK,
+                        vec![
+                            ("name", name.into()),
+                            ("clients", Json::Arr(c.into_iter().map(Json::Str).collect())),
+                        ],
+                    );
+                }
+                if c.is_empty() {
+                    println!(
+                        "{name}: no client authorization (anyone with the address can connect)"
+                    );
+                } else {
+                    println!("{name}: only these clients can connect: {}", c.join(", "));
+                }
+                EXIT_OK
+            }
+            Err(e) => emit_json(EXIT_FAIL, vec![("error", e.into())]),
+        },
+        "add" | "remove" => {
+            let Some(client) = a.get("client") else {
+                return emit_json(
+                    EXIT_USAGE,
+                    vec![("error", "--client <name> is required".into())],
+                );
+            };
+            if !crate::clientauth::client_name_ok(client) {
+                return emit_json(
+                    EXIT_USAGE,
+                    vec![("error", format!("invalid client name {}: lowercase letters, digits, '-' and '_', max 63", py::safe_str(client)).into())],
+                );
+            }
+            if op == "remove" {
+                return match crate::clientauth::remove(&keys, name, client) {
+                    Ok(removed) => {
+                        if !a.flag("json") {
+                            println!(
+                                "{name}: {}. {restart}",
+                                if removed {
+                                    format!("removed {client}")
+                                } else {
+                                    format!("{client} was not authorized")
+                                }
+                            );
+                        }
+                        if a.flag("json") {
+                            emit_json(
+                                EXIT_OK,
+                                vec![
+                                    ("name", name.into()),
+                                    ("client", client.into()),
+                                    ("removed", removed.into()),
+                                ],
+                            )
+                        } else {
+                            EXIT_OK
+                        }
+                    }
+                    Err(e) => emit_json(EXIT_FAIL, vec![("error", e.into())]),
+                };
+            }
+            let onion =
+                read_pubkey(&format!("{svc}/{PUBLIC_FILE}")).and_then(|k| sha3::derive_onion(&k));
+            let Some(onion) = onion else {
+                return emit_json(
+                    EXIT_USAGE,
+                    vec![("error", format!("{name} has no public key yet: start it once before authorizing clients").into())],
+                );
+            };
+            match crate::clientauth::add(&keys, name, client, &onion) {
+                Ok(private_line) => {
+                    let first = crate::clientauth::list(&keys, name)
+                        .map(|c| c.len() == 1)
+                        .unwrap_or(false);
+                    if a.flag("json") {
+                        return emit_json(
+                            EXIT_OK,
+                            vec![
+                                ("name", name.into()),
+                                ("client", client.into()),
+                                ("onion", onion.as_str().into()),
+                                ("client_auth_private", private_line.as_str().into()),
+                                ("first_client", first.into()),
+                            ],
+                        );
+                    }
+                    println!("{name}: authorized client {client}.");
+                    if first {
+                        println!("This is the first client: from the next start, ONLY authorized clients can reach {onion}.");
+                    }
+                    println!("{restart}");
+                    println!();
+                    println!("Give this line to {client}, over a channel you trust, and nowhere else. It is shown once and not stored:");
+                    println!("{private_line}");
+                    println!();
+                    println!("The client saves it as a file ending in .auth_private in the directory its torrc names with");
+                    println!("ClientOnionAuthDir (Tor Browser: paste the key part when it asks for the onion's key).");
+                    EXIT_OK
+                }
+                Err(e) => emit_json(EXIT_FAIL, vec![("error", e.into())]),
+            }
+        }
+        _ => unreachable!("the dispatcher passes add, remove or list"),
+    }
+}
+
 // ── unseal-keys: turn key encryption at rest off ────────────────────────────
 
 /// Service names from the `<NAME>_TOR_SERVICE_HOSTS` variables, as the torrc
@@ -2593,6 +2732,18 @@ pub fn run(cmd: &str, rest: &[String]) -> Option<i32> {
             rest,
         )
         .map_or_else(|c| c, |a| cmd_crypt(&a)),
+        "client-auth" => match rest.split_first() {
+            Some((op, r)) if matches!(op.as_str(), "add" | "remove" | "list") => parse(
+                &format!("hiddenforge client-auth {op}"),
+                &[keys, o("--name", Kind::Value), o("--client", Kind::Value), json],
+                r,
+            )
+            .map_or_else(|c| c, |a| cmd_client_auth(&a, op)),
+            _ => emit_json(
+                EXIT_USAGE,
+                vec![("error", "usage: hiddenforge client-auth {add,remove,list} [--name <service>] [--client <name>] [--keys DIR] [--json]".into())],
+            ),
+        },
         "unseal-keys" => parse(
             "hiddenforge unseal-keys",
             &[o("--name", Kind::Value), o("--passphrase-file", Kind::Value), json],

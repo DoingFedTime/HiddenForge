@@ -67,6 +67,7 @@ Section 4 lists the risks; section 5 the countermeasures. One row per risk.
 
 | Control | Status | What HiddenForge does | Evidence |
 |---|---|---|---|
+| AC-3 Access enforcement | Partial | Opt-in client authorization: only holders of an authorized x25519 key can fetch the service's descriptor. Off by default, and access control inside the application remains the application's job. | `hiddenforge-rs/src/clientauth.rs`; `client-auth` |
 | AC-6 Least privilege | Met | Per-process capability sets measured and documented; Tor and monitors hold none. No-root mode: nothing ever runs as root. | README; `hiddenforge setup --no-root` |
 | CM-2 Baseline configuration | Met | Image inputs locked by hash; base by digest; generated torrc identical for identical environment. | `build-inputs.sha256`; `tests/rust/test_torrc_diff.py` |
 | CM-7 Least functionality | Met | No shell or tools in the image. The 2.x compatibility names answer only the exact forms 2.x ran and refuse everything else. Relay code compiled out. | `hiddenforge-rs/src/compat.rs`; `tor --list-modules` in the build |

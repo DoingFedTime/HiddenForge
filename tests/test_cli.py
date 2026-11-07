@@ -2121,3 +2121,50 @@ def test_unseal_keys_refuses_a_key_path_the_engine_cannot_mount(hf, tmp_path, ca
     doc = json.loads(capsys.readouterr().out)
     assert rc == hf.EXIT_USAGE and "contains ':'" in doc["error"]
     assert not called
+
+
+# ── client-auth ─────────────────────────────────────────────────────────────
+
+def test_client_auth_add_needs_a_client(hf, tmp_path, capsys, monkeypatch):
+    called = []
+    monkeypatch.setattr(hf.subprocess, "run", lambda *a, **k: called.append(a))
+    rc = hf.main(["client-auth", "add", "--keys", str(tmp_path), "--json"])
+    doc = json.loads(capsys.readouterr().out)
+    assert rc == hf.EXIT_USAGE and "--client" in doc["error"] and not called
+
+
+@pytest.mark.parametrize("bad", ["../x", "-x", "Alice", "a b", "x" * 64])
+def test_client_auth_refuses_a_bad_client_name(hf, tmp_path, capsys, monkeypatch, bad):
+    called = []
+    monkeypatch.setattr(hf.subprocess, "run", lambda *a, **k: called.append(a))
+    rc = hf.main(["client-auth", "add", f"--client={bad}", "--keys", str(tmp_path), "--json"])
+    assert rc == hf.EXIT_USAGE and not called
+    assert "invalid client name" in json.loads(capsys.readouterr().out)["error"]
+
+
+def test_client_auth_runs_confined_and_shows_the_key_once(hf, tmp_path, capsys, monkeypatch):
+    """Made in the image as the tor user with no network and no capabilities;
+    the private line is printed for the operator and appears nowhere else."""
+    seen = {}
+    line = "a" * 56 + ":descriptor:x25519:" + "B" * 52
+    out = json.dumps({"client": "alice", "client_auth_private": line, "exit_code": 0,
+                      "first_client": True, "name": "myapp", "ok": True,
+                      "onion": "a" * 56 + ".onion"}) + "\n"
+
+    def fake_run(cmd, **k):
+        seen["cmd"] = cmd
+        return hf.subprocess.CompletedProcess(cmd, 0, out, "")
+
+    monkeypatch.setattr(hf, "_engine", lambda: "docker")
+    monkeypatch.setattr(hf.subprocess, "run", fake_run)
+    rc = hf.main(["client-auth", "add", "--client", "alice", "--keys", str(tmp_path)])
+    text = capsys.readouterr().out
+    assert rc == 0 and line in text and "ONLY authorized clients" in text
+    cmd = seen["cmd"]
+    for flag in (["--network", "none"], ["--cap-drop", "ALL"], ["--user", "100:101"]):
+        i = cmd.index(flag[0])
+        assert cmd[i:i + 2] == flag
+    assert "--read-only" in cmd
+    assert cmd[cmd.index("client-auth"):] == ["client-auth", "add", "--name", "myapp",
+                                              "--json", "--client", "alice"]
+    assert list(tmp_path.iterdir()) == [], "the host wrote something itself"

@@ -104,6 +104,8 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--out", default="evidence")
     ap.add_argument("--image", default=os.environ.get("HIDDENFORGE_IMAGE", ""))
+    ap.add_argument("--inputs", default=os.environ.get("HIDDENFORGE_INPUTS", ""),
+                    help="the build-input archive directory, verified into the bundle")
     args = ap.parse_args()
 
     out = (REPO / args.out).resolve()
@@ -137,7 +139,23 @@ def main() -> int:
     rc_total |= _run("manifest-drift", [str(PY),
                      str(REPO / "scripts" / "check_manifest.py")], out)
     rc_total |= _run("lint-ruff", [str(REPO / ".venv" / "bin" / "ruff"),
-                                   "check", "."], out)
+                                   "check", ".", "scripts/hiddenforge"], out)
+    # The runtime (3.0): its own tests, lints, and the differential tests that
+    # hold it to the 2.x reference.
+    rs = REPO / "hiddenforge-rs"
+    rc_total |= _run("rust-fmt", ["cargo", "fmt", "--manifest-path", str(rs / "Cargo.toml"),
+                                  "--check"], out)
+    rc_total |= _run("rust-clippy", ["cargo", "clippy", "--manifest-path", str(rs / "Cargo.toml"),
+                                     "--release", "--locked", "--all-targets", "--",
+                                     "-D", "warnings"], out)
+    rc_total |= _run("rust-tests", ["cargo", "test", "--manifest-path", str(rs / "Cargo.toml"),
+                                    "--release", "--locked"], out)
+    rc_total |= _run("differential-tests", [str(PY), "-m", "pytest", "-q", "-p",
+                                            "no:cacheprovider", "tests/rust",
+                                            "tests/test_wizard_diff.py"], out)
+    if args.inputs:
+        rc_total |= _run("build-inputs", [str(PY), str(REPO / "scripts" / "build_inputs.py"),
+                                          "verify", args.inputs], out)
 
     # Copy generated artifacts rather than re-running (they are the same run).
     cov = REPO / "coverage.json"

@@ -183,11 +183,12 @@ command that is not one 2.x documented, such as `docker exec tor sh`, is
 refused with a message naming the 3.0 command. The full list is in the
 [CHANGELOG](CHANGELOG.md).
 
-Two hardening options are new in 3.0, both off by default:
+Three hardening options are new in 3.0, all off by default:
 
 | Option | What it does | How |
 |---|---|---|
 | No-root mode | The container starts as the tor user with no capabilities at all; nothing ever runs as root | `hiddenforge setup --no-root` |
+| Client authorization | Only clients you give a key to can reach the service; to anyone else the address leads nowhere | `hiddenforge client-auth add --name myapp --client alice`, then restart the container |
 | Key encryption at rest | The service key is kept on the volume only encrypted (AES-256-GCM, scrypt), and decrypted into RAM at every start | `hiddenforge setup --encrypt-keys`. The generated `deploy.sh` creates a random passphrase in `./key-passphrase.txt` if there is none |
 
 Key encryption protects a volume, disk or backup taken while the service is
@@ -197,6 +198,27 @@ it the address is gone. To turn it off (or before rolling back to 2.1.6, which
 cannot read a sealed key), stop the service and run
 `hiddenforge unseal-keys --keys ./tor-keys --name myapp --passphrase-file ./key-passphrase.txt`,
 then remove the passphrase lines from the compose file.
+
+### Client authorization
+
+For a service only certain people should reach (a source drop for one
+newsroom, an admin panel), give each person a key:
+
+```bash
+hiddenforge client-auth add --keys ./tor-keys --name myapp --client alice
+hiddenforge client-auth list --keys ./tor-keys --name myapp
+hiddenforge client-auth remove --keys ./tor-keys --name myapp --client alice
+```
+
+Restart the container after a change. From the first client on, Tor encrypts
+the service's descriptor to the authorized keys, so someone who has only the
+address cannot find the service on the network at all. `add` prints the
+client's private line once and does not keep it: hand it over on a channel you
+trust. The client puts it in a file ending in `.auth_private` in the directory
+its torrc names with `ClientOnionAuthDir` (Tor Browser asks for the key when it
+opens the address). The service stores only public keys
+(`<name>/authorized_clients/<client>.auth`), so the key volume leaking does not
+leak a client's key. Removing the last client opens the service again.
 
 ## Upgrading from 2.0.4
 
@@ -492,6 +514,7 @@ podman info --format '{{.Host.Security.Rootless}}'   # expected: true
 | Privilege drop | Tor and the guard monitors run as uid 100 with no capabilities. The supervisor keeps only what republishing the address needs: measured `CapEff 0xc2` under Docker, `0xc0` under rootless Podman, and no `CAP_KILL` |
 | No-root mode (opt-in) | `setup --no-root`: the container starts as uid 100 with no capabilities; nothing runs as root |
 | Key encryption at rest (opt-in) | `setup --encrypt-keys`: AES-256-GCM, scrypt-derived key, decrypted only into RAM |
+| Client authorization (opt-in) | `client-auth add`: Tor's restricted discovery; the descriptor is encrypted to the authorized clients' x25519 keys |
 | No core dumps | `RLIMIT_CORE` 0 and not dumpable for every HiddenForge process; `DisableDebuggerAttachment 1` for Tor |
 | Disk minimisation | `AvoidDiskWrites 1` |
 | Log scrubbing | `SafeLogging 1` |

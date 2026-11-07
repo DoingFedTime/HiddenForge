@@ -1,11 +1,11 @@
-# Signatures for HiddenForge 2.1.6
+# Signatures for HiddenForge 3.0.0
 
-Image digest: `sambent.dev/sam/hiddenforge@sha256:1127470c84f461004dbca2f35e45c20e5fb669dddde05b13d433ce040692979c`
+Image digest: `sambent.dev/sam/hiddenforge@sha256:RELEASE-DIGEST`
 
-The same index is served as `doingfedtime/hiddenforge@sha256:1127470c84f461004dbca2f35e45c20e5fb669dddde05b13d433ce040692979c`
+The same index is served as `doingfedtime/hiddenforge@sha256:RELEASE-DIGEST`
 on Docker Hub. It covers `linux/amd64` and `linux/arm64`.
 
-**What is signed:** 2.1.6 carries the **ML-DSA-65** signature
+**What is signed:** 3.0.0 carries the **ML-DSA-65** signature
 (`hiddenforge.digest.mldsa`) only. There is no hardware **SSH-FIDO2** signature
 (`hiddenforge.digest.sig`) for this release. One may be added later over the same
 digest, which would not need a new image. `hiddenforge verify-image` refuses a
@@ -16,20 +16,29 @@ release without it by default, and accepts with `--allow-pq-only`, reporting
 
 | File | What it is |
 |---|---|
-| `hiddenforge.digest` | The signed text: the 2.1.6 image index digest |
+| `hiddenforge.digest` | The signed text: the 3.0.0 image index digest |
 | `hiddenforge.digest.mldsa` | ML-DSA-65 signature over `hiddenforge.digest` |
 | `sambent-mldsa.pub` | The maintainer's ML-DSA-65 public key (pinned in `scripts/hiddenforge`) |
 | `allowed-signers` | Every SSH key that has signed a release, for `ssh-keygen -Y verify` |
+| `tor-release-keys.gpg` | Tor Project's release-signing keys; the Tor tarball's signature must verify against one |
+| `dhi-apk@docker-0F81AD7700D99184.rsa.pub` | Docker's DHI package-index key |
+| `alpine-devel@lists.alpinelinux.org-6165ee59.rsa.pub`, `...-616ae350.rsa.pub` | Alpine's x86_64 and aarch64 index keys (zlib comes from Alpine) |
+
+The last four are not release signatures: they are the keys
+`scripts/build_inputs.py` checks the build inputs against. Each was compared with
+its publisher's own copy before it was pinned.
 
 `cosign.pub` at the repository root verifies releases up to 2.0.3 only. It is not
 used for 2.0.4 or later.
 
 **Verify from master, not from the tag.** Signing an image needs the tag to exist
 first, so a release's signatures are committed after its tag. A checkout of
-`v2.1.6` therefore still holds the 2.1.5 signature files, which do not match the
-2.1.6 digest. That mismatch means "look on master", not "tampered with".
+`v3.0.0` therefore still holds the 2.1.6 signature files, which do not match the
+3.0.0 digest. That mismatch means "look on master", not "tampered with".
 
-The 2.1.5 signature (digest `sha256:6eb375ecdfd1c7fbbd08517308c15708668d890e81ced8729141190c57d24a1d`,
+The 2.1.6 signature (digest `sha256:1127470c84f461004dbca2f35e45c20e5fb669dddde05b13d433ce040692979c`,
+ML-DSA-65; superseded by 3.0.0) is in git history at the last commit before
+3.0.0's signatures. The 2.1.5 signature (digest `sha256:6eb375ecdfd1c7fbbd08517308c15708668d890e81ced8729141190c57d24a1d`,
 ML-DSA-65; superseded by 2.1.6, see the CHANGELOG) is in git history at commit
 `dc46389`. The 2.1.4 signature (digest `sha256:7732c01f505ba7826b422e2579d56f20c3f5ae11950336fb83507c1a35419582`,
 ML-DSA-65; superseded by 2.1.5) is in git history at commit
@@ -54,10 +63,10 @@ verification that compares `.Id` reports a false "NOT REPRODUCIBLE".
 ### Architecture: what is verified
 
 This release index is **multi-platform** (`linux/amd64` + `linux/arm64`), and the
-**whole index** was reproduced: two independent clean builds of `v2.1.6`, cloned under umask 007 and 022, produced
-the same index digest, which covers both platform manifests. The arm64 half was
-built under qemu emulation on an amd64 host; it was also run on a full-system
-arm64 VM (see `docs/PRODUCTION-READINESS.md` R6), but not on real ARM hardware.
+**whole index** was reproduced: two independent clean builds of `v3.0.0`
+produced the same index digest, which covers both platform manifests. The arm64
+half was built under qemu emulation on an amd64 host and run on a full-system
+arm64 VM, but not on real ARM hardware.
 An amd64-only build produces a different index digest than the two-platform
 index, and that is expected, not a failure: reproduce with the same
 `--platform` value the release used.
@@ -82,7 +91,7 @@ to phone home to:
    With `pqsign` installed, the equivalent is
    `pqsign verify --pub sambent-mldsa.pub --sig hiddenforge.digest.mldsa --in hiddenforge.digest`.
 2. **SSH-FIDO2** (YubiKey hardware key): `hiddenforge.digest.sig`, not published for
-   2.1.6. When a release carries one:
+   3.0.0. When a release carries one:
    ```
    ssh-keygen -Y verify -f allowed-signers -I sam@sambent.com -n file \
      -s hiddenforge.digest.sig < hiddenforge.digest
@@ -101,24 +110,28 @@ sha256sum sambent-mldsa.pub      # 4ae873ade7ee596c815f55f3052c0f01020b1817f86ea
 Confirm the digest you verified is the one you actually pulled:
 
 ```
-skopeo inspect --raw docker://sambent.dev/sam/hiddenforge:2.1.6 | sha256sum
-docker buildx imagetools inspect sambent.dev/sam/hiddenforge:2.1.6 | head -3
+skopeo inspect --raw docker://sambent.dev/sam/hiddenforge:3.0.0 | sha256sum
+docker buildx imagetools inspect sambent.dev/sam/hiddenforge:3.0.0 | head -3
 ```
 
 ## Reproducing the build
 
-This release is bit-for-bit reproducible. **Build from a fresh clone**; this is
-not optional, see the warning below. The release was built with **buildx
-v0.19.3** and a `docker-container` builder running **BuildKit v0.30.0**; arm64
-needs qemu's `binfmt_misc` handler for aarch64 on the host.
+This release is bit-for-bit reproducible, and the build is offline: it reads
+nothing but the source tree and the release's input archive. **Build from a
+fresh clone**; this is not optional, see the warning below. The release was built
+with a `docker-container` builder running **BuildKit v0.30.0**; arm64 needs
+qemu's `binfmt_misc` handler for aarch64 on the host.
 
 ```
-git clone --branch v2.1.6 https://sambent.dev/sam/HiddenForge.git /tmp/hf && cd /tmp/hf
+git clone --branch v3.0.0 https://sambent.dev/sam/HiddenForge.git /tmp/hf && cd /tmp/hf
+python3 scripts/build_inputs.py fetch \
+  https://sambent.dev/api/packages/sam/generic/hiddenforge-inputs/3.0.0/hiddenforge-inputs-3.0.0.tar /tmp/hf-inputs
 docker buildx version   # record this; buildx behaviour here is version-sensitive
 docker buildx create --name repro --driver docker-container \
-  --driver-opt image=moby/buildkit:v0.30.0
-export SOURCE_DATE_EPOCH=$(git log -1 --format=%ct v2.1.6)
+  --driver-opt image=moby/buildkit@sha256:0168606be2315b7c807a03b3d8aa79beefdb31c98740cebdffdfeebf31190c9f
+export SOURCE_DATE_EPOCH=$(git log -1 --format=%ct v3.0.0)
 docker buildx build --builder repro --no-cache --platform linux/amd64,linux/arm64 \
+  --build-context inputs=/tmp/hf-inputs \
   --build-arg SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH \
   --provenance=false --output type=oci,dest=out.tar,rewrite-timestamp=true .
 tar -xOf out.tar index.json | python3 -c 'import json,sys;print(json.load(sys.stdin)["manifests"][0]["digest"])'
@@ -150,12 +163,11 @@ layer, so 2.1.0 reproduces only from a clone made under the same umask as the
 one it was released from. From 2.1.1 every `COPY` states its mode with `--chmod`; clones
 under umask 007 and 022 build the same digest, and CI checks exactly that.
 
-**Older tags no longer build.** The Dockerfile pins exact Alpine package
-versions, and Alpine prunes superseded builds from its index. `v2.0.4`'s pins
-are gone, so a checkout of that tag fails at `apk add`; reproducing it would need
-an archived copy of the Alpine index from its release date. The same will
-eventually happen to 2.1.6, which is why its digest was reproduced twice at
-release time.
+**2.x tags no longer build; 3.0 tags do.** 2.x pinned exact Alpine package
+versions, and Alpine prunes superseded builds from its index, so `v2.0.4` and
+`v2.1.6` now fail at `apk add`. 3.0 builds from an archive of its inputs, which
+`build-inputs.sha256` locks and `fetch` verifies. That archive is kept for the
+current release and the one before it.
 
 ## Signing key rotation (as of 2.0.4)
 
@@ -178,7 +190,7 @@ JSON, the SBOM if present, and `build.json` binding all of it to the commit, its
 tree hash and the image index digest. `MANIFEST.sha256` covers the rest:
 
 ```
-python3 scripts/collect_evidence.py --out evidence --image sambent.dev/sam/hiddenforge:2.1.6
+python3 scripts/collect_evidence.py --out evidence --image sambent.dev/sam/hiddenforge:3.0.0
 ( cd evidence && sha256sum -c MANIFEST.sha256 )
 ```
 
@@ -187,5 +199,5 @@ failure rather than being omitted. The bundle was published for 2.1.0, 2.1.1 and
 2.1.2 as `hiddenforge-<version>-evidence.tar.gz` on this forge's package registry
 (<https://sambent.dev/sam/-/packages/generic/hiddenforge-release/>), with its
 `MANIFEST.sha256` signed by the same ML-DSA-65 key. 2.1.3 to 2.1.6 have no bundle: each is the previous image with packages updated, and the record of its checks
-is the CI run on its tag. A bundle is never committed (it would be stale
+is the CI run on its tag. 3.0.0 has one. A bundle is never committed (it would be stale
 the next commit).

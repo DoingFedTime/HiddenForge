@@ -2180,6 +2180,97 @@ def _unmountable(keys: Path) -> str | None:
     return None
 
 
+CLIENT_RE = re.compile(r"[a-z0-9_][a-z0-9_-]{0,62}")
+
+
+def cmd_client_auth(args) -> int:
+    """Client authorization (restricted discovery), opt-in.
+
+    With at least one authorized client, Tor encrypts the service descriptor to
+    the clients' keys: without a key the address is useless. The keypair is made
+    inside the image (it holds the cipher), as the tor user, with no network and
+    no capabilities. The service keeps only the public half; the private half is
+    printed once for the operator to hand over, and never stored.
+    """
+    try:
+        validate_name(args.name)
+        validate_image_ref(args.image)
+        if args.op in ("add", "remove") and not args.client:
+            raise ValueError("--client <name> is required")
+        if args.client and not CLIENT_RE.fullmatch(args.client):
+            raise ValueError(f"invalid client name {args.client!r}: lowercase letters, "
+                             "digits, '-' and '_', max 63, not starting with '-'")
+    except ValueError as exc:
+        return emit_json(EXIT_USAGE, error=str(exc))
+    keys = Path(args.keys).resolve()
+    try:
+        validate_keys_dir(str(keys))
+    except ValueError as exc:
+        return emit_json(EXIT_USAGE, error=str(exc))
+    if (err := _unmountable(keys)) is not None:
+        return emit_json(EXIT_USAGE, keys=str(keys), error=err)
+    if not keys.is_dir():
+        return emit_json(EXIT_USAGE, keys=str(keys),
+                         error=f"key directory {keys} does not exist")
+    eng = _engine()
+    if eng is None:
+        return emit_json(EXIT_USAGE, error="neither docker nor podman found on PATH; "
+                                           "client-auth runs inside the image")
+    inner = ["client-auth", args.op, "--name", args.name, "--json"]
+    if args.client:
+        inner += ["--client", args.client]
+    cmd = [eng, "run", "--rm", "--network", "none", "--read-only",
+           "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+           "--user", "100:101", "-v", f"{keys}:/var/lib/tor/hidden_service",
+           args.image, *inner]
+    # Bounded, but generously: `run` may first have to pull the image.
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=900)
+    except subprocess.TimeoutExpired:
+        return emit_json(EXIT_FAIL, error="the image did not finish within 15 minutes")
+    doc = None
+    for line in reversed(proc.stdout.strip().splitlines()):
+        try:
+            doc = json.loads(line)
+            break
+        except json.JSONDecodeError:
+            continue
+    if doc is None:
+        return emit_json(EXIT_FAIL, error=f"the image produced no JSON "
+                         f"(rc={proc.returncode}): {proc.stderr.strip()[-400:]}")
+    doc["keys"] = str(keys)
+    rc = int(doc.get("exit_code", proc.returncode))
+    if args.json:
+        sys.stdout.write(json.dumps(doc, sort_keys=True) + "\n")
+        return rc
+    if not doc.get("ok"):
+        _eprint(f"error: {doc.get('error', 'client-auth failed')}")
+        return rc
+    restart = "Restart the container: Tor reads the authorized clients when it starts."
+    if args.op == "list":
+        clients = doc.get("clients") or []
+        print(f"{args.name}: only these clients can connect: {', '.join(clients)}" if clients
+              else f"{args.name}: no client authorization (anyone with the address can connect)")
+    elif args.op == "remove":
+        print(f"{args.name}: " + (f"removed {args.client}" if doc.get("removed")
+                                  else f"{args.client} was not authorized") + f". {restart}")
+    else:
+        print(f"{args.name}: authorized client {args.client}.")
+        if doc.get("first_client"):
+            print(f"This is the first client: from the next start, ONLY authorized clients "
+                  f"can reach {doc.get('onion')}.")
+        print(restart)
+        print()
+        print(f"Give this line to {args.client}, over a channel you trust, and nowhere else. "
+              "It is shown once and not stored:")
+        print(doc.get("client_auth_private", ""))
+        print()
+        print("The client saves it as a file ending in .auth_private in the directory its "
+              "torrc names with ClientOnionAuthDir (Tor Browser: paste the key part when it "
+              "asks for the onion's key).")
+    return rc
+
+
 def cmd_unseal_keys(args) -> int:
     """Turn key encryption at rest off: the plaintext key goes back on the volume.
 
@@ -3569,6 +3660,16 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--force", action="store_true")
     _add_json(sp)
     sp.set_defaults(func=cmd_restore)
+
+    sp = sub.add_parser("client-auth",
+                        help="opt-in: only clients you give a key to can reach the service")
+    sp.add_argument("op", choices=["add", "remove", "list"])
+    sp.add_argument("--name", default=DEFAULT_NAME)
+    sp.add_argument("--client", default=None)
+    sp.add_argument("--keys", default=str(_default_keys()))
+    sp.add_argument("--image", default=DEFAULT_IMAGE)
+    _add_json(sp)
+    sp.set_defaults(func=cmd_client_auth)
 
     sp = sub.add_parser("unseal-keys",
                         help="turn key encryption at rest off (stop the service first)")

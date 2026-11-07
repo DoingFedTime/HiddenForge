@@ -76,6 +76,13 @@ inputs this project archives and verifies.
   passphrase stored beside the volume. `hiddenforge unseal-keys` turns it off
   again: with the service stopped it puts the plaintext key back, checks it
   reads back as the sealed key's content, and only then removes the sealed copy.
+- **Client authorization.** `hiddenforge client-auth add|remove|list` manages
+  Tor's restricted discovery: with at least one authorized client the service
+  descriptor is encrypted to the clients' x25519 keys, so the address alone no
+  longer reaches the service. The keypair is made inside the image as the tor
+  user with no network; the service keeps only the public key, and the
+  client's private line is printed once and never stored. Works with sealed
+  keys too.
 - **Offline setup wizard.** `wizard/hiddenforge-wizard.html` is one file you
   open from disk. It makes no network request of any kind (its Content Security
   Policy forbids every connection, form submission and external load) and writes
