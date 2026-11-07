@@ -19,10 +19,15 @@ one. Last checked against release 2.1.6 on 2026-11-03.
 
 | Adversary | Capability | Primary defence |
 |---|---|---|
-| Network adversary | Runs or observes relays; can force circuit rebuilds | Vanguards-lite (L2), bandguards, rendguard, 6 intro points |
+| Network adversary | Runs or observes relays; can force circuit rebuilds | Vanguards-lite (L2), bandguards and rendguard detectors, 6 intro points |
 | Backend application | Fully controls the thing behind the onion | **Nothing in this image.** See "What this cannot protect" |
-| Local unprivileged process | Runs in the container or on the host | 0700/0600 keys, minimal caps, read-only rootfs, symlink-safe startup |
-| Supply chain | Compromises a base image, an apk, a PyPI wheel, or the vendored generator | Digest-pinned base, pinned apk, hash-pinned pip, SHA256-verified vendor tarball |
+| Local unprivileged process | Runs in the container or on the host | 0700/0600 keys, minimal caps, read-only rootfs, symlink-safe startup, Landlock, no core dumps |
+| Code execution in the container | Gets a foothold through Tor or a monitor | No shell, interpreter or package manager to build on; uid 100 with no capabilities; seccomp twice over for Tor; Landlock with TCP denied for helpers |
+| Supply chain | Compromises the base image, a package, the Tor tarball, the vendored crate or generator | DHI base by digest with provenance verified; offline build from the `build-inputs.sha256` lock; package indexes and Tor's signatures checked against pinned keys; SHA-256-verified vendor tarball |
+| Base-image vendor | Docker Inc. builds the base image and rebuilds its packages (dhi.io/apk), so these binaries are Docker's builds, not Alpine's. One company, under one jurisdiction, that can be compelled | Digest pin, signature and provenance checks before adoption, a diff on every base update, an independent second scanner |
+| The project's own registry | A compromised sambent.dev serves different blobs for the mirrored base or the archived inputs | Every input is consumed by a digest or hash pinned in the repository, so a swapped blob fails the build |
+| A stolen release-signing key | Signs a malicious image as the maintainer | See "The release-signing key" below |
+| A tampered wizard | Writes a malicious deploy script that the operator then runs | Check its hash against the signed release; the browser wizard cannot reach the network |
 | The operator | Makes a mistake | Validators, `doctor`, `status`, `dropped_mappings` |
 
 ## Trust boundaries and the control at each one
@@ -93,17 +98,21 @@ from the same compromised clone, the pin is compromised with them, so the key
 fingerprints in `signatures/README.md` should also be checked against a copy
 obtained another way.
 
-**Startup privilege drop.** The container runs as root at PID 1 because it must
-chown the operator's key mount and then `su-exec` to `tor`. It probes
-`su-exec tor true` first and fails with a named error if it cannot, rather than
-looping. See "Residual risks" for why root is not removed.
+**Startup privilege drop.** By default the container starts as root at PID 1
+because it must chown the operator's key mount before starting Tor and the
+monitors as `tor`. It probes the drop first and fails with a named error if it
+cannot, rather than looping. It then drops every capability it does not need,
+confines itself with Landlock and gives up `CAP_KILL`. No-root mode (below)
+removes root entirely.
 
-**The build.** Base image pinned by digest; runtime apk packages pinned by exact
-version (the throwaway compiler stage that builds mkp224o is not); pip
-hash-pinned with `--require-hashes`; mkp224o vendored as a deterministic tarball
-whose SHA256 the Dockerfile verifies before extraction. The build is bit-for-bit
-reproducible (two `buildx` builds with the same `SOURCE_DATE_EPOCH` produce an
-identical OCI index digest).
+**The build.** Base and builder images pinned by digest. Every other input
+(packages, the Tor tarball, the vendored crate) comes from an archive locked by
+`build-inputs.sha256`; `scripts/build_inputs.py verify` refuses any archive that
+differs from the lock and checks every signature before the build runs, and the
+build itself has no network. mkp224o is vendored as a deterministic tarball
+whose SHA-256 the Dockerfile verifies. The build is bit-for-bit reproducible:
+two clean two-platform builds with the same `SOURCE_DATE_EPOCH` produce an
+identical OCI index.
 
 ## What this cannot protect against
 
@@ -116,13 +125,13 @@ identity. The README has the operational version of this list.
 
 ## Residual risks and accepted trade-offs
 
-- **Root at PID 1.** Required for the volume chown and the privilege drop. The
-  network-facing processes (Tor, Vanguards) run as `tor`. Containment comes from
-  the capability set, `no-new-privileges`, and `read_only`, all verified by
-  `doctor`.
+- **Root at PID 1 (default mode).** Required for the volume chown and the
+  privilege drop. The network-facing processes (Tor, the monitors) run as `tor`.
+  Containment comes from the capability set, `no-new-privileges`, `read_only` and
+  Landlock, all but the last verified by `doctor`. No-root mode removes it.
 - **Two stacked seccomp filters.** Tor installs its own in-process filter
-  (`Sandbox 1`), which covers **Tor alone** -- not the root supervisor, not
-  Vanguards. The runtime's default profile is therefore left in place and stacks
+  (`Sandbox 1`), which covers **Tor alone** -- not the supervisor, not the
+  monitors. The runtime's default profile is therefore left in place and stacks
   underneath it: the Tor process runs under two filters, everything else under
   one. Earlier releases shipped `seccomp=unconfined` on the belief that Tor's
   sandbox conflicted with it. That was wrong -- it was never reproduced, and a
@@ -133,16 +142,18 @@ identity. The README has the operational version of this list.
   `SETCONF` that `Sandbox 1` rejects. vanguards-lite covers L2; there is no L3.
   A long-lived service that needs L3 should run Vanguards without the sandbox on
   a dedicated host. This is a deliberate trade-off, not an oversight.
-- **No at-rest key encryption by default.** Tor needs the plaintext secret key in
-  `HiddenServiceDir`, which is the mount, so runtime encryption would be theatre.
-  `encrypt-key`/`decrypt-key` exist for offline use.
+- **Key encryption at rest is opt-in.** Off by default because it needs a
+  passphrase at every start, and HiddenForge restarts itself on purpose. See
+  "Key encryption at rest" below for what it does and does not protect.
 - **`nproc` must not be set.** `RLIMIT_NPROC` is counted per host uid and uid 100
-  is shared with other containers; a low limit makes `su-exec` fail `setuid()`
+  is shared with other containers; a low limit makes the drop to `tor` fail `setuid()`
   with `EAGAIN`. `pids_limit` is the correct per-container cap, and the compose
   files carry a comment so the ulimit is not re-added.
 - **Multi-arch.** The image is one two-platform index (amd64 and arm64). The
-  arm64 half is built under qemu emulation, reproduces to the same index digest,
-  and boots in a full-system arm64 VM, but it has not run on real ARM hardware.
+  arm64 half is built under qemu emulation and reproduces to the same index
+  digest. It boots and publishes an address under qemu user emulation with
+  `TOR_SANDBOX=0` (qemu cannot load Tor's seccomp filter), but it has not run on
+  real ARM hardware.
   See `docs/PRODUCTION-READINESS.md` R1 and R6.
 - **Host-mode CI runner.** Jobs run as the operator on the workstation, so the
   workflow guards against fork pull requests (fail-closed). A compromised
@@ -243,30 +254,12 @@ back where it came from. `show`, `status` and `doctor` read only public files.
 
 ### Standards coverage
 
-- **NIST SP 800-57** (key management) applies *partially*: keys live only in the
-  mounted volume and generation is separate from storage, but there is no formal
-  lifecycle policy, no HSM, and rotation is a manual, destructive, opt-in
-  command. Stated as partial, not met.
-- **NIST SP 800-190** (container security) applies *partially*: read-only rootfs,
-  dropped capabilities and non-root runtime processes are followed; the container
-  still starts as root to drop privileges, and that trade-off is above.
-- **No SP 800-53, ISO 27001 or SOC 2 mapping is claimed.** A fabricated mapping
-  is worse than no mapping.
+See [COMPLIANCE.md](COMPLIANCE.md): one row per control of NIST SP 800-190,
+SP 800-218, selected SP 800-53r5, SP 800-57, SLSA and the CIS Docker Benchmark,
+each with its evidence and an honest Met, Partial or Not met. "Mapped to",
+never "certified": no assessor has reviewed it.
 
-## 3.0: new trust boundaries (design)
-
-This section is the design for 3.0, written before the code. Each item states
-what 3.0 must do. It becomes ordinary text in the sections above only once it is
-built and checked, and until then nothing here is a claim about shipped code.
-
-### New adversaries
-
-| Adversary | Capability | Defence in 3.0 |
-|---|---|---|
-| Base-image vendor | Docker Inc. builds the base image and rebuilds its packages (dhi.io/apk), so these binaries are Docker's builds, not Alpine's. One company, under one jurisdiction, that can be compelled | Digest pin, signature and provenance checks before adoption, a diff on every base update, an independent second scanner |
-| The project's own registry | A compromised sambent.dev serves different blobs for the mirrored base or the archived inputs | Every input is consumed by a digest or hash pinned in the repository, so a swapped blob fails the build |
-| A stolen release-signing key | Signs a malicious image as the maintainer | See "The release-signing key" below |
-| A tampered wizard | Writes a malicious deploy script that the operator then runs | Signed hash, and the browser wizard cannot reach the network |
+## The 3.0 trust boundaries
 
 ### The base image
 
@@ -285,9 +278,10 @@ release, so others can watch it too.
 
 ### Tor
 
-Tor is compiled from Tor Project's release tarball. The build checks the
-tarball's SHA-256 and its signature against Tor's release-signing keys, which are
-pinned in this repository, and the compile is shown to be deterministic. This
+Tor is compiled from Tor Project's release tarball. Its SHA-256 file's
+signature is checked against Tor's release-signing keys, which are pinned in
+this repository, and the build checks the hash again; the compile is
+deterministic (the reproducible build covers it). This
 removes the wait for a distribution package when Tor ships a security fix. Trust
 moves to Tor Project's signing keys, which a Tor user already trusts.
 
@@ -315,16 +309,17 @@ authenticated by anything, so only tagged, signed releases are meant to be run.
   inside it cannot send anything anywhere. Its output is a deploy script that
   the operator runs, so a tampered copy means a tampered script: check the
   file's hash against the signed release before using it.
-- **Terminal wizard:** `hiddenforge setup`, run inside the signed image with
-  `--network none`. It is covered by the image signature.
+- **Terminal wizard:** `hiddenforge setup`. The same command exists in the
+  signed image (`docker run --rm --network none <image> setup ...`), where the
+  image signature covers it, and as the host CLI in the tagged source.
 
 ### No-root mode (opt-in)
 
 The container runs as `tor` (uid 100, gid 101) from the start, with every
-capability dropped and none added, and with no chown or su-exec at boot. The
-operator makes the key directory owned by 100:101 once, and the entrypoint
-refuses to start if it is not. For operators who choose it, this removes "Root
-at PID 1" from the residual risks. The default stays as it is today.
+capability dropped and none added, and with no chown at boot. The operator
+makes the key directory owned by 100:101 once (`setup --no-root` writes a deploy
+script that does it), and the entrypoint refuses to start if it is not. For
+operators who choose it, this removes "Root at PID 1" from the residual risks.
 
 ### Key encryption at rest (opt-in)
 
@@ -337,20 +332,17 @@ not protect: a running host, where the key is in memory, or a passphrase file
 stored on the same disk. The passphrase is needed at every start, and
 HiddenForge restarts itself on purpose (backend moves, Tor exits, reboots).
 Swap must stay disabled, as the compose files already require, so the
-plaintext never reaches disk.
+plaintext never reaches disk. A container with a sealed key and no passphrase
+refuses to start rather than generate a new address. `unseal-keys` turns it off:
+it restores the plaintext key, checks it reads back as the sealed content, and
+only then removes the sealed copy.
 
 ### No shell in the image
 
 The runtime image has no shell, no busybox and no package manager. Someone who
-gets code execution in the container finds no tools to build on.
-
-### Standards
-
-The "Standards coverage" list above is replaced in 3.0 by `docs/COMPLIANCE.md`:
-one row per control (NIST SP 800-190, SP 800-218, selected SP 800-53r5, SP
-800-57, SLSA, the CIS Docker Benchmark), each with its evidence and an honest
-Met, Partial or Not met. "Mapped to", never "certified": no assessor has
-reviewed it.
+gets code execution in the container finds no tools to build on. The names 2.x
+commands use (`sh`, `cat`, `su-exec`, `python3`, `test`, `true`) are the
+`hiddenforge` binary, and each answers only the exact forms 2.x ran.
 
 ## How to check these claims
 
@@ -359,6 +351,7 @@ hiddenforge doctor --json                 # caps, read-only, modes, torrc direct
 hiddenforge status --json                 # readiness + dropped_mappings
 hiddenforge verify-image --json           # both signatures, against the PINNED keys
 docker exec <c> su-exec tor tor --verify-config -f /etc/tor/torrc   # Tor accepts it
+python3 scripts/build_inputs.py verify <inputs dir>   # the build inputs are the locked ones
 .venv/bin/pytest -q                       # the host unit/property suite
 HIDDENFORGE_E2E=1 .venv/bin/pytest tests/test_e2e_live.py   # live acceptance
 ```
