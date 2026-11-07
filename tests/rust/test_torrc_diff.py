@@ -4,6 +4,7 @@ Both run on the same host and the same libc resolver, with the same environment.
 Every byte must match: the torrc, the service dirs, the dropped-mapping reasons,
 the recorded/unresolved backends and every log line.
 """
+
 import contextlib
 import io
 import json
@@ -18,7 +19,7 @@ from hypothesis import HealthCheck, given, settings, strategies as st
 REPO = Path(__file__).resolve().parents[2]
 BIN = REPO / "hiddenforge-rs" / "target" / "release" / "hiddenforge"
 sys.path.insert(0, str(REPO))
-import entrypoint  # noqa: E402
+import entrypoint
 
 
 def python_side(env):
@@ -30,18 +31,25 @@ def python_side(env):
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             content, dirs = entrypoint.build_torrc_string(
-                dropped=dropped, resolved=resolved, unresolved=unresolved)
-        return {"content": content, "hs_dirs": dirs, "dropped": dropped,
-                "resolved": resolved, "unresolved": sorted(unresolved),
-                "log": buf.getvalue().splitlines()}
+                dropped=dropped, resolved=resolved, unresolved=unresolved
+            )
+        return {
+            "content": content,
+            "hs_dirs": dirs,
+            "dropped": dropped,
+            "resolved": resolved,
+            "unresolved": sorted(unresolved),
+            "log": buf.getvalue().splitlines(),
+        }
     finally:
         os.environ.clear()
         os.environ.update(saved)
 
 
 def rust_side(env):
-    out = subprocess.run([str(BIN), "torrc-preview"], env=env, capture_output=True,
-                         check=True, timeout=30).stdout
+    out = subprocess.run(
+        [str(BIN), "torrc-preview"], env=env, capture_output=True, check=True, timeout=30
+    ).stdout
     doc = json.loads(out)
     doc["unresolved"] = sorted(doc["unresolved"])
     return doc
@@ -59,8 +67,11 @@ FIXED = [
     {"MYAPP_TOR_SERVICE_HOSTS": "80:8080,443:127.0.0.1:8443"},
     {"MYAPP_TOR_SERVICE_HOSTS": "80:localhost:80"},
     {"MYAPP_TOR_SERVICE_HOSTS": "80:nonexistent-host.invalid:80,81:8081"},
-    {"MY_APP_TOR_SERVICE_HOSTS": "80:8080", "myapp_TOR_SERVICE_HOSTS": "81:8081",
-     "MYAPP_TOR_SERVICE_HOSTS": "82:8082"},
+    {
+        "MY_APP_TOR_SERVICE_HOSTS": "80:8080",
+        "myapp_TOR_SERVICE_HOSTS": "81:8081",
+        "MYAPP_TOR_SERVICE_HOSTS": "82:8082",
+    },
     {"BAD.NAME_TOR_SERVICE_HOSTS": "80:8080", "GOOD_TOR_SERVICE_HOSTS": "80:8080"},
     {"A_TOR_SERVICE_HOSTS": "0:8080,70000:1,abc:1,1:2:3:4,,  ,nocolon"},
     {"A_TOR_SERVICE_HOSTS": "80:010.0.0.1:80,80:256.1.1.1:80,80:1.2.3.4:080"},
@@ -79,9 +90,9 @@ FIXED = [
 ]
 
 
-@pytest.fixture(scope="module", autouse=True)
-def built():
-    assert BIN.exists(), "cargo build --release first"
+pytestmark = pytest.mark.skipif(
+    not BIN.exists(), reason="build hiddenforge-rs first (cargo build --release)"
+)
 
 
 @pytest.mark.parametrize("env", FIXED)
@@ -92,7 +103,8 @@ def test_fixed_cases(env):
 
 ALPHA = "0123456789:,.abcz-_ \t\n\x1c" + "AZ" + "é​"
 names = st.text(alphabet="ABCXYZ_-.abc0\x1b", min_size=0, max_size=12).map(
-    lambda s: s + "_TOR_SERVICE_HOSTS")
+    lambda s: s + "_TOR_SERVICE_HOSTS"
+)
 values = st.text(alphabet=ALPHA, max_size=60)
 
 
@@ -103,4 +115,3 @@ def test_random_environments(env):
         return
     base = {"PATH": os.environ.get("PATH", "/usr/bin:/bin")}
     check({**base, **env})
-

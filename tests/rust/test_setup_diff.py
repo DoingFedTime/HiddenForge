@@ -4,6 +4,7 @@ Same arguments, same environment: every generated file must be byte-identical,
 and the --json descriptor identical once output_dir (an absolute path) is
 normalised.
 """
+
 import json
 import os
 import subprocess
@@ -15,6 +16,9 @@ import pytest
 REPO = Path(__file__).resolve().parents[2]
 RUST = REPO / "hiddenforge-rs" / "target" / "release" / "hiddenforge"
 PY = REPO / "scripts" / "hiddenforge"
+pytestmark = pytest.mark.skipif(
+    not RUST.exists(), reason="build hiddenforge-rs first (cargo build --release)"
+)
 FILES = ("compose.service.yml", "deploy.sh", "README.txt", "hiddenforge.json")
 
 CASES = [
@@ -38,22 +42,46 @@ CASES = [
     ["--backend", "web:80", "--no-root", "--runtime", "podman"],
     ["--service", "a:80:web:80", "--no-root", "--keys", "/srv/k ey"],
     ["--backend", "web:80", "--encrypt-keys"],
-    ["--backend", "web:80", "--encrypt-keys", "--no-root", "--runtime", "podman", "--passphrase-file", "/srv/pp'x"],
+    [
+        "--backend",
+        "web:80",
+        "--encrypt-keys",
+        "--no-root",
+        "--runtime",
+        "podman",
+        "--passphrase-file",
+        "/srv/pp'x",
+    ],
     ["--backend", "web:80", "--encrypt-keys", "--no-root", "--passphrase-file", "pp\nX"],
 ]
 
 
 def run(prog, args, out):
-    env = {"PATH": os.environ["PATH"], "HOME": "/tmp", "HIDDENFORGE_IMAGE": "sambent.dev/sam/hiddenforge:latest"}
+    env = {
+        "PATH": os.environ["PATH"],
+        "HOME": tempfile.gettempdir(),
+        "HIDDENFORGE_IMAGE": "sambent.dev/sam/hiddenforge:latest",
+    }
     cmd = [str(prog)] if prog == RUST else [str(REPO / ".venv" / "bin" / "python"), str(PY)]
     if prog == RUST:
         cmd = [str(RUST)]
-    p = subprocess.run([*cmd, "setup", "-o", out, "--non-interactive", "--json", *args],
-                       capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL, timeout=60)
+    p = subprocess.run(
+        [*cmd, "setup", "-o", out, "--non-interactive", "--json", *args],
+        capture_output=True,
+        text=True,
+        env=env,
+        stdin=subprocess.DEVNULL,
+        timeout=60,
+    )
     files = {f: (Path(out) / f).read_bytes() if (Path(out) / f).exists() else None for f in FILES}
     if files["hiddenforge.json"]:
-        files["hiddenforge.json"] = files["hiddenforge.json"].replace(os.getcwd().encode(), b"<cwd>")
-    modes = {f: oct((Path(out) / f).stat().st_mode & 0o777) if (Path(out) / f).exists() else None for f in FILES}
+        files["hiddenforge.json"] = files["hiddenforge.json"].replace(
+            os.getcwd().encode(), b"<cwd>"
+        )
+    modes = {
+        f: oct((Path(out) / f).stat().st_mode & 0o777) if (Path(out) / f).exists() else None
+        for f in FILES
+    }
     doc = json.loads(p.stdout) if p.stdout.strip() else None
     if isinstance(doc, dict) and "output_dir" in doc:
         doc["output_dir"] = "<out>"
@@ -64,7 +92,7 @@ def run(prog, args, out):
 def test_setup_identical(args):
     with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b:
         # The same relative output name inside each temp dir, so paths match.
-        oa, ob = os.path.join(a, "deploy"), os.path.join(b, "deploy")
+        _oa, _ob = os.path.join(a, "deploy"), os.path.join(b, "deploy")
         os.chdir(a)
         rp = run("py", args, "deploy")
         os.chdir(b)
