@@ -1177,7 +1177,37 @@ fn flush_closes(link: &mut Link, p: &mut Printer) -> std::io::Result<()> {
     Ok(())
 }
 
-fn new_consensus(link: &mut Link, rg: &mut Rendguard, p: &mut Printer) -> Result<(), String> {
+/// Full vanguards: the layers and where they persist.
+pub struct Full {
+    pub layers: crate::vanguards::Layers,
+    pub state: String,
+}
+
+impl Full {
+    fn apply(&self, link: &mut Link, p: &mut Printer) -> Result<(), String> {
+        let (code, l) = link
+            .command(&self.layers.setconf())
+            .map_err(|e| e.to_string())?;
+        if code != "250" {
+            p.log(
+                Level::Error,
+                &format!(
+                    "Tor refused the vanguard pins ({}). Full vanguards need TOR_SANDBOX=0.",
+                    l.join(" ")
+                ),
+            );
+            std::process::exit(1);
+        }
+        Ok(())
+    }
+}
+
+fn new_consensus(
+    link: &mut Link,
+    rg: &mut Rendguard,
+    full: &mut Option<Full>,
+    p: &mut Printer,
+) -> Result<(), String> {
     let ns = link.getinfo("ns/all").map_err(|e| e.to_string())?;
     let data_dir = link
         .command("GETCONF DataDirectory")
@@ -1191,12 +1221,51 @@ fn new_consensus(link: &mut Link, rg: &mut Rendguard, p: &mut Printer) -> Result
     let text = std::fs::read(&file).map_err(|e| format!("Cannot read {file}: {e}"))?;
     let weights = parse_weights(&String::from_utf8_lossy(&text))
         .ok_or_else(|| format!("Cannot read {file}: no bandwidth-weights"))?;
-    rg.xfer_use_counts(&parse_ns(&ns), &weights, p);
+    let routers = parse_ns(&ns);
+    if let Some(f) = full.as_mut() {
+        let before = (
+            crate::vanguards::Layers::guardset(&f.layers.layer2),
+            crate::vanguards::Layers::guardset(&f.layers.layer3),
+        );
+        if !f.layers.update(
+            &routers,
+            &weights,
+            now(),
+            &mut crate::vanguards::csprng_unit,
+        ) {
+            return Err("no relays to choose vanguards from".into());
+        }
+        f.apply(link, p)?;
+        let after = (
+            crate::vanguards::Layers::guardset(&f.layers.layer2),
+            crate::vanguards::Layers::guardset(&f.layers.layer3),
+        );
+        if before != after {
+            p.log(
+                Level::Notice,
+                &format!(
+                    "Full vanguards: {} layer-2 and {} layer-3 guards pinned.",
+                    f.layers.layer2.len(),
+                    f.layers.layer3.len()
+                ),
+            );
+        }
+        if let Err(e) = f.layers.save(&f.state) {
+            p.log(Level::Error, &e);
+            std::process::exit(1);
+        }
+    }
+    rg.xfer_use_counts(&routers, &weights, p);
     Ok(())
 }
 
 /// One connection's life. Returns "closed" or "failed: ...", as the addon did.
-fn control_loop(sock: &str, rg: &mut Rendguard, p: &mut Printer) -> String {
+fn control_loop(
+    sock: &str,
+    rg: &mut Rendguard,
+    full: &mut Option<Full>,
+    p: &mut Printer,
+) -> String {
     let mut link = match Link::connect(sock) {
         Ok(l) => l,
         Err(e) => return format!("failed: {e}"),
@@ -1218,7 +1287,7 @@ fn control_loop(sock: &str, rg: &mut Rendguard, p: &mut Printer) -> String {
                 env!("CARGO_PKG_VERSION")
             ),
         );
-        if let Err(e) = new_consensus(&mut link, rg, p) {
+        if let Err(e) = new_consensus(&mut link, rg, full, p) {
             p.log(
                 Level::Notice,
                 &format!("Tor needs descriptors: {e}. Trying again..."),
@@ -1251,10 +1320,17 @@ fn control_loop(sock: &str, rg: &mut Rendguard, p: &mut Printer) -> String {
                     .first()
                     .is_some_and(|l| l.starts_with("650+NEWCONSENSUS"))
                 {
-                    if let Err(e) = new_consensus(&mut link, rg, p) {
+                    if let Err(e) = new_consensus(&mut link, rg, full, p) {
                         p.log(Level::Notice, &format!("Tor needs descriptors: {e}."));
                     }
                     continue;
+                }
+                // A SIGHUP makes Tor re-read its torrc, which drops the pins.
+                if lines.iter().any(|l| l.starts_with("650 SIGNAL RELOAD")) {
+                    if let Some(f) = full.as_ref() {
+                        p.log(Level::Notice, "Tor got SIGHUP. Reapplying vanguards.");
+                        f.apply(&mut link, p).map_err(|e| format!("failed: {e}"))?;
+                    }
                 }
                 events = lines.iter().filter_map(|l| parse_event(l, t)).collect();
             }
@@ -1286,6 +1362,8 @@ fn control_loop(sock: &str, rg: &mut Rendguard, p: &mut Printer) -> String {
 /// `hiddenforge-guards --control_socket S [--state F] [--loglevel L] [--disable_vanguards]`
 pub fn main(args: &[String]) -> i32 {
     let mut sock = String::new();
+    let mut state = String::new();
+    let mut disable = false;
     let mut level = Level::Notice;
     let mut i = 0;
     while i < args.len() {
@@ -1302,8 +1380,11 @@ pub fn main(args: &[String]) -> i32 {
                 level = l;
                 i += 1;
             }
-            "--state" => i += 1,
-            "--disable_vanguards" => {}
+            "--state" => {
+                state = args.get(i + 1).cloned().unwrap_or_default();
+                i += 1;
+            }
+            "--disable_vanguards" => disable = true,
             other => {
                 eprintln!("hiddenforge-guards: unknown option {other}");
                 return 2;
@@ -1320,10 +1401,28 @@ pub fn main(args: &[String]) -> i32 {
         closes: vec![],
     };
     let mut rg = Rendguard::default();
+    let mut full = if disable {
+        None
+    } else {
+        if state.is_empty() {
+            eprintln!("hiddenforge-guards: full vanguards need --state <file>");
+            return 2;
+        }
+        let layers = crate::vanguards::Layers::load(&state);
+        p.log(
+            Level::Notice,
+            &format!(
+                "Full vanguards enabled: {} layer-2 and {} layer-3 guards restored from {state}.",
+                layers.layer2.len(),
+                layers.layer3.len()
+            ),
+        );
+        Some(Full { layers, state })
+    };
     let mut reconnects: u64 = 0;
     let mut first_try: Option<f64> = None;
     loop {
-        let ret = control_loop(&sock, &mut rg, &mut p);
+        let ret = control_loop(&sock, &mut rg, &mut full, &mut p);
         let t = now();
         let since = *first_try.get_or_insert(t);
         if ret == "closed" || reconnects % 10 == 0 {

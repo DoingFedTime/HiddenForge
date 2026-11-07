@@ -138,10 +138,11 @@ identity. The README has the operational version of this list.
   discovery run with the profile in logging mode recorded zero syscalls outside
   the allow list -- and its real effect was to leave the root supervisor
   completely unfiltered.
-- **L2-only guard pinning.** The full Vanguards addon's L2/L3 sets need a
-  `SETCONF` that `Sandbox 1` rejects. vanguards-lite covers L2; there is no L3.
-  A long-lived service that needs L3 should run Vanguards without the sandbox on
-  a dedicated host. This is a deliberate trade-off, not an oversight.
+- **L2-only guard pinning by default.** The full L2/L3 sets need a `SETCONF`
+  that `Sandbox 1` rejects, so the default keeps the sandbox and vanguards-lite
+  (L2, no L3). `HIDDENFORGE_VANGUARDS=full` with `TOR_SANDBOX=0` pins both
+  layers natively and gives up the Tor-specific filter. The operator picks which
+  risk to carry; neither choice is free.
 - **Key encryption at rest is opt-in.** Off by default because it needs a
   passphrase at every start, and HiddenForge restarts itself on purpose. See
   "Key encryption at rest" below for what it does and does not protect.

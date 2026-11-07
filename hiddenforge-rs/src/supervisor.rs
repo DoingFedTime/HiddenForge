@@ -57,6 +57,26 @@ struct Ctx {
     home: String,
     exe: String,
     landlock: bool,
+    /// Full vanguards (opt-in): where the pinned layers persist, and the one
+    /// directory the monitor may write (leaked once: Landlock rules are 'static).
+    vanguards_state: Option<(&'static str, &'static str)>,
+}
+
+/// The variable that turns full vanguards on.
+pub const VANGUARDS_ENV: &str = "HIDDENFORGE_VANGUARDS";
+const VANGUARDS_STATE_FILE: &str = "vanguards-full.state";
+
+/// `HIDDENFORGE_VANGUARDS`: unset/"lite" (Tor's vanguards-lite, the default) or
+/// "full". Anything else is refused rather than guessed.
+fn vanguards_mode() -> Result<bool, String> {
+    match std::env::var(VANGUARDS_ENV).as_deref() {
+        Err(_) | Ok("") | Ok("lite") => Ok(false),
+        Ok("full") => Ok(true),
+        Ok(v) => Err(format!(
+            "{VANGUARDS_ENV}={} is not a mode; use lite (the default) or full",
+            py::safe_str(v)
+        )),
+    }
 }
 
 /// A command plus the Landlock ruleset its child enforces before exec. Keep it
@@ -225,7 +245,8 @@ fn shutdown(
 }
 
 fn start_guards(ctx: &Ctx) -> std::io::Result<Child> {
-    let args = [
+    let mut rules = landlock::guards_rules();
+    let mut args = vec![
         "--control_socket",
         health::CONTROL_SOCKET,
         "--state",
@@ -234,12 +255,24 @@ fn start_guards(ctx: &Ctx) -> std::io::Result<Child> {
         "NOTICE",
         "--disable_vanguards",
     ];
+    if let Some((state, dir)) = ctx.vanguards_state {
+        args = vec![
+            "--control_socket",
+            health::CONTROL_SOCKET,
+            "--state",
+            state,
+            "--loglevel",
+            "NOTICE",
+        ];
+        // The one directory full vanguards may write: where the state lives.
+        rules.push((dir, landlock::RW));
+    }
     println!(
         "Starting Vanguards: {} {}",
         health::GUARDS_ARGV0,
         args.join(" ")
     );
-    let mut c = ctx.confined(health::GUARDS_ARGV0, &args, &landlock::guards_rules());
+    let mut c = ctx.confined(health::GUARDS_ARGV0, &args, &rules);
     c.cmd.spawn()
 }
 
@@ -272,6 +305,7 @@ pub fn run() -> i32 {
         },
         exe: privs::self_exe(),
         landlock: false,
+        vanguards_state: None,
     };
 
     // Sealed keys (opt-in): the passphrase is read once, now, and held only in memory.
@@ -406,6 +440,47 @@ pub fn run() -> i32 {
             return 1;
         }
     };
+
+    // ── Full vanguards (opt-in) ─────────────────────────────────────────────
+    match vanguards_mode() {
+        Err(e) => {
+            println!("FATAL: {e}");
+            return 1;
+        }
+        Ok(false) => {}
+        Ok(true) => {
+            if conf.content.lines().any(|l| l.starts_with("Sandbox 1")) {
+                println!(
+                    "FATAL: {VANGUARDS_ENV}=full needs TOR_SANDBOX=0. Tor's sandbox rejects every \
+                     SETCONF, and pinning the layer-2 and layer-3 guards is a SETCONF. Set both, or \
+                     leave {VANGUARDS_ENV} unset for Tor's vanguards-lite with the sandbox."
+                );
+                return 1;
+            }
+            // Persist on the key volume (the DataDirectory is a tmpfs): the
+            // first service's directory, which the tor user owns.
+            let mut names: Vec<String> = conf
+                .hs_dirs
+                .iter()
+                .filter_map(|d| d.rsplit('/').next().map(String::from))
+                .collect();
+            names.sort();
+            let Some(first) = names.first() else {
+                println!("FATAL: {VANGUARDS_ENV}=full needs at least one service");
+                return 1;
+            };
+            let state = format!("{}/{first}/{VANGUARDS_STATE_FILE}", torrc::KEYS_ROOT);
+            println!(
+                "Full vanguards: layer-2 and layer-3 guards are pinned and persist in {state}. \
+                 Tor's sandbox is off for this mode (TOR_SANDBOX=0); the engine's seccomp profile still applies."
+            );
+            let dir = format!("{}/{first}", torrc::KEYS_ROOT);
+            ctx.vanguards_state = Some((
+                Box::leak(state.into_boxed_str()),
+                Box::leak(dir.into_boxed_str()),
+            ));
+        }
+    }
 
     // Held for the container's life: once /var/lib/tor is the tor user's 0700,
     // root (without DAC_OVERRIDE, as under rootless Podman) cannot reach the key

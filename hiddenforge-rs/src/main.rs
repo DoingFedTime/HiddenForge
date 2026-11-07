@@ -25,6 +25,7 @@ mod sealed;
 mod sha3;
 mod supervisor;
 mod torrc;
+mod vanguards;
 
 use py::Json;
 use std::time::Duration;

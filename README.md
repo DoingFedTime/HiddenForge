@@ -146,6 +146,11 @@ The only two edits you need to make are flagged with `<-- EDIT`.
   - `NAME` is lowercased and used as the service directory name (underscores become hyphens).
   - Docker service names resolve to IP addresses at startup, so no static IPs are required.
 - `TOR_SANDBOX` set to `0` disables `Sandbox 1` (default: `1`)
+- `HIDDENFORGE_VANGUARDS` set to `full` pins layer-2 and layer-3 guards (the
+  full Vanguards defence) instead of Tor's vanguards-lite; it needs
+  `TOR_SANDBOX=0`. See [Full vanguards](#full-vanguards).
+- `HIDDENFORGE_KEY_PASSPHRASE_FILE` turns on key encryption at rest (written for
+  you by `hiddenforge setup --encrypt-keys`)
 
 > **A recreated backend is followed automatically.** Tor accepts only IPs, so the
 > service name is resolved at startup and the IP is written into the torrc. The
@@ -183,11 +188,12 @@ command that is not one 2.x documented, such as `docker exec tor sh`, is
 refused with a message naming the 3.0 command. The full list is in the
 [CHANGELOG](CHANGELOG.md).
 
-Three hardening options are new in 3.0, all off by default:
+Four hardening options are new in 3.0, all off by default:
 
 | Option | What it does | How |
 |---|---|---|
 | No-root mode | The container starts as the tor user with no capabilities at all; nothing ever runs as root | `hiddenforge setup --no-root` |
+| Full vanguards | Pins 3 layer-2 and 8 layer-3 guards, rotated as the Vanguards addon does, against guard discovery on a long-lived service. Costs Tor's own seccomp sandbox | `HIDDENFORGE_VANGUARDS: full` and `TOR_SANDBOX: "0"` in the tor service's environment |
 | Client authorization | Only clients you give a key to can reach the service; to anyone else the address leads nowhere | `hiddenforge client-auth add --name myapp --client alice`, then restart the container |
 | Key encryption at rest | The service key is kept on the volume only encrypted (AES-256-GCM, scrypt), and decrypted into RAM at every start | `hiddenforge setup --encrypt-keys`. The generated `deploy.sh` creates a random passphrase in `./key-passphrase.txt` if there is none |
 
@@ -198,6 +204,25 @@ it the address is gone. To turn it off (or before rolling back to 2.1.6, which
 cannot read a sealed key), stop the service and run
 `hiddenforge unseal-keys --keys ./tor-keys --name myapp --passphrase-file ./key-passphrase.txt`,
 then remove the passphrase lines from the compose file.
+
+### Full vanguards
+
+Tor's built-in vanguards-lite pins four layer-2 guards and nothing at layer 3.
+Tor's own proposal 333 says a long-lived, high-risk onion service relying on
+that alone "might provide those services with a false sense of security" and
+should run the full Vanguards defence. `HIDDENFORGE_VANGUARDS: full` does that
+natively: 3 layer-2 guards (each kept 1 to 45 days) and 8 layer-3 guards (1 to
+48 hours), chosen bandwidth-weighted the way the Vanguards addon chooses them,
+replaced when they expire or leave the consensus, and kept across restarts in
+`<first service>/vanguards-full.state` on the key volume.
+
+The cost: the pins are applied with SETCONF, and Tor's `Sandbox 1` rejects every
+SETCONF, so this mode needs `TOR_SANDBOX: "0"`. The container still runs under
+the engine's seccomp profile, Landlock and the capability drop; what goes is the
+second, Tor-specific filter. The container refuses to start with `full` and the
+sandbox on, rather than run without the pins. Which risk weighs more depends on
+your adversary: guard discovery against a long-lived service, or a remote
+exploit in Tor itself.
 
 ### Client authorization
 
@@ -521,7 +546,7 @@ podman info --format '{{.Host.Security.Rootless}}'   # expected: true
 | DoS defence (rendezvous) | `HiddenServicePoWDefensesEnabled 1` per service |
 | DoS defence (intro point) | `HiddenServiceEnableIntroDoSDefense 1` (rate 25/s, burst 200) |
 | Circuit overload | `HiddenServiceMaxStreams 100`, `HiddenServiceMaxStreamsCloseCircuit 1` |
-| Guard protection | Tor's vanguards-lite, pinned with `VanguardsLiteEnabled 1` so a consensus parameter cannot switch it off, plus native bandguards and rendguard detectors (**L2 only**; see the [Security Model](https://sambent.dev/sam/HiddenForge/wiki/Security-Model) wiki page for the L3 limitation on long-lived services) |
+| Guard protection | Tor's vanguards-lite, pinned with `VanguardsLiteEnabled 1` so a consensus parameter cannot switch it off, plus native bandguards and rendguard detectors. Opt-in full vanguards adds pinned layer 3 (**by default L2 only**; see the [Security Model](https://sambent.dev/sam/HiddenForge/wiki/Security-Model) wiki page for the L3 limitation on long-lived services) |
 | Key-volume tampering | Privileged start-up chown/chmod refuse to follow symlinks out of the hidden-service directory |
 | No relay or exit | Relay code compiled out of Tor; `ClientOnly 1`, `ExitPolicy reject *:*` |
 | Input validation | All environment variables validated before the torrc is written |

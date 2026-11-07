@@ -118,6 +118,7 @@ def main():
     srv.listen(4)
     srv.settimeout(120)
     closes = []
+    setconfs = []
     conn, _ = srv.accept()
     conn.settimeout(30)
     f = conn.makefile("rwb", buffering=0)
@@ -136,7 +137,7 @@ def main():
             send("250-AUTH METHODS=NULL")
             send('250-VERSION Tor="0.4.9.16"')
             send("250 OK")
-        elif cmd in ("AUTHENTICATE", "RESETCONF", "SETCONF", "TAKEOWNERSHIP"):
+        elif cmd in ("AUTHENTICATE", "RESETCONF", "TAKEOWNERSHIP"):
             send("250 OK")
         elif cmd == "GETINFO":
             key = arg
@@ -170,6 +171,9 @@ def main():
         elif cmd == "SETEVENTS":
             subscribed = set(arg.upper().split())
             send("250 OK")
+        elif cmd == "SETCONF":
+            setconfs.append(arg)
+            send("250 OK")
         elif cmd == "CLOSECIRCUIT":
             closes.append(arg.split()[0])
             send("250 OK")
@@ -200,7 +204,7 @@ def main():
     conn.close()
     srv.close()
     with open(OUT, "w") as fh:
-        json.dump({"closes": closes, "subscribed": sorted(subscribed)}, fh)
+        json.dump({"closes": closes, "subscribed": sorted(subscribed), "setconf": setconfs}, fh)
 
 
 main()

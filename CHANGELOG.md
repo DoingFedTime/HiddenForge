@@ -76,6 +76,12 @@ inputs this project archives and verifies.
   passphrase stored beside the volume. `hiddenforge unseal-keys` turns it off
   again: with the service stopped it puts the plaintext key back, checks it
   reads back as the sealed key's content, and only then removes the sealed copy.
+- **Full vanguards.** `HIDDENFORGE_VANGUARDS=full` pins 3 layer-2 and 8
+  layer-3 guards with the Vanguards addon's selection and lifetimes, persisted
+  on the key volume, instead of relying on vanguards-lite alone. It needs
+  `TOR_SANDBOX=0` (Tor's sandbox rejects the SETCONF that applies the pins), and
+  the container refuses to start otherwise. Randomness comes from the kernel's
+  CSPRNG.
 - **Client authorization.** `hiddenforge client-auth add|remove|list` manages
   Tor's restricted discovery: with at least one authorized client the service
   descriptor is encrypted to the clients' x25519 keys, so the address alone no
