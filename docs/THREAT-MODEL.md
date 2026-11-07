@@ -253,6 +253,105 @@ back where it came from. `show`, `status` and `doctor` read only public files.
 - **No SP 800-53, ISO 27001 or SOC 2 mapping is claimed.** A fabricated mapping
   is worse than no mapping.
 
+## 3.0: new trust boundaries (design)
+
+This section is the design for 3.0, written before the code. Each item states
+what 3.0 must do. It becomes ordinary text in the sections above only once it is
+built and checked, and until then nothing here is a claim about shipped code.
+
+### New adversaries
+
+| Adversary | Capability | Defence in 3.0 |
+|---|---|---|
+| Base-image vendor | Docker Inc. builds the base image and rebuilds its packages (dhi.io/apk), so these binaries are Docker's builds, not Alpine's. One company, under one jurisdiction, that can be compelled | Digest pin, signature and provenance checks before adoption, a diff on every base update, an independent second scanner |
+| The project's own registry | A compromised sambent.dev serves different blobs for the mirrored base or the archived inputs | Every input is consumed by a digest or hash pinned in the repository, so a swapped blob fails the build |
+| A stolen release-signing key | Signs a malicious image as the maintainer | See "The release-signing key" below |
+| A tampered wizard | Writes a malicious deploy script that the operator then runs | Signed hash, and the browser wizard cannot reach the network |
+
+### The base image
+
+3.0 uses Docker Hardened Images unchanged as the base: same layers, same
+digest, so anyone can confirm the base is Docker's published image. The base is
+adopted only by digest. A targeted image would have a new digest, and the pin
+refuses it, so the only way a malicious base gets in is through an update this
+project chooses to adopt. Before every adoption: verify Docker's signature and
+provenance, diff the package list and the binaries against the previous base,
+scan with two scanners, and record the result. The limit, stated plainly: a
+reproducible build proves this project's build was not tampered with. It proves
+nothing about a base that was malicious when it was signed. A vendor that is
+compelled to ship a signed, malicious update and does so is not caught by any
+control here, beyond the diff on update. The base digest is published with each
+release, so others can watch it too.
+
+### Tor
+
+Tor is compiled from Tor Project's release tarball. The build checks the
+tarball's SHA-256 and its signature against Tor's release-signing keys, which are
+pinned in this repository, and the compile is shown to be deterministic. This
+removes the wait for a distribution package when Tor ships a security fix. Trust
+moves to Tor Project's signing keys, which a Tor user already trusts.
+
+### The release-signing key
+
+3.0 is signed with the existing ML-DSA-65 key only. The hardware (SSH-FIDO2)
+half of the hybrid signature is not available for this release, and
+`verify-image` reports the result as `complete: false`, as for 2.1.x. The key is
+kept as a file on the maintainer's workstation (mode 0600). Anyone who obtains a
+copy of that file can sign as the maintainer. The hybrid design exists to close
+exactly this gap: with both halves, a stolen file alone is not enough. It stays
+open until the hardware half is added over the same digest.
+
+### Source authenticity
+
+Commits are not signed. The source at a release tag is proven by the
+reproducible build: rebuilding the tagged source must reproduce the signed
+digest, and changed source would not. Commits between releases are not
+authenticated by anything, so only tagged, signed releases are meant to be run.
+
+### The wizards
+
+- **Browser wizard:** one local HTML file, opened from disk, with no server. A
+  Content-Security-Policy blocks every network request, so even tampered code
+  inside it cannot send anything anywhere. Its output is a deploy script that
+  the operator runs, so a tampered copy means a tampered script: check the
+  file's hash against the signed release before using it.
+- **Terminal wizard:** `hiddenforge setup`, run inside the signed image with
+  `--network none`. It is covered by the image signature.
+
+### No-root mode (opt-in)
+
+The container runs as `tor` (uid 100, gid 101) from the start, with every
+capability dropped and none added, and with no chown or su-exec at boot. The
+operator makes the key directory owned by 100:101 once, and the entrypoint
+refuses to start if it is not. For operators who choose it, this removes "Root
+at PID 1" from the residual risks. The default stays as it is today.
+
+### Key encryption at rest (opt-in)
+
+The secret key is stored encrypted on the volume and decrypted into a tmpfs (RAM)
+at every start. This replaces the earlier position that decrypt-at-boot is
+theatre. That position is correct only when the passphrase sits next to the key.
+What it protects: the volume, a disk or a backup taken while the service is not
+running, as long as the passphrase is supplied from somewhere else. What it does
+not protect: a running host, where the key is in memory, or a passphrase file
+stored on the same disk. The passphrase is needed at every start, and
+HiddenForge restarts itself on purpose (backend moves, Tor exits, reboots).
+Swap must stay disabled, as the compose files already require, so the
+plaintext never reaches disk.
+
+### No shell in the image
+
+The runtime image has no shell, no busybox and no package manager. Someone who
+gets code execution in the container finds no tools to build on.
+
+### Standards
+
+The "Standards coverage" list above is replaced in 3.0 by `docs/COMPLIANCE.md`:
+one row per control (NIST SP 800-190, SP 800-218, selected SP 800-53r5, SP
+800-57, SLSA, the CIS Docker Benchmark), each with its evidence and an honest
+Met, Partial or Not met. "Mapped to", never "certified": no assessor has
+reviewed it.
+
 ## How to check these claims
 
 ```bash
