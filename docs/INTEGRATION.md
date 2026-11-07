@@ -205,7 +205,7 @@ count through `healthy`. The fields:
 | `running` | the container is up |
 | `healthy` | the healthcheck passes: bootstrapped, a circuit established, every service holding established introduction points with its descriptor uploaded to the network by this Tor, and Vanguards alive. Under Podman no engine healthcheck is set (rootless Podman 4.9 does not restart a container that has one when no systemd user session is reachable), so `health_status` is empty and `status` runs the same check itself |
 | `tor_bootstrapped` | Tor reports `PROGRESS=100` |
-| `hidden_service_published` | every configured service has a valid `hostname` (on rootless Podman `<name>.onion` is not written, and this is still true) |
+| `hidden_service_published` | every configured service has a valid `hostname` (2.1.x under rootless Podman does not write `<name>.onion`, and this is still true) |
 | `vanguards` | the guard-protection addon is alive |
 
 `status --json` exits `0` when ready, `4` when not, and `2` if the container is not found. Inside the container the same
@@ -500,8 +500,8 @@ print(addr["onion"], addr["key_path"])
   `status --json` until `ready`; first boot takes a few minutes, up to about 6), or the key exists
   but its directory is not readable from the host and the published
   `<name>.onion` has not been written yet. Under Docker that file appears once
-  the service is reachable; under rootless Podman it is never written, so read
-  the address inside the container (below).
+  the service is reachable (under rootless Podman, 2.1.x never writes it; 3.0
+  does). Until then, read the address inside the container (below).
 - **`status` says `container not found`**: pass `--container <your-compose-service>`;
   hiddenforge resolves Compose service labels automatically.
 - **The onion was reachable, then stopped after a redeploy**: the supervisor

@@ -1,0 +1,13 @@
+# Rules that cannot apply to this Dockerfile's structure. Each is a whole
+# class of instruction hadolint cannot see through; anything else still fails.
+ignored:
+  # Every FROM is `${ARG}` and every ARG is a name@sha256 digest. hadolint
+  # cannot expand the ARG, so it sees no tag; a digest is stricter than a tag.
+  - DL3006
+  # `COPY --from=inputs` names the build context the build is given
+  # (`--build-context inputs=<dir>`), not a stage, which hadolint does not model.
+  - DL3022
+  # apk installs offline from the locked, signature-checked archive
+  # (build-inputs.sha256). The archive's frozen index fixes every version; a
+  # version string in the Dockerfile would only repeat the lock.
+  - DL3018

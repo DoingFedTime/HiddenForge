@@ -13,15 +13,21 @@ tests happen.
 
 | Job | What it does |
 |---|---|
-| `lint` | hadolint (threshold `warning`), `ruff`, `py_compile` incl. the extensionless CLI, `mypy` over sources *and* tests, `tests/test_version_consistency.py` (manifest, CLI, CHANGELOG and golden output state one version), and `docker compose config -q` on both shipped compose files |
-| `unit` | host unit + property tests with the coverage floor enforced; `manifest.json` is checked against the code (not just parsed); `scripts/mutation_spotcheck.py` |
-| `mutation (tags and nightly)` | a full `mutmut run` over `entrypoint.py`, `healthcheck.py` and `vanity.py`, then `scripts/mutation_gate.py`: every mutant that survives must be explained in the gate's allowlist or the job fails. The gate also re-runs each mutant mutmut recorded as a `timeout` on its own, because that label is a wall-clock bound rather than a verdict and has been measured hiding live survivors; a mutant that really hangs must be named in `DOCUMENTED_HANGS`. Tag/schedule only -- the run takes twenty minutes and more, of which the timeout re-grade is the slow half. See `review/MUTATION-2026-09-18.md` |
-| `build-and-test` | `docker build`, the in-container torrc test, the CLI contract checks, a vanity smoke test, and the live acceptance suite (`HIDDENFORGE_E2E=1`) |
-| `security` | trivy (image + fs), semgrep (security-audit + dockerfile), gitleaks over every commit and the working tree; runs on a daily schedule so an advisory published after the last commit is still caught. Accepted findings live in `.trivyignore`/`.gitleaks.toml` |
-| `reproducibility` | clones the commit twice, once under umask 007 and once under 022, and builds each with `--no-cache` (a build served from the other's cache would report a match it did not earn) for `linux/amd64` only; fails if the OCI index digests differ. The two umasks are the point: a file mode leaking from the builder into a layer is invisible to two builds of one checkout, and it is how 2.1.0 failed to reproduce. The two-platform release digest is reproduced by hand before signing |
-| `pin-freshness (nightly)` | `scripts/check_pins.py` against the Alpine index: fails if a pinned apk version has disappeared, reports (does not auto-bump) a newer one. Schedule/dispatch only |
+| `lint` | hadolint (threshold `warning`); `cargo fmt --check` and `cargo clippy --all-targets -D warnings` for the runtime; the wizard is rebuilt from its sources and must match (`wizard/build.py --check`); `ruff`, `py_compile` incl. the extensionless CLI, `mypy` over sources *and* tests, `tests/test_version_consistency.py`, and `docker compose config -q` on both shipped compose files |
+| `unit` | host unit + property tests with the coverage floor enforced; `cargo test`; the differential tests that hold the Rust runtime to the 2.x reference (torrc, `setup`, the guard monitors' decisions) and the wizard to `setup`; `manifest.json` is checked against the code; `scripts/mutation_spotcheck.py` |
+| `mutation (tags and nightly)` | a full `mutmut run` over the 2.x Python reference (`entrypoint.py`, `healthcheck.py`, `vanity.py`), then `scripts/mutation_gate.py`: every mutant that survives must be explained in the gate's allowlist or the job fails. The gate also re-runs each mutant mutmut recorded as a `timeout` on its own, because that label is a wall-clock bound rather than a verdict; a mutant that really hangs must be named in `DOCUMENTED_HANGS`. Tag/schedule only. See `review/MUTATION-2026-09-18.md` |
+| `build-and-test` | verifies the build inputs, builds the image offline from them, checks the generated torrc is accepted by the image's Tor, checks the 2.x compatibility forms (and that `sh -c id` and `python3 -c` are refused), the CLI contract, a vanity smoke test, and the live acceptance suite (`HIDDENFORGE_E2E=1`) |
+| `security` | trivy and grype over the image at every severity, fixed or not (either finding anything fails the job); trivy fs (secrets, misconfiguration), semgrep (security-audit + dockerfile), gitleaks over every commit and the working tree. Runs daily too, so an advisory published after the last commit is still caught |
+| `reproducibility` | clones the commit twice, once under umask 007 and once under 022, and builds each with `--no-cache` for `linux/amd64`; fails if the OCI index digests differ. The two-platform release digest is reproduced by hand before signing |
+| `inputs-integrity (nightly)` | `scripts/build_inputs.py verify` over the archived inputs (lock, signatures, checksums), and a warning when Tor has published a newer stable than the one the build pins. Schedule/dispatch only |
 
-Every job has a `timeout-minutes` so a hung step cannot hold the single runner: lint 20, unit 30, mutation 60, build-and-test 30, security 30, reproducibility 30, pin-freshness 20. `mutation` and `pin-freshness` do not run on an ordinary push, so a green push run does not include them.
+Every job has a `timeout-minutes` so a hung step cannot hold the single runner: lint 20, unit 30, mutation 60, build-and-test 30, security 30, reproducibility 30, inputs-integrity 20. `mutation` and `inputs-integrity` do not run on an ordinary push, so a green push run does not include them.
+
+**The inputs.** The build needs the input archive, which is not in the
+repository (it is tens of megabytes of packages). The runner reads its path from
+the `HIDDENFORGE_INPUTS` repository variable. Fetch it once with
+`scripts/build_inputs.py fetch <url> <dir>`; every job that builds verifies it
+first.
 
 All jobs use `runs-on: docker`, mapped to **host mode** on
 the runner, so job steps execute directly on that machine and have `docker`, `git` and
@@ -33,13 +39,15 @@ are deliberate local steps on the maintainer's machine:
 - build the release from a clean checkout of the tag with the reproducible
   recipe in `signatures/README.md`, scan it, and push the same digest to
   `sambent.dev` and Docker Hub
-- sign the index digest: ML-DSA-65, and SSH-FIDO2 on a hardware key
+- publish the input archive (`scripts/build_inputs.py pack`) beside the release
+- sign the index digest: ML-DSA-65, and SSH-FIDO2 on a hardware key when it is
+  available
 
 The hardware signature needs the physical key, so it can never run in CI.
 
 ### A tag is the release gate
 
-Pushing a `v*` tag runs every job except `pin-freshness` (schedule and dispatch only), including the live acceptance suite
+Pushing a `v*` tag runs every job except `inputs-integrity` (schedule and dispatch only), including the live acceptance suite
 in `build-and-test`. **Do not publish an image until that run is green on
 the tagged commit** -- a tag whose CI never ran, or failed, must not become an
 image. The `reproducibility` and `security` jobs run on a tag too, so the released
@@ -55,17 +63,15 @@ be reproduced without the runner:
 ```bash
 .venv/bin/ruff check . scripts/hiddenforge   # plain `.` skips the extensionless CLI
 MYPY=.venv/bin/mypy sh scripts/typecheck.sh
-.venv/bin/python -m pytest -q --cov=entrypoint --cov-report=term
-docker build --build-arg SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)" \
+( cd hiddenforge-rs && cargo fmt --check && cargo clippy --release --locked --all-targets -- -D warnings \
+    && cargo test --release --locked && cargo build --release --locked )
+.venv/bin/python -m pytest -q tests/rust tests/test_wizard_diff.py
+python3 scripts/build_inputs.py verify ./inputs
+docker build --build-context inputs=./inputs \
+  --build-arg SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)" \
   -t sambent.dev/sam/hiddenforge:latest .
-# --entrypoint python3 is REQUIRED and is not decoration. The image's ENTRYPOINT
-# is `python3 /usr/local/bin/entrypoint.py`, so without it these arguments are
-# appended to the supervisor's argv: the container starts a real Tor service,
-# bootstraps, and runs forever. The smoke test never executes and the command
-# never returns. (This line used to omit it; running it verbatim is how that was
-# found.)
-docker run --rm --entrypoint python3 sambent.dev/sam/hiddenforge:latest \
-  /usr/local/bin/tests/test_torrc.py
+docker run --rm -e MYAPP_TOR_SERVICE_HOSTS=80:10.0.0.2:8080 \
+  --entrypoint /usr/local/bin/hiddenforge sambent.dev/sam/hiddenforge:latest torrc-preview
 HIDDENFORGE_E2E=1 .venv/bin/python -m pytest tests/test_e2e_live.py -v
 ```
 
@@ -88,12 +94,13 @@ following got found and fixed, none of which any amount of reading had surfaced:
 ```
 # If a runner daemon is running on this machine, stop it first: it holds the
 # cache DB (actcache/bolt.db).
+# Pass the inputs with --var HIDDENFORGE_INPUTS=<dir> on each exec line.
 forgejo-runner exec -i -self-hosted -W .forgejo/workflows/ci.yml -j lint  -E push
 forgejo-runner exec -i -self-hosted -W .forgejo/workflows/ci.yml -j unit  -E push
 forgejo-runner exec -i -self-hosted -W .forgejo/workflows/ci.yml -j security -E push
 forgejo-runner exec -i -self-hosted -W .forgejo/workflows/ci.yml -j reproducibility -E push
 forgejo-runner exec -i -self-hosted -W .forgejo/workflows/ci.yml -j build-and-test -E push
-forgejo-runner exec -i -self-hosted -W .forgejo/workflows/ci.yml -j pin-freshness -E schedule
+forgejo-runner exec -i -self-hosted -W .forgejo/workflows/ci.yml -j inputs-integrity -E schedule
 forgejo-runner exec -i -self-hosted -W .forgejo/workflows/ci.yml -j mutation -E schedule
 ```
 
@@ -103,5 +110,5 @@ does not provide it, so that one step fails locally. It is the last step and the
 only one, and it is expected to pass on the instance. Do not mistake it for a
 workflow defect.
 
-`-E push` selects the push event; `pin-freshness` is gated to
+`-E push` selects the push event; `inputs-integrity` is gated to
 `schedule`/`workflow_dispatch`, so run it with `-E schedule`.

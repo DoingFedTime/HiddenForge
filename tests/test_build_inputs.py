@@ -11,11 +11,14 @@ import hashlib
 import importlib.util
 import io
 import tarfile
-from pathlib import Path
 
 import pytest
 
-SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "build_inputs.py"
+from loader import repo_root
+
+# repo_root, not parents[1]: mutmut runs the suite from a copy of the tree in
+# mutants/, which has no scripts/ directory.
+SCRIPT = repo_root(__file__) / "scripts" / "build_inputs.py"
 
 
 @pytest.fixture

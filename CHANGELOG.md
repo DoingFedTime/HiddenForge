@@ -2,7 +2,7 @@
 
 All notable changes to HiddenForge are documented here.
 
-The latest release is **2.1.6**; its image digest and signatures are in
+The latest release is **3.0.0**; its image digest and signatures are in
 `signatures/` on master (a release's signatures are committed after its tag).
 3.0.0 is signed with ML-DSA-65 only, as 2.1.x is. `v2.0.5` is a git tag with no
 image of its own: its changes ship with 2.1.0.
@@ -111,7 +111,8 @@ inputs this project archives and verifies.
 - **Alpine pruning can no longer break a release build.** The inputs are kept
   for the current release and the one before it.
 - **Reproducible**: two clean builds give byte-identical images.
-- `pin-freshness` is replaced by `inputs-integrity`.
+- `pin-freshness` is replaced by `inputs-integrity`, and `scripts/check_pins.py`
+  and `scripts/bump_pins.py` are gone: there are no apk pins left to check.
 
 ### Upgrading
 

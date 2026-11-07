@@ -52,6 +52,13 @@ TOR_FPRS = {
 }
 
 
+def member_bytes(tar: tarfile.TarFile, member: tarfile.TarInfo | str) -> bytes:
+    f = tar.extractfile(member)
+    if f is None:
+        raise SystemExit(f"FAIL: {member} is not a regular file in its archive")
+    return f.read()
+
+
 def gzip_members(b: bytes) -> list[tuple[bytes, bytes]]:
     out, off = [], 0
     while off < len(b):
@@ -69,7 +76,7 @@ def verify_index(path: Path) -> dict[str, str]:
     with tarfile.open(fileobj=io.BytesIO(m[0][1])) as sig_tar:
         member = next(x for x in sig_tar.getmembers() if x.name.startswith(".SIGN.RSA"))
         keyname = member.name[len(".SIGN.RSA.") :]
-        sig = sig_tar.extractfile(member).read()
+        sig = member_bytes(sig_tar, member)
     if keyname.startswith("dhi-apk@"):
         keyname = "dhi-apk@docker-0F81AD7700D99184.rsa.pub"
     key = SIG / keyname
@@ -94,7 +101,7 @@ def verify_index(path: Path) -> dict[str, str]:
     if not ok:
         raise SystemExit(f"FAIL {path.name}: signature does not verify with {keyname}")
     with tarfile.open(fileobj=io.BytesIO(b"".join(x[1] for x in m[1:]))) as itar:
-        raw = itar.extractfile("APKINDEX").read()
+        raw = member_bytes(itar, "APKINDEX")
     idx = raw.decode()
     entries = {}
     for blk in idx.split("\n\n"):
@@ -250,7 +257,7 @@ def fetch(url: str, dest: Path) -> int:
                 raise SystemExit(f"FAIL fetch: unexpected entry {m.name!r} in the archive")
             target = dest / m.name
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(tar.extractfile(m).read())
+            target.write_bytes(member_bytes(tar, m))
     return verify(dest)
 
 

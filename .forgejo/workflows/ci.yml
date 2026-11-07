@@ -208,6 +208,7 @@ jobs:
             | sed 's#/var/lib/tor/hidden_service/myapp#/tmp/hs/myapp#' > "$RUNNER_TEMP/torrc"
           grep -q '^HiddenServicePort 80 10.0.0.2:8080$' "$RUNNER_TEMP/torrc"
           grep -q '^Sandbox 1 ' "$RUNNER_TEMP/torrc"
+          chmod 0644 "$RUNNER_TEMP/torrc"   # read by uid 65532 below
           docker run --rm --entrypoint /usr/bin/tor -v "$RUNNER_TEMP/torrc:/t:ro" \
             --tmpfs /tmp:uid=65532 --tmpfs /var/lib/tor:uid=65532,mode=0700 --user 65532 \
             sambent.dev/sam/hiddenforge:ci --verify-config -f /t
@@ -221,10 +222,14 @@ jobs:
           ! docker run --rm --entrypoint python3 "$img" -c 'print(1)'
           docker run --rm --entrypoint /usr/local/bin/hiddenforge "$img" version --json
 
-      - name: CLI machine contract
+      - name: CLI machine contract (as root and as the tor user)
         run: |
+          set -euo pipefail
           docker run --rm sambent.dev/sam/hiddenforge:ci version --json
           docker run --rm sambent.dev/sam/hiddenforge:ci info --json > /dev/null
+          # The tor user must be able to read everything the image ships for it
+          # (2.1.1 shipped a 0644 /opt/hiddenforge that only root could enter).
+          docker run --rm --user 100:101 sambent.dev/sam/hiddenforge:ci info --json > /dev/null
 
       - name: vanity generator smoke (result matches the prefix)
         run: |

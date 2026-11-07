@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -74,7 +75,7 @@ def test_wizard_matches_setup(case):
         }
         subprocess.run(
             [
-                str(REPO / ".venv/bin/python"),
+                sys.executable,
                 str(REPO / "scripts/hiddenforge"),
                 "setup",
                 "-o",

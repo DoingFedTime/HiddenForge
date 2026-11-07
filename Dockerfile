@@ -28,7 +28,7 @@ FROM ${RUNTIME} AS runtime
 # ── C builds: Tor and mkp224o ───────────────────────────────────────────────
 FROM ${C_BUILDER} AS cbuild
 ARG SOURCE_DATE_EPOCH=0
-SHELL ["/bin/sh", "-eu", "-c"]
+SHELL ["/bin/sh", "-eu", "-o", "pipefail", "-c"]
 COPY --from=inputs apk /repo
 COPY --from=inputs apk-alpine /repo-alpine
 COPY --from=inputs index/APKINDEX-x86_64.tar.gz /repo/x86_64/APKINDEX.tar.gz
@@ -45,6 +45,9 @@ RUN printf '/repo\n/repo-alpine\n' > /etc/apk/repositories; \
     rm -f /var/log/apk.log
 # Tor: relay and directory-authority code compiled out (an onion service never
 # runs it); --enable-gpl is required for the proof-of-work DoS defence.
+# (`cd` inside RUN: the SHELL has -e, so a failed cd stops the build. DL4006:
+# hadolint accepts pipefail only for bash/ash/zsh by name; this sh honours it.)
+# hadolint ignore=DL3003,DL4006,SC2164
 RUN echo "6180e193152f4525bdca5475168419b2a2035b963c3c60162a187f86e6160e48  /src/tor.tar.gz" | sha256sum -c -; \
     mkdir /src/tor && tar -xzf /src/tor.tar.gz -C /src/tor --strip-components=1; \
     cd /src/tor; \
@@ -60,6 +63,7 @@ RUN echo "6180e193152f4525bdca5475168419b2a2035b963c3c60162a187f86e6160e48  /src
     cp src/config/geoip src/config/geoip6 /out/usr/share/tor/; \
     /out/usr/bin/tor --list-modules
 # mkp224o: the vanity-address generator, one static binary (CC0-1.0).
+# hadolint ignore=DL3003,DL4006,SC2164
 RUN echo "1f951ed82577436fe2c160c01f7754170010137c2182eae7e47fce65f000dc8d  /src/mkp224o.tar.gz" | sha256sum -c -; \
     mkdir /src/mkp && tar -xzf /src/mkp224o.tar.gz -C /src/mkp --strip-components=1; \
     cd /src/mkp; ./autogen.sh; \
@@ -70,15 +74,15 @@ RUN echo "1f951ed82577436fe2c160c01f7754170010137c2182eae7e47fce65f000dc8d  /src
 # ── Rust build: the runtime binary ──────────────────────────────────────────
 FROM ${RUST_BUILDER} AS rbuild
 ARG SOURCE_DATE_EPOCH=0
-SHELL ["/bin/sh", "-eu", "-c"]
+SHELL ["/bin/sh", "-eu", "-o", "pipefail", "-c"]
 COPY --from=inputs apk /repo
 COPY --from=inputs index/APKINDEX-x86_64.tar.gz /repo/x86_64/APKINDEX.tar.gz
 COPY --from=inputs index/APKINDEX-aarch64.tar.gz /repo/aarch64/APKINDEX.tar.gz
 COPY --from=inputs cargo/vendor /cargo/vendor
 COPY --from=inputs cargo/config.toml /root/.cargo/config.toml
-COPY hiddenforge-rs/Cargo.toml hiddenforge-rs/Cargo.lock /build/
-COPY hiddenforge-rs/src /build/src
 WORKDIR /build
+COPY --chmod=0644 hiddenforge-rs/Cargo.toml hiddenforge-rs/Cargo.lock /build/
+COPY --chmod=0644 hiddenforge-rs/src /build/src
 # Linked against the image's own libcrypto (the one Tor uses, from the same
 # verified package), so there is one OpenSSL in the image and a CVE scan of
 # the libcrypto3 package covers the key-encryption code too.
@@ -91,10 +95,16 @@ RUN echo /repo > /etc/apk/repositories; \
 # ── Assemble: the extra runtime libraries, installed into a copy of the base ─
 FROM cbuild AS assemble
 ARG SOURCE_DATE_EPOCH=0
+SHELL ["/bin/sh", "-eu", "-o", "pipefail", "-c"]
 COPY --from=runtime / /rt
 COPY --from=rbuild /out/ /stage/
+# The directories first: a COPY --chmod=0644 that creates its destination
+# directory gives the directory 0644 too, and nobody but root can enter it
+# (2.1.1 shipped exactly that).
+RUN mkdir -p /stage/opt/hiddenforge /stage/usr/share/licenses/hiddenforge
 COPY --chmod=0644 manifest.json /stage/opt/hiddenforge/manifest.json
 COPY --chmod=0644 LICENSE /stage/usr/share/licenses/hiddenforge/LICENSE
+# hadolint ignore=DL3003,DL4006,SC2164
 RUN cp -a /out/. /stage/; \
     # Installed through apk into the copy, so the base's package database
     # records them and every scanner sees exactly what the image holds.
@@ -124,6 +134,10 @@ RUN cp -a /out/. /stage/; \
     done; \
     mkdir -p var/lib/tor/hidden_service etc/tor tmp; \
     chown 100:101 var/lib/tor; chmod 0700 var/lib/tor; chmod 1777 tmp; \
+    # Every directory must be enterable by the tor user, except the two that
+    # are meant not to be. Fail the build otherwise.
+    bad="$(find /delta -type d ! -perm -0005 ! -path /delta/var/lib/tor)"; \
+    if [ -n "$bad" ]; then echo "directories the tor user cannot enter: $bad" >&2; exit 1; fi; \
     find /delta -exec touch -h -d "@${SOURCE_DATE_EPOCH}" {} +
 
 # ── The image: DHI static, unchanged, plus one layer ────────────────────────
@@ -143,7 +157,9 @@ ENV HOME=/var/lib/tor \
     PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 # Root at start (default mode) only to hand the key volume to tor and drop;
 # Tor and the guards run as uid 100 with no capabilities. No-root mode: start
-# the container as 100:101 (see `hiddenforge setup --no-root`).
+# the container as 100:101 (see `hiddenforge setup --no-root`). SECURITY.md,
+# "Accepted findings", records why.
+# hadolint ignore=DL3002
 USER 0
 VOLUME ["/var/lib/tor/hidden_service/"]
 HEALTHCHECK --interval=60s --timeout=10s --start-period=120s --retries=3 \

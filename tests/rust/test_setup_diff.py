@@ -8,6 +8,7 @@ normalised.
 import json
 import os
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -62,7 +63,7 @@ def run(prog, args, out):
         "HOME": tempfile.gettempdir(),
         "HIDDENFORGE_IMAGE": "sambent.dev/sam/hiddenforge:latest",
     }
-    cmd = [str(prog)] if prog == RUST else [str(REPO / ".venv" / "bin" / "python"), str(PY)]
+    cmd = [str(prog)] if prog == RUST else [sys.executable, str(PY)]
     if prog == RUST:
         cmd = [str(RUST)]
     p = subprocess.run(

@@ -196,17 +196,32 @@ def _assert_stack_up(proc):
     raise AssertionError(f"the stack did not come up:\n{proc.stderr}")
 
 
-def _in_container(workdir, script: str) -> str:
-    """Run a shell snippet inside the running tor container, as root."""
-    proc = subprocess.run(
-        _compose(workdir, "exec", "-T", "tor", "sh", "-c", script, override=True),
-        capture_output=True, text=True, timeout=60)
-    assert proc.returncode == 0, f"{script!r} failed: {proc.stderr}"
-    return proc.stdout.strip()
+def _container_id(workdir) -> str:
+    proc = subprocess.run(_compose(workdir, "ps", "-q", "tor", override=True),
+                          capture_output=True, text=True, timeout=60, check=True)
+    cid = proc.stdout.strip()
+    assert cid, "the tor container is not running"
+    return cid
 
 
-def _proc_field(workdir, pid: str, field: str) -> str:
-    return _in_container(workdir, f"awk '/^{field}:/{{print $2}}' /proc/{pid}/status")
+def _host_pids(cid: str) -> dict[str, list[str]]:
+    """Host PIDs of the container's processes by name. 3.0 has no shell or
+    procps inside the image, so the processes are read from the host's /proc
+    (status and mounts are world-readable; nothing here needs root)."""
+    out = subprocess.run(["docker", "top", cid, "-eo", "pid,comm"], capture_output=True,
+                         text=True, timeout=60, check=True).stdout.splitlines()[1:]
+    pids: dict[str, list[str]] = {}
+    for line in out:
+        pid, comm = line.split(None, 1)
+        pids.setdefault(comm.strip(), []).append(pid)
+    return pids
+
+
+def _proc_field(pid: str, field: str) -> str:
+    for line in Path(f"/proc/{pid}/status").read_text().splitlines():
+        if line.startswith(field + ":"):
+            return line.split(":", 1)[1].split()[0]
+    raise AssertionError(f"no {field} in /proc/{pid}/status")
 
 
 @requires_image
@@ -242,52 +257,65 @@ def test_the_running_container_has_the_posture_the_fragment_promises(workdir):
                                     override=True),
                            capture_output=True, text=True).stdout
 
-        tor_pid = _in_container(workdir, "pgrep -x tor | head -1")
-        sup_pid = "1"   # the supervisor is the container's init
-        assert tor_pid, "no tor process in the container"
+        cid = _container_id(workdir)
+        pids = _host_pids(cid)
+        assert pids.get("tor"), f"no tor process in the container: {pids}"
+        tor_pid = pids["tor"][0]
+        sup_pid = subprocess.run(["docker", "inspect", "-f", "{{.State.Pid}}", cid],
+                                 capture_output=True, text=True, timeout=60,
+                                 check=True).stdout.strip()   # the container's init
 
-        # Tor: not root, and no capabilities at all. su-exec's uid change clears
+        # Tor: not root, and no capabilities at all. The uid change clears
         # permitted and effective; an empty ambient set keeps them cleared.
-        assert _proc_field(workdir, tor_pid, "Uid").split()[0] == "100"
-        assert _proc_field(workdir, tor_pid, "CapEff") == "0" * 16
-        assert _proc_field(workdir, tor_pid, "CapPrm") == "0" * 16
+        assert _proc_field(tor_pid, "Uid") == "100"
+        assert _proc_field(tor_pid, "CapEff") == "0" * 16
+        assert _proc_field(tor_pid, "CapPrm") == "0" * 16
+        # The guard monitors run as tor with nothing, too.
+        for pid in pids.get("hiddenforge", []):
+            assert _proc_field(pid, "Uid") == "100"
+            assert _proc_field(pid, "CapEff") == "0" * 16
 
         # The supervisor stays root for the container's life, so what bounds it
         # is its capability set. The drop must have happened, and must have come
         # out of PERMITTED -- a capability still permitted can be raised again.
         expected = f"{entrypoint.POST_SETUP_CAPS:016x}"
-        assert _proc_field(workdir, sup_pid, "CapEff") == expected
-        assert _proc_field(workdir, sup_pid, "CapPrm") == expected
+        assert _proc_field(sup_pid, "CapEff") == expected
+        assert _proc_field(sup_pid, "CapPrm") == expected
         retained = entrypoint.POST_SETUP_CAPS
         assert not retained & (1 << entrypoint.CAP_CHOWN), "CHOWN was not given up"
         assert not retained & (1 << entrypoint.CAP_FOWNER), "FOWNER was not given up"
 
         for pid, who in ((tor_pid, "tor"), (sup_pid, "the supervisor")):
-            assert _proc_field(workdir, pid, "NoNewPrivs") == "1", who
+            assert _proc_field(pid, "NoNewPrivs") == "1", who
             # 2 == SECCOMP_MODE_FILTER. Docker's default profile applies to the
             # whole container; Tor's own Sandbox 1 stacks on top of it.
-            assert _proc_field(workdir, pid, "Seccomp") == "2", who
+            assert _proc_field(pid, "Seccomp") == "2", who
 
-        # read_only: true, checked by trying to write rather than by reading YAML.
-        wrote = subprocess.run(
-            _compose(workdir, "exec", "-T", "tor", "sh", "-c",
-                     "touch /rootfs-write-probe", override=True),
-            capture_output=True, text=True, timeout=60)
+        # read_only: true, checked by trying to write rather than by reading
+        # YAML: the engine itself must refuse a file copied into the rootfs.
+        probe = workdir / "rootfs-write-probe"
+        probe.write_text("x")
+        wrote = subprocess.run(["docker", "cp", str(probe), f"{cid}:/rootfs-write-probe"],
+                               capture_output=True, text=True, timeout=60)
         assert wrote.returncode != 0, "the root filesystem is writable"
 
-        assert _in_container(workdir, "stat -c %a /var/lib/tor") == "700"
-        assert _in_container(workdir, "stat -c %u /var/lib/tor") == "100"
         # These are mount points inside the container under test, not temporary
         # files this process creates.
+        mount_lines = Path(f"/proc/{tor_pid}/mounts").read_text().splitlines()
+        mounts = {f[1]: f[3].split(",") for f in (line.split() for line in mount_lines)}
         for mount in ("/tmp", "/etc/tor", "/var/lib/tor"):  # noqa: S108
-            opts = _in_container(
-                workdir, f"awk '$2==\"{mount}\"{{print $4}}' /proc/mounts").split(",")
             for flag in ("noexec", "nosuid", "nodev"):
-                assert flag in opts, f"{mount} is missing {flag}: {opts}"
+                assert flag in mounts[mount], f"{mount} is missing {flag}: {mounts[mount]}"
+        # Tor's DataDirectory: 0700, owned by tor (Tor also refuses to start otherwise).
+        assert "mode=700" in mounts["/var/lib/tor"] and "uid=100" in mounts["/var/lib/tor"]
 
-        key = "/var/lib/tor/hidden_service/demo/hs_ed25519_secret_key"
-        assert _in_container(workdir, f"stat -c %a {key}") == "600"
-        assert _in_container(workdir, f"stat -c %U {key}") == "tor"
+        # The key's modes, as the image's own doctor reports them.
+        doc = subprocess.run(_compose(workdir, "exec", "-T", "tor", "hiddenforge", "doctor",
+                                      "--keys-only", "--json", override=True),
+                             capture_output=True, text=True, timeout=60)
+        checks = {c["check"]: c for c in json.loads(doc.stdout)["checks"]}
+        assert checks["key dir demo is 0700"]["ok"], checks
+        assert checks["secret key demo is 0600"]["ok"], checks
     finally:
         subprocess.run(_compose(workdir, "down", "-v", override=True),
                        capture_output=True, timeout=120)
@@ -386,9 +414,12 @@ def _boot(image: str, keys: Path) -> str:
 
 
 def _identity(keys: Path) -> tuple[str, str]:
-    """(sha256 of the secret key, hostname), read as root in a throwaway container."""
+    """(sha256 of the secret key, hostname), read as root in a throwaway container.
+
+    Read with the PREVIOUS image (2.x has a shell and coreutils; 3.0 has
+    neither), which is also the one the upgrade is tested against."""
     out = subprocess.run(
-        ["docker", "run", "--rm", "--entrypoint", "sh", "-v", f"{keys}:/k:ro", IMAGE,
+        ["docker", "run", "--rm", "--entrypoint", "sh", "-v", f"{keys}:/k:ro", PREVIOUS_IMAGE,
          "-c", "sha256sum /k/mysite/hs_ed25519_secret_key; cat /k/mysite/hostname"],
         capture_output=True, text=True, check=True).stdout.split()
     return out[0], out[-1]

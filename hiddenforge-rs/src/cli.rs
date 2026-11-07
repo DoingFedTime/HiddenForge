@@ -651,7 +651,7 @@ fn not_ready_error(keys: &str, name: &str) -> String {
     }
     if !access(&d, libc::R_OK | libc::X_OK) {
         return format!(
-            "address not published yet: {d} exists but is not readable by this user, and {} does not exist. Under Docker it appears once the service is reachable. Under rootless Podman it is never written; pass --container <name> to read the address from inside the container.",
+            "address not published yet: {d} exists but is not readable by this user, and {} does not exist. Under Docker it appears once the service is reachable. Under rootless Podman, 2.1.x never writes it (3.0 does); pass --container <name> to read the address from inside the container.",
             join(keys, &format!("{name}.onion"))
         );
     }

@@ -8,8 +8,6 @@ excuse itself.
 """
 import re
 
-import pytest
-
 from loader import repo_root
 
 DOCKERFILE = repo_root(__file__) / "Dockerfile"
@@ -27,147 +25,24 @@ def test_every_tolerated_failure_is_grouped():
     assert not bare, "an ungrouped tolerated failure can excuse earlier steps:\n" + "\n".join(bare)
 
 
-def test_cli_tor_version_matches_the_dockerfile_pin():
-    """The CLI reports TOR_VERSION in `info` and manifest.json, but nothing tied it
-    to the apk pin the image actually installs. When Alpine pruned 0.4.9.13 and
-    the pin moved, the CLI kept advertising the old version. Read both and compare.
-    """
+def test_cli_tor_version_matches_the_tor_the_dockerfile_builds():
+    """The CLI reports TOR_VERSION in `info` and manifest.json. Tie it to the
+    tarball the Dockerfile compiles, so a Tor update cannot leave the CLI
+    advertising the old version."""
     from loader import load_file
 
-    pins = re.findall(r"^\s*tor=([0-9.]+)-r\d+\b", DOCKERFILE.read_text(), re.M)
-    assert len(pins) == 1, f"expected exactly one tor apk pin, found {pins}"
+    built = re.findall(r"tor/tor-([0-9.]+)\.tar\.gz", DOCKERFILE.read_text())
+    assert built and len(set(built)) == 1, f"expected one Tor tarball, found {built}"
     cli = load_file(repo_root(__file__) / "scripts" / "hiddenforge", "hf_cli_torpin")
-    assert pins[0] == cli.TOR_VERSION
+    assert built[0] == cli.TOR_VERSION
 
 
-def test_every_apk_pin_is_documented_with_its_exact_version():
-    """The README pin table and docs/DEPENDENCIES.md quote each pinned version.
-    A pin bump that forgets either one leaves the published docs naming a package
-    the image no longer installs, so read the pins the way check_pins.py does
-    and require each one, version included, in both tables."""
-    from loader import load_file
-
-    root = repo_root(__file__)
-    pins = load_file(root / "scripts" / "check_pins.py", "hf_check_pins").parse_pins(
-        DOCKERFILE.read_text())
-    expected = {"tor", "python3", "openssl", "zlib", "libexpat", "musl", "su-exec", "py3-pip"}
-    assert expected <= set(pins)
-    readme = (root / "README.md").read_text()
-    deps = (root / "docs" / "DEPENDENCIES.md").read_text()
-    missing = [f"README: {p}={v}" for p, v in pins.items()
-               if f"| `{p}` apk | `{v}` |" not in readme]
-    missing += [f"DEPENDENCIES: {p}={v}" for p, v in pins.items()
-                if f"| `{p}` | `{v}` |" not in deps]
-    assert not missing, "pins not documented at their exact version: " + ", ".join(missing)
-
-
-def test_check_pins_exits_3_when_it_cannot_check():
-    """Exit 3 means "could not check", distinct from a pruned pin (2). It used to
-    be `raise SystemExit("exit 3: ...")`, which prints the text and exits 1."""
-    import subprocess
-    import sys
-
-    root = repo_root(__file__)
-    proc = subprocess.run([sys.executable, str(root / "scripts" / "check_pins.py"),
-                           "--branch", "not a branch"],
-                          capture_output=True, text=True, timeout=60, check=False)
-    assert proc.returncode == 3, (proc.returncode, proc.stderr)
-    assert "implausible --branch" in proc.stderr
-
-
-
-@pytest.mark.parametrize("failure", ["reset", "partial", "junk", "no-index", "empty-index"])
-def test_check_pins_never_mistakes_a_bad_download_for_an_answer(failure, monkeypatch, capsys):
-    """Every way of not getting the index is exit 3, not a traceback (exit 1)."""
-    import gzip
-    import http.client
-    import io
-    import tarfile
-
-    from loader import load_file
-
-    cp = load_file(repo_root(__file__) / "scripts" / "check_pins.py", "hf_check_pins_f")
-
-    def empty_tar():
-        buf = io.BytesIO()
-        with tarfile.open(fileobj=buf, mode="w:gz"):
-            pass
-        return buf.getvalue()
-
-    class Resp(io.BytesIO):
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            return False
-
-    def fake(url, timeout):
-        if failure == "reset":
-            raise ConnectionResetError("reset by peer")
-        if failure == "partial":
-            raise http.client.IncompleteRead(b"x")
-        if failure == "junk":
-            return Resp(gzip.compress(b"not a tar"))
-        if failure == "empty-index":
-            buf = io.BytesIO()
-            with tarfile.open(fileobj=buf, mode="w:gz") as tar:
-                info = tarfile.TarInfo("APKINDEX")
-                info.size = 0
-                tar.addfile(info, io.BytesIO(b""))
-            return Resp(buf.getvalue())
-        return Resp(empty_tar())
-
-    monkeypatch.setattr(cp.urllib.request, "urlopen", fake)
-    with pytest.raises(SystemExit) as exc:
-        cp.fetch_index("v3.23", "x86_64")
-    assert exc.value.code == 3
-
-
-
-def test_check_pins_usage_errors_are_not_mistaken_for_a_pruned_pin():
-    """argparse exits 2 on a bad option, which is also "a pin is gone"."""
-    import subprocess
-    import sys
-
-    proc = subprocess.run([sys.executable, str(repo_root(__file__) / "scripts" / "check_pins.py"),
-                           "--no-such-option"], capture_output=True, text=True, timeout=60,
-                          check=False)
-    assert proc.returncode == 3, (proc.returncode, proc.stderr)
-
-
-def test_check_pins_an_empty_community_index_is_not_a_pruned_pin(monkeypatch):
-    """main lists packages, community comes back as a valid but empty index:
-    that is "could not check" (3), not "every community pin is gone" (2)."""
-    import io
-    import tarfile
-
-    from loader import load_file
-
-    cp = load_file(repo_root(__file__) / "scripts" / "check_pins.py", "hf_check_pins_repo")
-
-    def index(text):
-        buf = io.BytesIO()
-        with tarfile.open(fileobj=buf, mode="w:gz") as tar:
-            data = text.encode()
-            info = tarfile.TarInfo("APKINDEX")
-            info.size = len(data)
-            tar.addfile(info, io.BytesIO(data))
-        return buf.getvalue()
-
-    class Resp(io.BytesIO):
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            return False
-
-    def fake(url, timeout):
-        return Resp(index("P:tor\nV:0.4.9.14-r0\n\n" if "/main/" in url else ""))
-
-    monkeypatch.setattr(cp.urllib.request, "urlopen", fake)
-    with pytest.raises(SystemExit) as exc:
-        cp.fetch_index("v3.23", "x86_64")
-    assert exc.value.code == 3
+def test_the_tor_tarball_is_locked():
+    """The Tor tarball the Dockerfile copies must be one build-inputs.sha256 locks."""
+    built = re.findall(r"(tor/tor-[0-9.]+\.tar\.gz)", DOCKERFILE.read_text())
+    lock = (repo_root(__file__) / "build-inputs.sha256").read_text()
+    for path in set(built):
+        assert f"./{path}\n" in lock, f"{path} is not in build-inputs.sha256"
 
 
 def test_every_copy_states_its_mode():
@@ -182,9 +57,12 @@ def test_every_copy_states_its_mode():
     copies = [(n, line.strip()) for n, line in enumerate(lines, 1)
               if re.match(r"\s*(COPY|ADD)\s", line)]
     assert copies, "no COPY in the Dockerfile: the parser is looking at the wrong file"
+    # From the build context (no --from): its modes come from the checkout. A
+    # copy from another stage or from the verified inputs carries modes the
+    # build itself set, and the reproducibility job checks those.
     unmoded = [f"{n}: {text}" for n, text in copies
-               if not re.search(r"\s--chmod=0[0-7]{3}\s", text)]
-    assert unmoded == [], "COPY/ADD without an explicit --chmod:\n" + "\n".join(unmoded)
+               if "--from=" not in text and not re.search(r"\s--chmod=0[0-7]{3}\s", text)]
+    assert unmoded == [], "COPY/ADD from the build context without --chmod:\n" + "\n".join(unmoded)
 
 
 def test_every_copy_destination_directory_exists_before_the_copy():
@@ -194,15 +72,22 @@ def test_every_copy_destination_directory_exists_before_the_copy():
     way. Every destination directory must be one the base image already has or
     one an earlier RUN creates with `mkdir -p`.
     """
-    base_dirs = {"/tmp", "/usr/local/bin"}  # noqa: S108 - paths inside the image
+    base_dirs = {"/", "/build"}  # WORKDIR /build precedes the copies into it
     created: set[str] = set()
     missing = []
     for n, line in enumerate(_logical_lines(), 1):
         if line.startswith("RUN") and "mkdir -p" in line:
-            for arg in line.split("mkdir -p", 1)[1].split("&&", 1)[0].split():
+            for arg in line.split("mkdir -p", 1)[1].split("&&", 1)[0].split(";", 1)[0].split():
                 created.add(arg.rstrip("/"))
+                parts = arg.rstrip("/").split("/")
+                created.update("/".join(parts[:i]) for i in range(2, len(parts)))
+        # Only a copy with --chmod gives the directories it creates that mode.
         m = re.match(r"(COPY|ADD)\s+(?:--\S+\s+)*\S+\s+(\S+)$", line)
-        if m:
+        if m and "--chmod=" not in line:
+            # A copy without --chmod creates its parents with ordinary modes.
+            parts = m.group(2).rstrip("/").split("/")
+            created.update("/".join(parts[:i]) for i in range(2, len(parts)))
+        elif m:
             dest = m.group(2)
             parent = dest.rstrip("/").rsplit("/", 1)[0] or "/"
             if parent not in base_dirs and parent not in created:

@@ -19,6 +19,7 @@ MYPYPATH=. exec "$MYPY" \
     entrypoint.py \
     healthcheck.py \
     vanity.py \
+    scripts/build_inputs.py \
     scripts/check_manifest.py \
     scripts/coverage_summary.py \
     scripts/mutation_gate.py \

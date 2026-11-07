@@ -763,9 +763,9 @@ def _not_ready_error(keys: Path, name: str) -> str:
     if not os.access(d, os.R_OK | os.X_OK):
         return (f"address not published yet: {d} exists but is not readable by this "
                 f"user, and {keys / (name + '.onion')} does not exist. Under Docker it "
-                "appears once the service is reachable. Under rootless Podman it is "
-                "never written; pass --container <name> to read the address from "
-                "inside the container.")
+                "appears once the service is reachable. Under rootless Podman, 2.1.x "
+                "never writes it (3.0 does); pass --container <name> to read the "
+                "address from inside the container.")
     return "address not generated yet (Tor has not written hostname)"
 
 
@@ -2180,6 +2180,8 @@ def cmd_unseal_keys(args) -> int:
             raise ValueError("--passphrase-file is required "
                              "(the passphrase the key was sealed with)")
         passphrase = _passphrase(args)
+        if passphrase is None:
+            raise ValueError("--passphrase-file is required")
     except (ValueError, OSError, UnicodeDecodeError) as exc:
         return emit_json(EXIT_USAGE, error=str(exc))
     keys = Path(args.keys).resolve()
@@ -2204,8 +2206,12 @@ def cmd_unseal_keys(args) -> int:
            "--user", "100:101", "-v", f"{keys}:/var/lib/tor/hidden_service",
            args.image, "unseal-keys", "--name", args.name,
            "--passphrase-file", "-", "--json"]
-    proc = subprocess.run(cmd, input=passphrase + "\n", capture_output=True,
-                          text=True, check=False)
+    # Bounded, but generously: `run` may first have to pull the image.
+    try:
+        proc = subprocess.run(cmd, input=passphrase + "\n", capture_output=True,
+                              text=True, check=False, timeout=900)
+    except subprocess.TimeoutExpired:
+        return emit_json(EXIT_FAIL, error="the image did not finish within 15 minutes")
     doc = None
     for line in reversed(proc.stdout.strip().splitlines()):
         try:
