@@ -39,7 +39,12 @@ fn write_atomic(dir: &str, name: &str, data: &[u8], mode: u32) -> Result<(), Str
     let tmp = format!("{dir}/.{name}.{}.tmp", std::process::id());
     let _ = std::fs::remove_file(&tmp);
     let r = (|| -> std::io::Result<()> {
-        let mut f = std::fs::OpenOptions::new().write(true).create_new(true).custom_flags(libc::O_NOFOLLOW).mode(mode).open(&tmp)?;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .mode(mode)
+            .open(&tmp)?;
         f.write_all(data)?;
         f.sync_all()?;
         drop(f);
@@ -60,10 +65,17 @@ fn write_atomic(dir: &str, name: &str, data: &[u8], mode: u32) -> Result<(), Str
 fn wipe(path: &str) -> Result<(), String> {
     let st = fsops::lstat(path).map_err(|e| e.msg)?;
     if !fsops::is_type(&st, libc::S_IFREG) || st.st_nlink != 1 {
-        return Err(format!("{path} is not a single regular file; refusing to overwrite it"));
+        return Err(format!(
+            "{path} is not a single regular file; refusing to overwrite it"
+        ));
     }
-    let mut f = std::fs::OpenOptions::new().write(true).custom_flags(libc::O_NOFOLLOW).open(path).map_err(|e| e.to_string())?;
-    f.write_all(&vec![0u8; st.st_size as usize]).map_err(|e| e.to_string())?;
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+        .map_err(|e| e.to_string())?;
+    f.write_all(&vec![0u8; st.st_size as usize])
+        .map_err(|e| e.to_string())?;
     f.sync_all().map_err(|e| e.to_string())?;
     drop(f);
     std::fs::remove_file(path).map_err(|e| e.to_string())
@@ -91,7 +103,8 @@ pub fn unseal(name: &str, pass: &[u8]) -> Result<Option<String>, String> {
         let plain = Secret(plain);
         let env = keycrypt::encrypt(&plain.0, pass)?;
         write_atomic(&vol, SEALED, &env, 0o600)?;
-        let back = read(&format!("{vol}/{SEALED}"), 8192).ok_or("the sealed key could not be read back")?;
+        let back = read(&format!("{vol}/{SEALED}"), 8192)
+            .ok_or("the sealed key could not be read back")?;
         if keycrypt::decrypt(&back, pass)?.0 != plain.0 {
             return Err(format!("{name}: the sealed key did not decrypt to the original; the plaintext key was left in place"));
         }
@@ -141,7 +154,11 @@ pub fn settled(name: &str) -> bool {
 
 /// `hiddenforge __keys unseal|seal <name>`, passphrase on stdin (from the supervisor).
 pub fn helper(op: &str, name: &str) -> i32 {
-    if !name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-') || name.is_empty() {
+    if !name
+        .bytes()
+        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        || name.is_empty()
+    {
         return 2;
     }
     let mut buf = Vec::new();

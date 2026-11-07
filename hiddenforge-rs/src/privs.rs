@@ -46,7 +46,10 @@ fn cap_name(bit: u32) -> String {
 }
 
 pub fn permitted_capabilities() -> Option<u64> {
-    let mut h = CapHeader { version: LINUX_CAPABILITY_VERSION_3, pid: 0 };
+    let mut h = CapHeader {
+        version: LINUX_CAPABILITY_VERSION_3,
+        pid: 0,
+    };
     let mut d = [CapData::default(); 2];
     // SAFETY: capget with a v3 header and two data structs, as the ABI requires.
     let rc = unsafe { libc::syscall(libc::SYS_capget, &mut h as *mut CapHeader, d.as_mut_ptr()) };
@@ -59,8 +62,10 @@ pub fn drop_setup_capabilities(mask: u64, log: &mut Vec<String>) -> bool {
     if let Some(held) = permitted_capabilities() {
         let wanted = mask & held;
         if wanted != mask {
-            let missing: Vec<String> =
-                (0..64).filter(|b| (mask >> b) & 1 == 1 && (held >> b) & 1 == 0).map(cap_name).collect();
+            let missing: Vec<String> = (0..64)
+                .filter(|b| (mask >> b) & 1 == 1 && (held >> b) & 1 == 0)
+                .map(cap_name)
+                .collect();
             log.push(format!(
                 "Note: this runtime did not grant {}; dropping everything else regardless.",
                 missing.join(", ")
@@ -68,9 +73,19 @@ pub fn drop_setup_capabilities(mask: u64, log: &mut Vec<String>) -> bool {
         }
         mask = wanted;
     }
-    let mut h = CapHeader { version: LINUX_CAPABILITY_VERSION_3, pid: 0 };
+    let mut h = CapHeader {
+        version: LINUX_CAPABILITY_VERSION_3,
+        pid: 0,
+    };
     let low = (mask & 0xFFFF_FFFF) as u32;
-    let d = [CapData { effective: low, permitted: low, inheritable: 0 }, CapData::default()];
+    let d = [
+        CapData {
+            effective: low,
+            permitted: low,
+            inheritable: 0,
+        },
+        CapData::default(),
+    ];
     // SAFETY: capset with a v3 header and two data structs.
     let rc = unsafe { libc::syscall(libc::SYS_capset, &mut h as *mut CapHeader, d.as_ptr()) };
     if rc != 0 {
@@ -80,9 +95,18 @@ pub fn drop_setup_capabilities(mask: u64, log: &mut Vec<String>) -> bool {
         ));
         return false;
     }
-    let kept: Vec<String> = (0..64).filter(|b| (mask >> b) & 1 == 1).map(cap_name).collect();
-    let kept = if kept.is_empty() { "nothing".to_string() } else { kept.join(", ") };
-    log.push(format!("Dropped setup capabilities; supervisor retains 0x{mask:02x} ({kept})."));
+    let kept: Vec<String> = (0..64)
+        .filter(|b| (mask >> b) & 1 == 1)
+        .map(cap_name)
+        .collect();
+    let kept = if kept.is_empty() {
+        "nothing".to_string()
+    } else {
+        kept.join(", ")
+    };
+    log.push(format!(
+        "Dropped setup capabilities; supervisor retains 0x{mask:02x} ({kept})."
+    ));
     true
 }
 
@@ -105,7 +129,13 @@ pub fn self_exe() -> String {
 }
 
 /// A command that runs as `user` (when root) with HOME set the way su-exec set it.
-pub fn command(program: &str, argv0: Option<&str>, args: &[&str], user: Option<AsUser>, home: &str) -> Command {
+pub fn command(
+    program: &str,
+    argv0: Option<&str>,
+    args: &[&str],
+    user: Option<AsUser>,
+    home: &str,
+) -> Command {
     let mut c = Command::new(program);
     if let Some(a0) = argv0 {
         c.arg0(a0);
@@ -120,10 +150,15 @@ pub fn command(program: &str, argv0: Option<&str>, args: &[&str], user: Option<A
 }
 
 /// Run a command with a deadline; returns (exit code or None on timeout/kill, stdout, stderr).
-pub fn run_timeout(mut c: Command, timeout: Duration) -> std::io::Result<(Option<i32>, Vec<u8>, Vec<u8>)> {
+pub fn run_timeout(
+    mut c: Command,
+    timeout: Duration,
+) -> std::io::Result<(Option<i32>, Vec<u8>, Vec<u8>)> {
     use std::io::Read;
     use std::process::Stdio;
-    c.stdout(Stdio::piped()).stderr(Stdio::piped()).stdin(Stdio::null());
+    c.stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .stdin(Stdio::null());
     let mut child = c.spawn()?;
     let mut out = child.stdout.take();
     let mut err = child.stderr.take();
@@ -153,15 +188,25 @@ pub fn run_timeout(mut c: Command, timeout: Duration) -> std::io::Result<(Option
         }
         std::thread::sleep(Duration::from_millis(20));
     };
-    Ok((code, t_out.join().unwrap_or_default(), t_err.join().unwrap_or_default()))
+    Ok((
+        code,
+        t_out.join().unwrap_or_default(),
+        t_err.join().unwrap_or_default(),
+    ))
 }
 
 /// Run a command with `input` on its stdin (a pipe, never argv or the
 /// environment) and a deadline; returns (exit code, stdout, stderr).
-pub fn run_with_input(mut c: Command, input: &[u8], timeout: Duration) -> std::io::Result<(Option<i32>, Vec<u8>, Vec<u8>)> {
+pub fn run_with_input(
+    mut c: Command,
+    input: &[u8],
+    timeout: Duration,
+) -> std::io::Result<(Option<i32>, Vec<u8>, Vec<u8>)> {
     use std::io::{Read, Write};
     use std::process::Stdio;
-    c.stdout(Stdio::piped()).stderr(Stdio::piped()).stdin(Stdio::piped());
+    c.stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .stdin(Stdio::piped());
     let mut child = c.spawn()?;
     if let Some(mut si) = child.stdin.take() {
         let _ = si.write_all(input);
@@ -194,15 +239,26 @@ pub fn run_with_input(mut c: Command, input: &[u8], timeout: Duration) -> std::i
         }
         std::thread::sleep(Duration::from_millis(20));
     };
-    Ok((code, t_out.join().unwrap_or_default(), t_err.join().unwrap_or_default()))
+    Ok((
+        code,
+        t_out.join().unwrap_or_default(),
+        t_err.join().unwrap_or_default(),
+    ))
 }
 
 fn status_field<'a>(status: &'a str, key: &str) -> Option<&'a str> {
-    status.lines().find_map(|l| l.strip_prefix(key)).map(str::trim)
+    status
+        .lines()
+        .find_map(|l| l.strip_prefix(key))
+        .map(str::trim)
 }
 
 pub fn uid_from_status(status: &str) -> Option<u32> {
-    status_field(status, "Uid:")?.split_whitespace().next()?.parse().ok()
+    status_field(status, "Uid:")?
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()
 }
 
 /// _assert_process_dropped: refuse to continue if the child still runs as root.
@@ -210,8 +266,8 @@ pub fn assert_process_dropped(child: &Child, name: &str, log: &mut Vec<String>) 
     let deadline = Instant::now() + Duration::from_secs(5);
     let pid = child.id();
     while Instant::now() < deadline {
-        match std::fs::read_to_string(format!("/proc/{pid}/status")) {
-            Ok(s) => match uid_from_status(&s) {
+        if let Ok(s) = std::fs::read_to_string(format!("/proc/{pid}/status")) {
+            match uid_from_status(&s) {
                 Some(0) => {
                     log.push(format!(
                         "FATAL: {name} (pid {pid}) is running as root; the privilege drop to the tor user failed. Refusing to continue."
@@ -220,12 +276,13 @@ pub fn assert_process_dropped(child: &Child, name: &str, log: &mut Vec<String>) 
                 }
                 Some(_) => return true,
                 None => {}
-            },
-            Err(_) => {}
+            }
         }
         std::thread::sleep(Duration::from_millis(100));
     }
-    log.push(format!("FATAL: could not confirm {name} dropped privileges within 5s."));
+    log.push(format!(
+        "FATAL: could not confirm {name} dropped privileges within 5s."
+    ));
     false
 }
 
@@ -242,7 +299,12 @@ pub fn signal(pid: u32, sig: i32, as_owner: &dyn Fn(u32, i32) -> bool) -> bool {
 }
 
 /// _kill_proc: SIGTERM (SIGINT for Tor), wait up to `timeout`, then SIGKILL. Never blocks for ever.
-pub fn kill_proc(child: &mut Option<Child>, name: &str, timeout: Duration, as_owner: &dyn Fn(u32, i32) -> bool) {
+pub fn kill_proc(
+    child: &mut Option<Child>,
+    name: &str,
+    timeout: Duration,
+    as_owner: &dyn Fn(u32, i32) -> bool,
+) {
     let Some(c) = child.as_mut() else { return };
     if c.try_wait().ok().flatten().is_some() {
         return;
@@ -250,7 +312,11 @@ pub fn kill_proc(child: &mut Option<Child>, name: &str, timeout: Duration, as_ow
     let pid = c.id();
     // Tor blocks SIGTERM in practice and exits cleanly on SIGINT ("Interrupt:
     // exiting cleanly", measured ~2 s); everything else here takes SIGTERM.
-    let first = if name == "Tor" { libc::SIGINT } else { libc::SIGTERM };
+    let first = if name == "Tor" {
+        libc::SIGINT
+    } else {
+        libc::SIGTERM
+    };
     signal(pid, first, as_owner);
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
@@ -277,7 +343,10 @@ mod tests {
 
     #[test]
     fn parses_uid() {
-        assert_eq!(uid_from_status("Name:\ttor\nUid:\t100\t100\t100\t100\n"), Some(100));
+        assert_eq!(
+            uid_from_status("Name:\ttor\nUid:\t100\t100\t100\t100\n"),
+            Some(100)
+        );
         assert_eq!(uid_from_status("Name:\tx\n"), None);
     }
 

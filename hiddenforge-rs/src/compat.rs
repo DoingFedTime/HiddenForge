@@ -24,7 +24,9 @@ fn refuse(name: &str, argv: &[String]) -> i32 {
 }
 
 fn read_trimmed(path: &str) -> String {
-    std::fs::read_to_string(path).map(|s| s.trim_end_matches('\n').to_string()).unwrap_or_default()
+    std::fs::read_to_string(path)
+        .map(|s| s.trim_end_matches('\n').to_string())
+        .unwrap_or_default()
 }
 
 /// `sh -c <the 2.1.x doctor script>`.
@@ -32,9 +34,16 @@ pub fn sh(argv: &[String]) -> i32 {
     if argv.len() == 2 && argv[0] == "-c" && argv[1] == DOCTOR_SCRIPT {
         let capbnd = std::fs::read_to_string("/proc/1/status")
             .ok()
-            .and_then(|s| s.lines().find_map(|l| l.strip_prefix("CapBnd:").map(|v| v.trim_start().to_string())))
+            .and_then(|s| {
+                s.lines().find_map(|l| {
+                    l.strip_prefix("CapBnd:")
+                        .map(|v| v.trim_start().to_string())
+                })
+            })
             .unwrap_or_default();
-        let hostswap = std::fs::read_to_string("/proc/swaps").map(|s| s.lines().skip(1).count()).unwrap_or(0);
+        let hostswap = std::fs::read_to_string("/proc/swaps")
+            .map(|s| s.lines().skip(1).count())
+            .unwrap_or(0);
         println!("swap={}", read_trimmed("/sys/fs/cgroup/memory.swap.max"));
         println!("pids={}", read_trimmed("/sys/fs/cgroup/pids.max"));
         println!("capbnd={capbnd}");
@@ -50,7 +59,10 @@ fn cat_allowed(path: &str) -> bool {
     }
     if let Some(rest) = path.strip_prefix(&format!("{KEYS}/")) {
         if let Some(name) = rest.strip_suffix("/hostname") {
-            return !name.is_empty() && name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+            return !name.is_empty()
+                && name
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
         }
     }
     false
@@ -68,7 +80,11 @@ pub fn cat(argv: &[String]) -> i32 {
             0
         }
         Err(e) => {
-            eprintln!("cat: {}: {}", argv[0], py::strerror(e.errno.unwrap_or(libc::EIO)));
+            eprintln!(
+                "cat: {}: {}",
+                argv[0],
+                py::strerror(e.errno.unwrap_or(libc::EIO))
+            );
             1
         }
     }
@@ -109,7 +125,14 @@ pub fn become_tor() -> Result<(), String> {
             return Err("privilege drop did not take effect".into());
         }
     }
-    std::env::set_var("HOME", if home.is_empty() { "/var/lib/tor" } else { &home });
+    std::env::set_var(
+        "HOME",
+        if home.is_empty() {
+            "/var/lib/tor"
+        } else {
+            &home
+        },
+    );
     Ok(())
 }
 
@@ -134,9 +157,8 @@ pub fn su_exec(argv: &[String], dispatch: &dyn Fn(&str, &[String]) -> i32) -> i3
     }
     let prog = rest[0].rsplit('/').next().unwrap_or("").to_string();
     match prog.as_str() {
-        "true" | "test" | "cat" | "python3" | "python" | "hiddenforge" | "healthcheck.py" | "vanity.py" => {
-            dispatch(&prog, &rest[1..])
-        }
+        "true" | "test" | "cat" | "python3" | "python" | "hiddenforge" | "healthcheck.py"
+        | "vanity.py" => dispatch(&prog, &rest[1..]),
         "tor" => exec_tor(&rest[1..]),
         _ => refuse("su-exec", argv),
     }
@@ -145,7 +167,10 @@ pub fn su_exec(argv: &[String], dispatch: &dyn Fn(&str, &[String]) -> i32) -> i3
 /// Replace this process with the real Tor.
 pub fn exec_tor(args: &[String]) -> i32 {
     use std::os::unix::process::CommandExt;
-    let e = std::process::Command::new("/usr/bin/tor").arg0("tor").args(args).exec();
+    let e = std::process::Command::new("/usr/bin/tor")
+        .arg0("tor")
+        .args(args)
+        .exec();
     eprintln!("su-exec: tor: {e}");
     127
 }
@@ -158,7 +183,9 @@ mod tests {
     fn cat_allowlist() {
         assert!(cat_allowed("/var/lib/tor/hidden_service/myapp/hostname"));
         assert!(cat_allowed("/etc/tor/torrc"));
-        assert!(!cat_allowed("/var/lib/tor/hidden_service/myapp/hs_ed25519_secret_key"));
+        assert!(!cat_allowed(
+            "/var/lib/tor/hidden_service/myapp/hs_ed25519_secret_key"
+        ));
         assert!(!cat_allowed("/var/lib/tor/hidden_service/../x/hostname"));
         assert!(!cat_allowed("/etc/shadow"));
     }

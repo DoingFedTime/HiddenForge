@@ -29,7 +29,12 @@ pub fn decode(bytes: &[u8]) -> PyStr {
             Err(e) => {
                 let good = e.valid_up_to();
                 // SAFETY-free: the prefix was just validated.
-                out.extend(std::str::from_utf8(&rest[..good]).unwrap_or("").chars().map(PyChar::C));
+                out.extend(
+                    std::str::from_utf8(&rest[..good])
+                        .unwrap_or("")
+                        .chars()
+                        .map(PyChar::C),
+                );
                 let bad = e.error_len().unwrap_or(rest.len() - good);
                 for b in &rest[good..good + bad] {
                     out.push(PyChar::Surr(*b));
@@ -127,7 +132,10 @@ pub fn is_py_space(c: &PyChar) -> bool {
 
 pub fn strip(s: &[PyChar]) -> &[PyChar] {
     let start = s.iter().position(|c| !is_py_space(c)).unwrap_or(s.len());
-    let end = s.iter().rposition(|c| !is_py_space(c)).map_or(start, |i| i + 1);
+    let end = s
+        .iter()
+        .rposition(|c| !is_py_space(c))
+        .map_or(start, |i| i + 1);
     &s[start..end]
 }
 
@@ -272,7 +280,12 @@ fn write_json_str(out: &mut String, s: &str) {
                 let u = c as u32;
                 if u > 0xFFFF {
                     let v = u - 0x10000;
-                    let _ = write!(out, "\\u{:04x}\\u{:04x}", 0xD800 + (v >> 10), 0xDC00 + (v & 0x3FF));
+                    let _ = write!(
+                        out,
+                        "\\u{:04x}\\u{:04x}",
+                        0xD800 + (v >> 10),
+                        0xDC00 + (v & 0x3FF)
+                    );
                 } else {
                     let _ = write!(out, "\\u{u:04x}");
                 }
@@ -356,7 +369,11 @@ pub fn float_repr(x: f64) -> String {
         return if x > 0.0 { "inf".into() } else { "-inf".into() };
     }
     if x == 0.0 {
-        return if x.is_sign_negative() { "-0.0".into() } else { "0.0".into() };
+        return if x.is_sign_negative() {
+            "-0.0".into()
+        } else {
+            "0.0".into()
+        };
     }
     let e = format!("{:e}", x.abs()); // e.g. "1.23456e2" (shortest digits)
     let (mant, exp) = e.split_once('e').unwrap_or((&e, "0"));
@@ -370,14 +387,22 @@ pub fn float_repr(x: f64) -> String {
             if n <= int_len {
                 format!("{digits}{}.0", "0".repeat((int_len - n) as usize))
             } else {
-                format!("{}.{}", &digits[..int_len as usize], &digits[int_len as usize..])
+                format!(
+                    "{}.{}",
+                    &digits[..int_len as usize],
+                    &digits[int_len as usize..]
+                )
             }
         } else {
             format!("0.{}{digits}", "0".repeat((-exp - 1) as usize))
         };
         format!("{sign}{s}")
     } else {
-        let m = if digits.len() > 1 { format!("{}.{}", &digits[..1], &digits[1..]) } else { digits.clone() };
+        let m = if digits.len() > 1 {
+            format!("{}.{}", &digits[..1], &digits[1..])
+        } else {
+            digits.clone()
+        };
         let es = if exp < 0 { "-" } else { "+" };
         format!("{sign}{m}e{es}{:02}", exp.abs())
     }
@@ -388,7 +413,11 @@ pub fn float_json(x: f64) -> String {
     if x.is_nan() {
         "NaN".into()
     } else if x.is_infinite() {
-        if x > 0.0 { "Infinity".into() } else { "-Infinity".into() }
+        if x > 0.0 {
+            "Infinity".into()
+        } else {
+            "-Infinity".into()
+        }
     } else {
         float_repr(x)
     }
@@ -501,7 +530,11 @@ fn parse_value(b: &[u8], i: &mut usize, depth: usize) -> Option<Json> {
             while *i < b.len() && b[*i].is_ascii_digit() {
                 *i += 1;
             }
-            std::str::from_utf8(&b[start..*i]).ok()?.parse::<i64>().ok().map(Json::Int)
+            std::str::from_utf8(&b[start..*i])
+                .ok()?
+                .parse::<i64>()
+                .ok()
+                .map(Json::Int)
         }
         _ => None,
     }
@@ -596,16 +629,32 @@ mod tests {
             dumps(&v, true, None),
             r#"{"contract_version": 1, "exit_code": 0, "name": "hiddenforge", "ok": true, "version": "2.1.6"}"#
         );
-        assert_eq!(dumps(&Json::Str("é\u{1F600}\"".into()), false, None), r#""\u00e9\ud83d\ude00\"""#);
+        assert_eq!(
+            dumps(&Json::Str("é\u{1F600}\"".into()), false, None),
+            r#""\u00e9\ud83d\ude00\"""#
+        );
         let nested = Json::obj().with("a", Json::Arr(vec![Json::Int(1), Json::obj()]));
-        assert_eq!(dumps(&nested, false, Some(2)), "{\n  \"a\": [\n    1,\n    {}\n  ]\n}");
+        assert_eq!(
+            dumps(&nested, false, Some(2)),
+            "{\n  \"a\": [\n    1,\n    {}\n  ]\n}"
+        );
     }
 
     #[test]
     fn float_repr_matches_python() {
-        for (x, want) in [(123.0, "123.0"), (0.0001, "0.0001"), (0.00001, "1e-05"), (1e16, "1e+16"),
-                          (1.5e16, "1.5e+16"), (123.456, "123.456"), (2.5, "2.5"), (1e15, "1000000000000000.0"),
-                          (0.1, "0.1"), (33554432.0, "33554432.0"), (-2.75, "-2.75")] {
+        for (x, want) in [
+            (123.0, "123.0"),
+            (0.0001, "0.0001"),
+            (0.00001, "1e-05"),
+            (1e16, "1e+16"),
+            (1.5e16, "1.5e+16"),
+            (123.456, "123.456"),
+            (2.5, "2.5"),
+            (1e15, "1000000000000000.0"),
+            (0.1, "0.1"),
+            (33554432.0, "33554432.0"),
+            (-2.75, "-2.75"),
+        ] {
             assert_eq!(float_repr(x), want, "{x}");
         }
         assert_eq!(float_json(f64::INFINITY), "Infinity");
@@ -615,7 +664,10 @@ mod tests {
     fn parse_roundtrip() {
         let s = r#"{"a": [1, true, null, "xé"], "b": {}}"#;
         let v = parse(s).unwrap();
-        assert_eq!(dumps(&v, false, None), r#"{"a": [1, true, null, "x\u00e9"], "b": {}}"#);
+        assert_eq!(
+            dumps(&v, false, None),
+            r#"{"a": [1, true, null, "x\u00e9"], "b": {}}"#
+        );
         assert!(parse("{\"a\": 1,}").is_none());
     }
 

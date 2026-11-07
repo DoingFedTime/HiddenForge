@@ -28,7 +28,8 @@ const EXIT_NOT_READY: i32 = 4;
 const EXIT_ABORTED: i32 = 130;
 
 fn default_image() -> String {
-    std::env::var("HIDDENFORGE_IMAGE").unwrap_or_else(|_| "sambent.dev/sam/hiddenforge:latest".into())
+    std::env::var("HIDDENFORGE_IMAGE")
+        .unwrap_or_else(|_| "sambent.dev/sam/hiddenforge:latest".into())
 }
 
 fn default_keys_env() -> String {
@@ -54,7 +55,14 @@ struct Opt {
 }
 
 const fn o(long: &'static str, kind: Kind) -> Opt {
-    Opt { long, short: None, kind, required: false, choices: &[], int: false }
+    Opt {
+        long,
+        short: None,
+        kind,
+        required: false,
+        choices: &[],
+        int: false,
+    }
 }
 
 #[derive(Default, Debug)]
@@ -66,7 +74,11 @@ pub struct Args {
 
 impl Args {
     fn get(&self, k: &str) -> Option<&str> {
-        self.vals.iter().rev().find(|(n, _)| n == k).map(|(_, v)| v.as_str())
+        self.vals
+            .iter()
+            .rev()
+            .find(|(n, _)| n == k)
+            .map(|(_, v)| v.as_str())
     }
     fn flag(&self, k: &str) -> bool {
         self.flags.iter().any(|f| f == k)
@@ -121,23 +133,38 @@ fn parse(prog: &str, specs: &[Opt], argv: &[String]) -> Result<Args, i32> {
                 None => specs.iter().filter(|s| s.long.starts_with(&name)).collect(),
             }
         } else if name.starts_with('-') && name.len() > 1 {
-            specs.iter().filter(|s| s.short == Some(name.as_str())).collect()
+            specs
+                .iter()
+                .filter(|s| s.short == Some(name.as_str()))
+                .collect()
         } else {
             vec![]
         };
         let spec = match matches.as_slice() {
             [s] => *s,
-            [] => return Err(fail(format!("unrecognized arguments: {}", argv[i..].join(" ")))),
+            [] => {
+                return Err(fail(format!(
+                    "unrecognized arguments: {}",
+                    argv[i..].join(" ")
+                )))
+            }
             many => {
                 let names: Vec<&str> = many.iter().map(|s| s.long).collect();
-                return Err(fail(format!("ambiguous option: {name} could match {}", names.join(", "))));
+                return Err(fail(format!(
+                    "ambiguous option: {name} could match {}",
+                    names.join(", ")
+                )));
             }
         };
         let d = dest(spec.long);
         match spec.kind {
             Kind::Flag => {
                 if inline.is_some() {
-                    return Err(fail(format!("argument {}: ignored explicit argument '{}'", spec.long, inline.unwrap_or_default())));
+                    return Err(fail(format!(
+                        "argument {}: ignored explicit argument '{}'",
+                        spec.long,
+                        inline.unwrap_or_default()
+                    )));
                 }
                 a.flags.push(d);
             }
@@ -147,17 +174,35 @@ fn parse(prog: &str, specs: &[Opt], argv: &[String]) -> Result<Args, i32> {
                     None => {
                         i += 1;
                         match argv.get(i) {
-                            Some(v) if !(v.starts_with('-') && v.len() > 1 && !v[1..].starts_with(|c: char| c.is_ascii_digit())) => v.clone(),
-                            _ => return Err(fail(format!("argument {}: expected one argument", spec.long))),
+                            Some(v)
+                                if !(v.starts_with('-')
+                                    && v.len() > 1
+                                    && !v[1..].starts_with(|c: char| c.is_ascii_digit())) =>
+                            {
+                                v.clone()
+                            }
+                            _ => {
+                                return Err(fail(format!(
+                                    "argument {}: expected one argument",
+                                    spec.long
+                                )))
+                            }
                         }
                     }
                 };
                 if !spec.choices.is_empty() && !spec.choices.contains(&v.as_str()) {
                     let ch: Vec<String> = spec.choices.iter().map(|c| format!("'{c}'")).collect();
-                    return Err(fail(format!("argument {}: invalid choice: '{v}' (choose from {})", spec.long, ch.join(", "))));
+                    return Err(fail(format!(
+                        "argument {}: invalid choice: '{v}' (choose from {})",
+                        spec.long,
+                        ch.join(", ")
+                    )));
                 }
                 if spec.int && v.trim().parse::<i64>().is_err() {
-                    return Err(fail(format!("argument {}: invalid int value: '{v}'", spec.long)));
+                    return Err(fail(format!(
+                        "argument {}: invalid int value: '{v}'",
+                        spec.long
+                    )));
                 }
                 if spec.kind == Kind::Append {
                     match a.appends.iter_mut().find(|(n, _)| *n == d) {
@@ -171,21 +216,32 @@ fn parse(prog: &str, specs: &[Opt], argv: &[String]) -> Result<Args, i32> {
         }
         i += 1;
     }
-    let missing: Vec<&str> = specs.iter().filter(|s| s.required && a.get(&dest(s.long)).is_none()).map(|s| s.long).collect();
+    let missing: Vec<&str> = specs
+        .iter()
+        .filter(|s| s.required && a.get(&dest(s.long)).is_none())
+        .map(|s| s.long)
+        .collect();
     if !missing.is_empty() {
-        return Err(fail(format!("the following arguments are required: {}", missing.join(", "))));
+        return Err(fail(format!(
+            "the following arguments are required: {}",
+            missing.join(", ")
+        )));
     }
     Ok(a)
 }
 
 fn int_arg(a: &Args, k: &str, default: i64) -> i64 {
-    a.get(k).and_then(|v| v.trim().parse().ok()).unwrap_or(default)
+    a.get(k)
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(default)
 }
 
 // ───────────────────────────── shared helpers ───────────────────────────────
 
 fn emit_json(rc: i32, fields: Vec<(&str, Json)>) -> i32 {
-    let mut doc = Json::obj().with("ok", (rc == 0).into()).with("exit_code", Json::Int(i64::from(rc)));
+    let mut doc = Json::obj()
+        .with("ok", (rc == 0).into())
+        .with("exit_code", Json::Int(i64::from(rc)));
     for (k, v) in fields {
         doc.set(k, v);
     }
@@ -205,7 +261,10 @@ pub fn py_path(s: &str) -> String {
     } else {
         ""
     };
-    let parts: Vec<&str> = s.split('/').filter(|p| !p.is_empty() && *p != ".").collect();
+    let parts: Vec<&str> = s
+        .split('/')
+        .filter(|p| !p.is_empty() && *p != ".")
+        .collect();
     let body = parts.join("/");
     if lead.is_empty() && body.is_empty() {
         ".".into()
@@ -233,7 +292,8 @@ fn name_ok(n: &str) -> bool {
     !n.is_empty()
         && n.len() <= 63
         && n.as_bytes()[0].is_ascii_lowercase() | n.as_bytes()[0].is_ascii_digit()
-        && n.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        && n.bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 
 fn validate_name(n: &str) -> Result<String, String> {
@@ -249,7 +309,8 @@ fn validate_name(n: &str) -> Result<String, String> {
 fn validate_container(n: &str) -> Result<String, String> {
     let ok = !n.is_empty()
         && n.as_bytes()[0].is_ascii_alphanumeric()
-        && n.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'));
+        && n.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'));
     if ok {
         Ok(n.to_string())
     } else {
@@ -278,7 +339,9 @@ fn validate_image_ref(v: &str) -> Result<String, String> {
     let ok = !v.is_empty()
         && v.len() <= 255
         && v.as_bytes()[0].is_ascii_alphanumeric()
-        && v.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'/' | b':' | b'@' | b'-'));
+        && v.bytes().all(|b| {
+            b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'/' | b':' | b'@' | b'-')
+        });
     if ok {
         Ok(v.to_string())
     } else {
@@ -291,13 +354,21 @@ fn validate_image_ref(v: &str) -> Result<String, String> {
 
 /// _read_nofollow: regular files only, size-capped, no symlink, no FIFO block.
 fn read_nofollow(path: &str, max: u64) -> Result<Vec<u8>, String> {
-    let fd = fsops::open(path, libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK, 0).map_err(|e| e.msg)?;
+    let fd = fsops::open(
+        path,
+        libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK,
+        0,
+    )
+    .map_err(|e| e.msg)?;
     let st = fsops::fstat(&fd).map_err(|e| e.msg)?;
     if !fsops::is_type(&st, libc::S_IFREG) {
         return Err(format!("{path} is not a regular file"));
     }
     if st.st_size as u64 > max {
-        return Err(format!("{path} is unexpectedly large ({} bytes)", st.st_size));
+        return Err(format!(
+            "{path} is unexpectedly large ({} bytes)",
+            st.st_size
+        ));
     }
     let mut data = vec![0u8; st.st_size as usize];
     let mut got = 0;
@@ -360,7 +431,9 @@ impl Entry {
             .with("key_dir", self.key_dir.as_str().into())
     }
     fn fields(&self) -> Vec<(&'static str, Json)> {
-        let Json::Obj(items) = self.json() else { return vec![] };
+        let Json::Obj(items) = self.json() else {
+            return vec![];
+        };
         items.into_iter().map(|(k, v)| (leak(k), v)).collect()
     }
 }
@@ -423,14 +496,20 @@ fn hsdir_value(line: &str) -> Option<String> {
 }
 
 fn torrc_service_names(keys: &str) -> Vec<String> {
-    let Ok(b) = std::fs::read(TORRC_PATH) else { return vec![] };
+    let Ok(b) = std::fs::read(TORRC_PATH) else {
+        return vec![];
+    };
     let text = String::from_utf8_lossy(&b);
     let mut names = Vec::new();
     for line in text.lines() {
         let Some(v) = hsdir_value(line) else { continue };
         let p = py_path(&v);
         let (parent, name) = p.rsplit_once('/').unwrap_or(("", p.as_str()));
-        let parent = if parent.is_empty() && p.starts_with('/') { "/" } else { parent };
+        let parent = if parent.is_empty() && p.starts_with('/') {
+            "/"
+        } else {
+            parent
+        };
         if py_path(parent) == py_path(keys) && name_ok(name) && !names.iter().any(|n| n == name) {
             names.push(name.to_string());
         }
@@ -444,7 +523,9 @@ fn service_names(keys: &str) -> Vec<String> {
     }
     let rd = match std::fs::read_dir(keys) {
         Ok(r) => r,
-        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => return torrc_service_names(keys),
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+            return torrc_service_names(keys)
+        }
         Err(_) => return vec![],
     };
     let mut names: Vec<String> = rd
@@ -458,7 +539,8 @@ fn service_names(keys: &str) -> Vec<String> {
 }
 
 fn in_container() -> bool {
-    std::env::var("HIDDENFORGE_IN_CONTAINER").as_deref() == Ok("1") || std::path::Path::new(TORRC_PATH).exists()
+    std::env::var("HIDDENFORGE_IN_CONTAINER").as_deref() == Ok("1")
+        || std::path::Path::new(TORRC_PATH).exists()
 }
 
 fn no_tool_error() -> String {
@@ -473,11 +555,17 @@ fn which(tool: &str) -> bool {
     std::env::var("PATH")
         .unwrap_or_default()
         .split(':')
-        .any(|d| !d.is_empty() && access(&format!("{d}/{tool}"), libc::X_OK) && !is_dir(&format!("{d}/{tool}")))
+        .any(|d| {
+            !d.is_empty()
+                && access(&format!("{d}/{tool}"), libc::X_OK)
+                && !is_dir(&format!("{d}/{tool}"))
+        })
 }
 
 fn access(path: &str, mode: i32) -> bool {
-    let Ok(c) = CString::new(path) else { return false };
+    let Ok(c) = CString::new(path) else {
+        return false;
+    };
     // SAFETY: valid C string.
     unsafe { libc::access(c.as_ptr(), mode) == 0 }
 }
@@ -493,7 +581,11 @@ fn cmd_version(a: &Args) -> i32 {
     if a.flag("json") {
         return emit_json(
             EXIT_OK,
-            vec![("name", "hiddenforge".into()), ("version", VERSION.into()), ("contract_version", Json::Int(CONTRACT_VERSION))],
+            vec![
+                ("name", "hiddenforge".into()),
+                ("version", VERSION.into()),
+                ("contract_version", Json::Int(CONTRACT_VERSION)),
+            ],
         );
     }
     println!("hiddenforge {VERSION} (contract {CONTRACT_VERSION})");
@@ -503,7 +595,10 @@ fn cmd_version(a: &Args) -> i32 {
 fn cmd_info(a: &Args) -> i32 {
     let text = std::fs::read_to_string(MANIFEST).unwrap_or_default();
     let Some(m) = py::parse(&text) else {
-        return emit_json(EXIT_FAIL, vec![("error", format!("cannot read {MANIFEST}").into())]);
+        return emit_json(
+            EXIT_FAIL,
+            vec![("error", format!("cannot read {MANIFEST}").into())],
+        );
     };
     if a.flag("json") {
         println!("{}", py::dumps(&m, true, Some(2)));
@@ -518,16 +613,28 @@ fn cmd_info(a: &Args) -> i32 {
         Some(Json::Arr(v)) => v.first().cloned().unwrap_or(Json::Null),
         _ => Json::Null,
     };
-    println!("{} {} (contract {})", s(m.get("name")), s(m.get("version")), s(m.get("contract_version")));
+    println!(
+        "{} {} (contract {})",
+        s(m.get("name")),
+        s(m.get("version")),
+        s(m.get("contract_version"))
+    );
     println!("  image:   {}", s(m.get("image")));
     println!("  tor:     {}", s(m.get("tor_version")));
-    println!("  address: {}", s(m.get("address").and_then(|x| x.get("command"))));
+    println!(
+        "  address: {}",
+        s(m.get("address").and_then(|x| x.get("command")))
+    );
     println!(
         "  health:  {} (field: {})",
         s(m.get("health").and_then(|x| x.get("command"))),
         s(m.get("health").and_then(|x| x.get("ready_field")))
     );
-    println!("  keys:    {} -> {}", s(vol.get("path")), s(vol.get("host_suggestion")));
+    println!(
+        "  keys:    {} -> {}",
+        s(vol.get("path")),
+        s(vol.get("host_suggestion"))
+    );
     EXIT_OK
 }
 
@@ -591,9 +698,21 @@ fn cmd_show(a: &Args) -> i32 {
         println!("{} {}", e.name, e.onion.unwrap_or_default());
         return EXIT_OK;
     }
-    let entries: Vec<Entry> = service_names(&keys).iter().map(|n| address_for(&keys, n)).collect();
+    let entries: Vec<Entry> = service_names(&keys)
+        .iter()
+        .map(|n| address_for(&keys, n))
+        .collect();
     if !is_dir(&keys) {
-        return emit_json(EXIT_USAGE, vec![("keys", keys.as_str().into()), ("error", format!("key directory {keys} does not exist").into())]);
+        return emit_json(
+            EXIT_USAGE,
+            vec![
+                ("keys", keys.as_str().into()),
+                (
+                    "error",
+                    format!("key directory {keys} does not exist").into(),
+                ),
+            ],
+        );
     }
     if entries.is_empty() {
         return emit_json(
@@ -604,7 +723,10 @@ fn cmd_show(a: &Args) -> i32 {
             ],
         );
     }
-    let inconsistent: Vec<&Entry> = entries.iter().filter(|e| e.source.as_deref() == Some("inconsistent")).collect();
+    let inconsistent: Vec<&Entry> = entries
+        .iter()
+        .filter(|e| e.source.as_deref() == Some("inconsistent"))
+        .collect();
     let rc = if !inconsistent.is_empty() {
         EXIT_FAIL
     } else if !entries.iter().all(|e| e.onion.is_some()) {
@@ -615,7 +737,10 @@ fn cmd_show(a: &Args) -> i32 {
     if a.flag("json") {
         let mut f = vec![
             ("keys", keys.as_str().into()),
-            ("addresses", Json::Arr(entries.iter().map(Entry::json).collect())),
+            (
+                "addresses",
+                Json::Arr(entries.iter().map(Entry::json).collect()),
+            ),
             ("address", entries[0].onion.clone().into()),
         ];
         if !inconsistent.is_empty() {
@@ -629,7 +754,13 @@ fn cmd_show(a: &Args) -> i32 {
             println!("{} (INCONSISTENT KEY SET - no address reported)", e.name);
             eprintln!("error: {}", inconsistent_error(e));
         } else {
-            println!("{} {}", e.name, e.onion.clone().unwrap_or_else(|| "(not generated yet)".into()));
+            println!(
+                "{} {}",
+                e.name,
+                e.onion
+                    .clone()
+                    .unwrap_or_else(|| "(not generated yet)".into())
+            );
         }
     }
     rc
@@ -658,7 +789,12 @@ fn cmd_doctor(a: &Args) -> i32 {
     let mut checks: Vec<Json> = Vec::new();
     let mut closed: Vec<String> = Vec::new();
     if !is_dir(&keys) {
-        checks.push(check(false, "key directory exists", &format!("{keys} not found"), "fail"));
+        checks.push(check(
+            false,
+            "key directory exists",
+            &format!("{keys} not found"),
+            "fail",
+        ));
     } else {
         let dirmode = fsops::lstat(&keys).map(|s| fsops::imode(&s)).unwrap_or(0);
         checks.push(check(
@@ -691,11 +827,26 @@ fn cmd_doctor(a: &Args) -> i32 {
             });
             match modes {
                 Err(e) if e.is_permission() => closed.push(name),
-                Err(e) => checks.push(check(false, &format!("key modes for {name}"), &format!("cannot stat: {}", e.msg), "fail")),
+                Err(e) => checks.push(check(
+                    false,
+                    &format!("key modes for {name}"),
+                    &format!("cannot stat: {}", e.msg),
+                    "fail",
+                )),
                 Ok((dm, sm)) => {
-                    checks.push(check(dm == 0o700, &format!("key dir {name} is 0700"), &format!("mode={}", oct(dm)), "fail"));
+                    checks.push(check(
+                        dm == 0o700,
+                        &format!("key dir {name} is 0700"),
+                        &format!("mode={}", oct(dm)),
+                        "fail",
+                    ));
                     let kind = if sealed { "sealed" } else { "secret" };
-                    checks.push(check(sm == 0o600, &format!("{kind} key {name} is 0600"), &format!("mode={}", oct(sm)), "fail"));
+                    checks.push(check(
+                        sm == 0o600,
+                        &format!("{kind} key {name} is 0600"),
+                        &format!("mode={}", oct(sm)),
+                        "fail",
+                    ));
                     let e = address_for(&keys, &name);
                     if e.derived_matches == Some(false) {
                         checks.push(check(
@@ -723,7 +874,10 @@ fn cmd_doctor(a: &Args) -> i32 {
     }
     let failures: Vec<String> = checks
         .iter()
-        .filter(|c| c.get("ok") == Some(&Json::Bool(false)) && c.get("severity") == Some(&Json::Str("fail".into())))
+        .filter(|c| {
+            c.get("ok") == Some(&Json::Bool(false))
+                && c.get("severity") == Some(&Json::Str("fail".into()))
+        })
         .filter_map(|c| match c.get("check") {
             Some(Json::Str(s)) => Some(s.clone()),
             _ => None,
@@ -737,7 +891,10 @@ fn cmd_doctor(a: &Args) -> i32 {
             vec![
                 ("keys", keys.as_str().into()),
                 ("ok", ok.into()),
-                ("failures", Json::Arr(failures.into_iter().map(Json::Str).collect())),
+                (
+                    "failures",
+                    Json::Arr(failures.into_iter().map(Json::Str).collect()),
+                ),
                 ("checks", Json::Arr(checks)),
             ],
         );
@@ -748,7 +905,12 @@ fn cmd_doctor(a: &Args) -> i32 {
             Some(Json::Str(s)) => s.clone(),
             _ => String::new(),
         };
-        println!("[{}] {}: {}", if okc { "ok  " } else { "FAIL" }, s("check"), s("detail"));
+        println!(
+            "[{}] {}: {}",
+            if okc { "ok  " } else { "FAIL" },
+            s("check"),
+            s("detail")
+        );
     }
     rc
 }
@@ -759,7 +921,9 @@ pub fn shlex_quote(s: &str) -> String {
     if s.is_empty() {
         return "''".into();
     }
-    if s.bytes().all(|b| b.is_ascii_alphanumeric() || b"@%+=:,./-_".contains(&b)) {
+    if s.bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b"@%+=:,./-_".contains(&b))
+    {
         return s.to_string();
     }
     format!("'{}'", s.replace('\'', "'\"'\"'"))
@@ -793,7 +957,9 @@ fn is_ip_literal(v: &str) -> bool {
 }
 
 fn host_ok(h: &str) -> bool {
-    (1..=253).contains(&h.len()) && h.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+    (1..=253).contains(&h.len())
+        && h.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
 }
 
 fn py_isdigit(s: &str) -> bool {
@@ -806,10 +972,16 @@ fn port_ok(s: &str) -> bool {
 
 fn parse_backend(b: &str) -> Result<(String, String), String> {
     let Some((host, port)) = b.rsplit_once(':') else {
-        return Err(format!("--backend must be host:port, got {}", py::py_repr(b)));
+        return Err(format!(
+            "--backend must be host:port, got {}",
+            py::py_repr(b)
+        ));
     };
     if host.is_empty() || !port_ok(port) {
-        return Err(format!("--backend must be host:port with port 1-65535, got {}", py::py_repr(b)));
+        return Err(format!(
+            "--backend must be host:port with port 1-65535, got {}",
+            py::py_repr(b)
+        ));
     }
     if !host_ok(host) {
         return Err(format!("invalid backend host {}", py::py_repr(host)));
@@ -820,7 +992,10 @@ fn parse_backend(b: &str) -> Result<(String, String), String> {
 fn parse_service_spec(spec: &str) -> Result<(String, String), String> {
     let p: Vec<&str> = spec.split(':').collect();
     if p.len() != 4 {
-        return Err(format!("service mapping must be name:onionport:host:port, got {}", py::py_repr(spec)));
+        return Err(format!(
+            "service mapping must be name:onionport:host:port, got {}",
+            py::py_repr(spec)
+        ));
     }
     let n = validate_name(p[0])?;
     if !port_ok(p[1]) {
@@ -854,12 +1029,19 @@ pub struct SetupOpts<'a> {
 
 fn render_compose(services: &Services, o: &SetupOpts) -> String {
     let svc = sorted(services);
-    let mut env_lines: String = svc.iter().map(|(n, v)| format!("      {}: \"{}\"\n", env_var(n), v.join(","))).collect();
+    let mut env_lines: String = svc
+        .iter()
+        .map(|(n, v)| format!("      {}: \"{}\"\n", env_var(n), v.join(",")))
+        .collect();
     let (mut secret_use, mut secret_def) = (String::new(), String::new());
     if let Some(pp) = o.passphrase_file {
-        env_lines += "      HIDDENFORGE_KEY_PASSPHRASE_FILE: /run/secrets/hiddenforge_key_passphrase\n";
+        env_lines +=
+            "      HIDDENFORGE_KEY_PASSPHRASE_FILE: /run/secrets/hiddenforge_key_passphrase\n";
         secret_use = "    secrets:\n      - hiddenforge_key_passphrase\n".into();
-        secret_def = format!("\nsecrets:\n  hiddenforge_key_passphrase:\n    file: {}\n", yaml_dq(pp));
+        secret_def = format!(
+            "\nsecrets:\n  hiddenforge_key_passphrase:\n    file: {}\n",
+            yaml_dq(pp)
+        );
     }
     let mut hosts: Vec<String> = svc
         .iter()
@@ -872,14 +1054,27 @@ fn render_compose(services: &Services, o: &SetupOpts) -> String {
         .collect();
     hosts.sort();
     hosts.dedup();
-    let hosts: Vec<String> = hosts.into_iter().filter(|h| container_ok(h) && !is_ip_literal(h)).collect();
+    let hosts: Vec<String> = hosts
+        .into_iter()
+        .filter(|h| container_ok(h) && !is_ip_literal(h))
+        .collect();
     let dep_block = if hosts.is_empty() {
         String::new()
     } else {
-        format!("    depends_on:\n{}", hosts.iter().map(|h| format!("      - {h}\n")).collect::<String>())
+        format!(
+            "    depends_on:\n{}",
+            hosts
+                .iter()
+                .map(|h| format!("      - {h}\n"))
+                .collect::<String>()
+        )
     };
     let docker = o.runtime == "docker";
-    let apparmor = if docker { "      - apparmor=docker-default\n" } else { "" };
+    let apparmor = if docker {
+        "      - apparmor=docker-default\n"
+    } else {
+        ""
+    };
     let mut tor_tmpfs = "- /var/lib/tor:rw,noexec,nosuid,nodev,size=64m".to_string();
     let mut etc_tmpfs = "- /etc/tor:rw,noexec,nosuid,nodev,size=8m".to_string();
     if docker {
@@ -893,19 +1088,33 @@ fn render_compose(services: &Services, o: &SetupOpts) -> String {
             etc_tmpfs += ",U";
         }
     }
-    let compose_cmd = if o.runtime == "podman" { "podman-compose" } else { "docker compose" };
-    let restart = if o.runtime == "podman" { "always" } else { "unless-stopped" };
+    let compose_cmd = if o.runtime == "podman" {
+        "podman-compose"
+    } else {
+        "docker compose"
+    };
+    let restart = if o.runtime == "podman" {
+        "always"
+    } else {
+        "unless-stopped"
+    };
     let healthcheck = if o.runtime == "podman" {
         String::new()
     } else {
         "    healthcheck:\n      test: [\"CMD\", \"su-exec\", \"tor\", \"python3\", \"/usr/local/bin/healthcheck.py\"]\n      interval: 60s\n      timeout: 10s\n      start_period: 120s\n      retries: 3\n".to_string()
     };
     let example = &svc[0].0;
-    let mut header = format!("# hiddenforge compose fragment (hiddenforge v{VERSION}, contract {CONTRACT_VERSION}).");
+    let mut header = format!(
+        "# hiddenforge compose fragment (hiddenforge v{VERSION}, contract {CONTRACT_VERSION})."
+    );
     if o.no_root {
         header += "\n# No-root mode: the container runs as the tor user (100:101) with no capabilities at all.";
     }
-    let user_line = if o.no_root { "    user: \"100:101\"\n" } else { "" };
+    let user_line = if o.no_root {
+        "    user: \"100:101\"\n"
+    } else {
+        ""
+    };
     let caps = if o.no_root {
         "    cap_drop: [ALL]\n"
     } else {
@@ -969,10 +1178,18 @@ services:
 }
 
 fn render_deploy(services: &Services, o: &SetupOpts) -> String {
-    let names: Vec<String> = sorted(services).iter().map(|(n, _)| shlex_quote(n)).collect();
+    let names: Vec<String> = sorted(services)
+        .iter()
+        .map(|(n, _)| shlex_quote(n))
+        .collect();
     let names = names.join(" ");
     let keys_q = shlex_quote(o.keys);
-    let disp = o.keys.replace('\\', "\\\\").replace('"', "'").replace('$', "\\$").replace('`', "'");
+    let disp = o
+        .keys
+        .replace('\\', "\\\\")
+        .replace('"', "'")
+        .replace('$', "\\$")
+        .replace('`', "'");
     let (engine_check, up) = if o.runtime == "podman" {
         (
             r#"COMPOSE=""
@@ -1030,7 +1247,10 @@ fi"#
             }
         }
     }
-    let status_line = shlex_quote(&format!("  hiddenforge status --container {} --keys {keys_q}", o.container));
+    let status_line = shlex_quote(&format!(
+        "  hiddenforge status --container {} --keys {keys_q}",
+        o.container
+    ));
     let persisted = if o.runtime == "podman" {
         format!("{disp}/$svc/hostname (read it with the exec command above)")
     } else {
@@ -1082,11 +1302,18 @@ echo "================================================================="
 
 fn render_readme(services: &Services, o: &SetupOpts) -> String {
     let svc = sorted(services);
-    let block: Vec<String> = svc.iter().map(|(n, v)| format!("  {n}: {}=\"{}\"", env_var(n), v.join(","))).collect();
+    let block: Vec<String> = svc
+        .iter()
+        .map(|(n, v)| format!("  {n}: {}=\"{}\"", env_var(n), v.join(",")))
+        .collect();
     let block = block.join("\n");
     let names: Vec<&str> = svc.iter().map(|(n, _)| n.as_str()).collect();
     let names = names.join(", ");
-    let compose_cmd = if o.runtime == "podman" { "podman-compose" } else { "docker compose" };
+    let compose_cmd = if o.runtime == "podman" {
+        "podman-compose"
+    } else {
+        "docker compose"
+    };
     let keys_q = shlex_quote(o.keys);
     let (image, keys) = (o.image, o.keys);
     format!(
@@ -1134,14 +1361,21 @@ fn random_hex8() -> String {
 fn write_bytes_nofollow(path: &str, data: &[u8], mode: u32) -> Result<(), String> {
     match fsops::lstat(path) {
         Ok(st) if !fsops::is_type(&st, libc::S_IFREG) => {
-            return Err(format!("[Errno 17] refusing to replace {path}: it is not a regular file"))
+            return Err(format!(
+                "[Errno 17] refusing to replace {path}: it is not a regular file"
+            ))
         }
         _ => {}
     }
     let (dir, base) = path.rsplit_once('/').unwrap_or((".", path));
     let tmp = format!("{dir}/.{base}.{}.tmp", random_hex8());
     let r = (|| -> Result<(), String> {
-        let fd = fsops::open(&tmp, libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW, mode).map_err(|e| e.msg)?;
+        let fd = fsops::open(
+            &tmp,
+            libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW,
+            mode,
+        )
+        .map_err(|e| e.msg)?;
         let mut off = 0;
         while off < data.len() {
             // SAFETY: writing from a live slice.
@@ -1167,10 +1401,14 @@ fn realpath_lenient(p: &str) -> String {
     let abs = if p.starts_with('/') {
         py_path(p)
     } else {
-        let cwd = std::env::current_dir().map(|c| c.to_string_lossy().into_owned()).unwrap_or_else(|_| "/".into());
+        let cwd = std::env::current_dir()
+            .map(|c| c.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| "/".into());
         py_path(&format!("{cwd}/{p}"))
     };
-    std::fs::canonicalize(&abs).map(|c| c.to_string_lossy().into_owned()).unwrap_or(abs)
+    std::fs::canonicalize(&abs)
+        .map(|c| c.to_string_lossy().into_owned())
+        .unwrap_or(abs)
 }
 
 fn cmd_setup(a: &Args) -> i32 {
@@ -1201,31 +1439,62 @@ fn cmd_setup(a: &Args) -> i32 {
         let name = a.get("name").unwrap_or(DEFAULT_NAME).to_string();
         if let Some(b) = a.get("backend") {
             let (h, p) = parse_backend(b).map_err(usage)?;
-            add(&mut services, validate_name(&name).map_err(usage)?, format!("{onion_port}:{h}:{p}"));
+            add(
+                &mut services,
+                validate_name(&name).map_err(usage)?,
+                format!("{onion_port}:{h}:{p}"),
+            );
         }
         if services.is_empty() {
             if a.flag("non_interactive") || a.flag("json") || !stdin_tty() {
-                return Err(usage("--backend service:port is required (or --service/--services)".into()));
+                return Err(usage(
+                    "--backend service:port is required (or --service/--services)".into(),
+                ));
             }
             eprint!("Backend service:port (e.g. web:80): ");
             let mut line = String::new();
-            if std::io::stdin().read_line(&mut line).unwrap_or(0) == 0 || py::strip_str(&line).is_empty() {
+            if std::io::stdin().read_line(&mut line).unwrap_or(0) == 0
+                || py::strip_str(&line).is_empty()
+            {
                 return Err((EXIT_ABORTED, "aborted at prompt".into()));
             }
             let (h, p) = parse_backend(py::strip_str(&line)).map_err(usage)?;
-            add(&mut services, validate_name(&name).map_err(usage)?, format!("{onion_port}:{h}:{p}"));
+            add(
+                &mut services,
+                validate_name(&name).map_err(usage)?,
+                format!("{onion_port}:{h}:{p}"),
+            );
         }
         let out = py_path(a.get("out").unwrap_or("./hiddenforge-deploy"));
-        std::fs::create_dir_all(&out).map_err(|e| (EXIT_FAIL, py::oserror_path(e.raw_os_error().unwrap_or(0), &out)))?;
-        let outputs = ["compose.service.yml", "deploy.sh", "README.txt", "hiddenforge.json"];
-        let existing: Vec<&str> = outputs.iter().copied().filter(|p| fsops::lstat(&join(&out, p)).is_ok()).collect();
+        std::fs::create_dir_all(&out).map_err(|e| {
+            (
+                EXIT_FAIL,
+                py::oserror_path(e.raw_os_error().unwrap_or(0), &out),
+            )
+        })?;
+        let outputs = [
+            "compose.service.yml",
+            "deploy.sh",
+            "README.txt",
+            "hiddenforge.json",
+        ];
+        let existing: Vec<&str> = outputs
+            .iter()
+            .copied()
+            .filter(|p| fsops::lstat(&join(&out, p)).is_ok())
+            .collect();
         if !existing.is_empty() && !a.flag("force") {
-            return Err(usage(format!("{out} already contains {}; pass --force to overwrite", existing.join(", "))));
+            return Err(usage(format!(
+                "{out} already contains {}; pass --force to overwrite",
+                existing.join(", ")
+            )));
         }
         let odd: Vec<&str> = existing
             .iter()
             .copied()
-            .filter(|p| fsops::lstat(&join(&out, p)).is_ok_and(|s| !fsops::is_type(&s, libc::S_IFREG)))
+            .filter(|p| {
+                fsops::lstat(&join(&out, p)).is_ok_and(|s| !fsops::is_type(&s, libc::S_IFREG))
+            })
             .collect();
         if !odd.is_empty() {
             return Err(usage(format!(
@@ -1233,9 +1502,11 @@ fn cmd_setup(a: &Args) -> i32 {
                 odd.join(", ")
             )));
         }
-        let image = validate_image_ref(&a.get("image").map_or_else(default_image, String::from)).map_err(usage)?;
+        let image = validate_image_ref(&a.get("image").map_or_else(default_image, String::from))
+            .map_err(usage)?;
         let keys = validate_keys_dir(a.get("keys").unwrap_or(DEFAULT_KEYS)).map_err(usage)?;
-        let container = validate_container(a.get("container").unwrap_or(DEFAULT_CONTAINER)).map_err(usage)?;
+        let container =
+            validate_container(a.get("container").unwrap_or(DEFAULT_CONTAINER)).map_err(usage)?;
         let runtime = a.get("runtime").unwrap_or("docker").to_string();
         if !(1..=65535).contains(&onion_port) {
             return Err(usage(format!(
@@ -1244,17 +1515,49 @@ fn cmd_setup(a: &Args) -> i32 {
         }
         let no_root = a.flag("no_root");
         let pp_file = if a.flag("encrypt_keys") {
-            Some(validate_keys_dir(a.get("passphrase_file").unwrap_or("./key-passphrase.txt")).map_err(usage)?)
+            Some(
+                validate_keys_dir(a.get("passphrase_file").unwrap_or("./key-passphrase.txt"))
+                    .map_err(usage)?,
+            )
         } else {
             None
         };
-        let o = SetupOpts { image: &image, keys: &keys, container: &container, runtime: &runtime, no_root, passphrase_file: pp_file.as_deref() };
+        let o = SetupOpts {
+            image: &image,
+            keys: &keys,
+            container: &container,
+            runtime: &runtime,
+            no_root,
+            passphrase_file: pp_file.as_deref(),
+        };
         let fail = |e: String| (EXIT_FAIL, e);
-        write_bytes_nofollow(&join(&out, "compose.service.yml"), render_compose(&services, &o).as_bytes(), 0o644).map_err(fail)?;
-        write_bytes_nofollow(&join(&out, "deploy.sh"), render_deploy(&services, &o).as_bytes(), 0o755).map_err(fail)?;
-        write_bytes_nofollow(&join(&out, "README.txt"), render_readme(&services, &o).as_bytes(), 0o644).map_err(fail)?;
-        let compose_cmd = if runtime == "podman" { "podman-compose" } else { "docker compose" };
-        let merge = format!("{compose_cmd} -f compose.yml -f {} up -d", shlex_quote(&format!("{out}/compose.service.yml")));
+        write_bytes_nofollow(
+            &join(&out, "compose.service.yml"),
+            render_compose(&services, &o).as_bytes(),
+            0o644,
+        )
+        .map_err(fail)?;
+        write_bytes_nofollow(
+            &join(&out, "deploy.sh"),
+            render_deploy(&services, &o).as_bytes(),
+            0o755,
+        )
+        .map_err(fail)?;
+        write_bytes_nofollow(
+            &join(&out, "README.txt"),
+            render_readme(&services, &o).as_bytes(),
+            0o644,
+        )
+        .map_err(fail)?;
+        let compose_cmd = if runtime == "podman" {
+            "podman-compose"
+        } else {
+            "docker compose"
+        };
+        let merge = format!(
+            "{compose_cmd} -f compose.yml -f {} up -d",
+            shlex_quote(&format!("{out}/compose.service.yml"))
+        );
         let svc = sorted(&services);
         let svc_list: Vec<Json> = svc
             .iter()
@@ -1263,7 +1566,10 @@ fn cmd_setup(a: &Args) -> i32 {
                     .with("name", n.as_str().into())
                     .with("env_var", env_var(n).into())
                     .with("env_value", v.join(",").into())
-                    .with("address_command", format!("hiddenforge show --json --name {n}").into())
+                    .with(
+                        "address_command",
+                        format!("hiddenforge show --json --name {n}").into(),
+                    )
                     .with("address_file", format!("{keys}/{n}.onion").into())
                     .with("key_path", format!("{keys}/{n}/{SECRET_FILE}").into())
             })
@@ -1274,7 +1580,10 @@ fn cmd_setup(a: &Args) -> i32 {
             .with("env_var", env_var(first).into())
             .with("env_value", firstmaps.join(",").into())
             .with("services", Json::Arr(svc_list))
-            .with("backend", firstmaps[0].split(':').nth(1).unwrap_or("").into())
+            .with(
+                "backend",
+                firstmaps[0].split(':').nth(1).unwrap_or("").into(),
+            )
             .with("image", image.as_str().into())
             .with("keys", keys.as_str().into())
             .with("container", container.as_str().into())
@@ -1282,7 +1591,10 @@ fn cmd_setup(a: &Args) -> i32 {
             .with("onion_port", Json::Int(onion_port))
             .with("output_dir", realpath_lenient(&out).into())
             .with("merge", merge.as_str().into())
-            .with("address_command", format!("hiddenforge show --json --name {first}").into())
+            .with(
+                "address_command",
+                format!("hiddenforge show --json --name {first}").into(),
+            )
             .with("ready_command", "hiddenforge status --json".into())
             .with("bare_command", merge.as_str().into())
             .with("address_file", format!("{keys}/{first}.onion").into())
@@ -1297,10 +1609,16 @@ fn cmd_setup(a: &Args) -> i32 {
             descriptor.set("encrypt_keys", true.into());
             descriptor.set("passphrase_file", pp.as_str().into());
         }
-        write_bytes_nofollow(&join(&out, "hiddenforge.json"), (py::dumps(&descriptor, true, Some(2)) + "\n").as_bytes(), 0o644)
-            .map_err(fail)?;
+        write_bytes_nofollow(
+            &join(&out, "hiddenforge.json"),
+            (py::dumps(&descriptor, true, Some(2)) + "\n").as_bytes(),
+            0o644,
+        )
+        .map_err(fail)?;
         if a.flag("json") {
-            let mut doc = Json::obj().with("ok", true.into()).with("exit_code", Json::Int(0));
+            let mut doc = Json::obj()
+                .with("ok", true.into())
+                .with("exit_code", Json::Int(0));
             if let Json::Obj(items) = descriptor {
                 for (k, v) in items {
                     doc.set(&k, v);
@@ -1330,17 +1648,24 @@ fn cmd_setup(a: &Args) -> i32 {
 // ── rotate ──
 
 fn ismount(p: &str) -> bool {
-    let Ok(st) = fsops::lstat(p) else { return false };
+    let Ok(st) = fsops::lstat(p) else {
+        return false;
+    };
     if fsops::is_type(&st, libc::S_IFLNK) {
         return false;
     }
     let parent = format!("{}/..", py_path(p));
-    let Ok(ps) = fsops::lstat(&parent) else { return false };
+    let Ok(ps) = fsops::lstat(&parent) else {
+        return false;
+    };
     st.st_dev != ps.st_dev || st.st_ino == ps.st_ino
 }
 
 fn now_secs() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 fn rotate_inside(keys: &str) -> Result<(String, Vec<String>), (i32, String)> {
@@ -1359,7 +1684,8 @@ fn rotate_inside(keys: &str) -> Result<(String, Vec<String>), (i32, String)> {
         .iter()
         .filter(|n| {
             let p = join(keys, n);
-            fsops::lstat(&p).is_ok_and(|s| fsops::is_type(&s, libc::S_IFDIR)) && !access(&p, libc::W_OK)
+            fsops::lstat(&p).is_ok_and(|s| fsops::is_type(&s, libc::S_IFDIR))
+                && !access(&p, libc::W_OK)
         })
         .collect();
     if !stuck.is_empty() {
@@ -1397,7 +1723,8 @@ fn rotate_inside(keys: &str) -> Result<(String, Vec<String>), (i32, String)> {
         }
     }
     for e in &entries {
-        std::fs::rename(join(keys, e), join(&archive, e)).map_err(|er| (EXIT_FAIL, py::oserror(er.raw_os_error().unwrap_or(0))))?;
+        std::fs::rename(join(keys, e), join(&archive, e))
+            .map_err(|er| (EXIT_FAIL, py::oserror(er.raw_os_error().unwrap_or(0))))?;
     }
     Ok((archive, entries))
 }
@@ -1405,19 +1732,40 @@ fn rotate_inside(keys: &str) -> Result<(String, Vec<String>), (i32, String)> {
 fn cmd_rotate(a: &Args) -> i32 {
     let keys = py_path(&a.get("keys").map_or_else(default_keys_env, String::from));
     if !is_dir(&keys) {
-        return emit_json(EXIT_USAGE, vec![("keys", keys.as_str().into()), ("error", format!("key directory {keys} does not exist").into())]);
+        return emit_json(
+            EXIT_USAGE,
+            vec![
+                ("keys", keys.as_str().into()),
+                (
+                    "error",
+                    format!("key directory {keys} does not exist").into(),
+                ),
+            ],
+        );
     }
     if py::strip_str(a.get("confirm").unwrap_or("")) != "ROTATE" {
         return emit_json(
             EXIT_USAGE,
-            vec![("keys", keys.as_str().into()), ("error", "refusing to destroy an identity without --confirm ROTATE".into())],
+            vec![
+                ("keys", keys.as_str().into()),
+                (
+                    "error",
+                    "refusing to destroy an identity without --confirm ROTATE".into(),
+                ),
+            ],
         );
     }
     let res = if ismount(&keys) {
         rotate_inside(&keys).map(|(a, m)| (a, Some(m)))
     } else {
         if !access(&keys, libc::W_OK) {
-            return emit_json(EXIT_FAIL, vec![("keys", keys.as_str().into()), ("error", "key directory is not writable".into())]);
+            return emit_json(
+                EXIT_FAIL,
+                vec![
+                    ("keys", keys.as_str().into()),
+                    ("error", "key directory is not writable".into()),
+                ],
+            );
         }
         let mut cand = format!("{keys}.rotated-{}", now_secs());
         let mut n = 1;
@@ -1435,15 +1783,25 @@ fn cmd_rotate(a: &Args) -> i32 {
             .map_err(|e| (EXIT_FAIL, py::oserror(e.raw_os_error().unwrap_or(0))))
     };
     match res {
-        Err((EXIT_USAGE, e)) => emit_json(EXIT_USAGE, vec![("keys", keys.as_str().into()), ("error", e.into())]),
+        Err((EXIT_USAGE, e)) => emit_json(
+            EXIT_USAGE,
+            vec![("keys", keys.as_str().into()), ("error", e.into())],
+        ),
         Err((code, e)) => emit_json(code, vec![("error", e.into())]),
         Ok((archived, moved)) => {
             let note = "A running container keeps serving the old address from memory until it is restarted; restart it to generate the new one.";
             if a.flag("json") {
-                let moved = moved.map_or(Json::Null, |m| Json::Arr(m.into_iter().map(Json::Str).collect()));
+                let moved = moved.map_or(Json::Null, |m| {
+                    Json::Arr(m.into_iter().map(Json::Str).collect())
+                });
                 return emit_json(
                     EXIT_OK,
-                    vec![("keys", keys.as_str().into()), ("archived", archived.into()), ("moved", moved), ("note", note.into())],
+                    vec![
+                        ("keys", keys.as_str().into()),
+                        ("archived", archived.into()),
+                        ("moved", moved),
+                        ("note", note.into()),
+                    ],
                 );
             }
             println!("Moved the old identity to {archived}");
@@ -1471,7 +1829,10 @@ fn pick_tool(preferred: Option<&str>, suffix: &str, non_interactive: bool) -> Op
         }
         return which("age").then(|| "age".into());
     }
-    ["age", "gpg"].iter().find(|t| which(t)).map(|t| t.to_string())
+    ["age", "gpg"]
+        .iter()
+        .find(|t| which(t))
+        .map(|t| t.to_string())
 }
 
 fn passphrase_check(a: &Args, tool: &str) -> Result<(), String> {
@@ -1492,7 +1853,11 @@ fn passphrase_check(a: &Args, tool: &str) -> Result<(), String> {
 }
 
 fn tool_missing(tool: &str) -> String {
-    format!("{tool}: [Errno 2] No such file or directory: {}. {}", py::py_repr(tool), no_tool_error())
+    format!(
+        "{tool}: [Errno 2] No such file or directory: {}. {}",
+        py::py_repr(tool),
+        no_tool_error()
+    )
 }
 
 fn cmd_backup(a: &Args) -> i32 {
@@ -1502,7 +1867,8 @@ fn cmd_backup(a: &Args) -> i32 {
             return Err(format!("key directory {keys} does not exist"));
         }
         let ni = a.get("passphrase_file").is_some() || !stdin_tty();
-        let tool = pick_tool(a.get("tool"), a.get("out").unwrap_or(""), ni).ok_or_else(no_tool_error)?;
+        let tool =
+            pick_tool(a.get("tool"), a.get("out").unwrap_or(""), ni).ok_or_else(no_tool_error)?;
         if tool == "openssl" {
             return Err("openssl is refused for backup creation (no authentication)".into());
         }
@@ -1555,7 +1921,9 @@ fn cmd_crypt(a: &Args) -> i32 {
 
 fn emit_vanity(rc: i32, json: bool, payload: Vec<(&str, Json)>, human: &str) -> i32 {
     if json {
-        let mut doc = Json::obj().with("ok", (rc == 0).into()).with("exit_code", Json::Int(i64::from(rc)));
+        let mut doc = Json::obj()
+            .with("ok", (rc == 0).into())
+            .with("exit_code", Json::Int(i64::from(rc)));
         for (k, v) in payload {
             if v != Json::Null {
                 doc.set(k, v);
@@ -1570,7 +1938,14 @@ fn emit_vanity(rc: i32, json: bool, payload: Vec<(&str, Json)>, human: &str) -> 
 
 fn mkp224o_path() -> Result<String, String> {
     let env = std::env::var("MKP224O").ok();
-    for c in [env.as_deref(), Some("/usr/local/bin/mkp224o"), Some("/usr/bin/mkp224o")].into_iter().flatten() {
+    for c in [
+        env.as_deref(),
+        Some("/usr/local/bin/mkp224o"),
+        Some("/usr/bin/mkp224o"),
+    ]
+    .into_iter()
+    .flatten()
+    {
         if std::fs::metadata(c).is_ok_and(|m| m.is_file()) && access(c, libc::X_OK) {
             return Ok(c.into());
         }
@@ -1600,7 +1975,18 @@ fn benchmark(seconds: i64, threads: i64) -> Result<f64, String> {
     let tmp = format!("/tmp/hf-bench-{}", random_hex8());
     std::fs::create_dir(&tmp).map_err(|e| e.to_string())?;
     let mut child = std::process::Command::new(mkp224o_path()?)
-        .args(["-d", &tmp, "-t", &threads.to_string(), "-n", "0", "-S", "1", "-T", "zzzzzzzzzz"])
+        .args([
+            "-d",
+            &tmp,
+            "-t",
+            &threads.to_string(),
+            "-n",
+            "0",
+            "-S",
+            "1",
+            "-T",
+            "zzzzzzzzzz",
+        ])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -1616,7 +2002,11 @@ fn benchmark(seconds: i64, threads: i64) -> Result<f64, String> {
                 break;
             }
             if let Some(i) = line.find("calc/sec:") {
-                let v: String = line[i + 9..].trim_start().chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+                let v: String = line[i + 9..]
+                    .trim_start()
+                    .chars()
+                    .take_while(|c| c.is_ascii_digit() || *c == '.')
+                    .collect();
                 if let Ok(r) = v.parse::<f64>() {
                     best = r;
                 }
@@ -1633,7 +2023,15 @@ fn benchmark(seconds: i64, threads: i64) -> Result<f64, String> {
     Ok(best)
 }
 
-fn vanity_generate(prefix: &str, name: &str, out: &str, threads: i64, force: bool, uid: Option<u32>, gid: Option<u32>) -> Result<Json, (i32, String)> {
+fn vanity_generate(
+    prefix: &str,
+    name: &str,
+    out: &str,
+    threads: i64,
+    force: bool,
+    uid: Option<u32>,
+    gid: Option<u32>,
+) -> Result<Json, (i32, String)> {
     let target = join(out, name);
     let exists = fsops::lstat(&target).is_ok();
     if exists && !force {
@@ -1660,19 +2058,50 @@ fn vanity_generate(prefix: &str, name: &str, out: &str, threads: i64, force: boo
         if !outp.status.success() && generated.is_empty() {
             let err = String::from_utf8_lossy(&outp.stderr);
             let err = err.trim();
-            let tail: String = err.chars().rev().take(500).collect::<Vec<_>>().into_iter().rev().collect();
-            return Err((EXIT_FAIL, format!("mkp224o exited {}: {tail}", outp.status.code().unwrap_or(-1))));
+            let tail: String = err
+                .chars()
+                .rev()
+                .take(500)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            return Err((
+                EXIT_FAIL,
+                format!(
+                    "mkp224o exited {}: {tail}",
+                    outp.status.code().unwrap_or(-1)
+                ),
+            ));
         }
         if generated.len() != 1 {
-            return Err((EXIT_FAIL, format!("expected exactly one generated .onion directory, found {}", generated.len())));
+            return Err((
+                EXIT_FAIL,
+                format!(
+                    "expected exactly one generated .onion directory, found {}",
+                    generated.len()
+                ),
+            ));
         }
         let dir_onion = generated[0].clone();
         let src = join(&tmp, &dir_onion);
         if !fsops::is_onion(&dir_onion) {
-            return Err((EXIT_FAIL, format!("generator produced an invalid address name: {}", py::py_repr(&dir_onion))));
+            return Err((
+                EXIT_FAIL,
+                format!(
+                    "generator produced an invalid address name: {}",
+                    py::py_repr(&dir_onion)
+                ),
+            ));
         }
         if !dir_onion.starts_with(prefix) {
-            return Err((EXIT_FAIL, format!("generated address {dir_onion} does not start with prefix {}", py::py_repr(prefix))));
+            return Err((
+                EXIT_FAIL,
+                format!(
+                    "generated address {dir_onion} does not start with prefix {}",
+                    py::py_repr(prefix)
+                ),
+            ));
         }
         let file_onion = std::fs::read(join(&src, HOSTNAME_FILE))
             .ok()
@@ -1680,18 +2109,28 @@ fn vanity_generate(prefix: &str, name: &str, out: &str, threads: i64, force: boo
             .map(|d| py::strip_str(&String::from_utf8_lossy(&d)).to_string())
             .filter(|t| fsops::is_onion(t));
         if file_onion.as_deref() != Some(dir_onion.as_str()) {
-            return Err((EXIT_FAIL, format!(
-                "hostname file ({}) disagrees with directory name ({})",
-                file_onion.map_or("None".into(), |f| py::py_repr(&f)),
-                py::py_repr(&dir_onion)
-            )));
+            return Err((
+                EXIT_FAIL,
+                format!(
+                    "hostname file ({}) disagrees with directory name ({})",
+                    file_onion.map_or("None".into(), |f| py::py_repr(&f)),
+                    py::py_repr(&dir_onion)
+                ),
+            ));
         }
         let pk = std::fs::read(join(&src, PUBLIC_FILE)).map_err(|e| (EXIT_FAIL, e.to_string()))?;
-        let pk = if pk.len() == 64 && pk.starts_with(PUBLIC_TAG) { pk[32..].to_vec() } else { pk };
-        let derived = sha3::derive_onion(&pk).ok_or((EXIT_FAIL, format!(
-            "{PUBLIC_FILE}: expected 64 bytes (tagged) or 32 bytes (bare), got {}",
-            pk.len()
-        )))?;
+        let pk = if pk.len() == 64 && pk.starts_with(PUBLIC_TAG) {
+            pk[32..].to_vec()
+        } else {
+            pk
+        };
+        let derived = sha3::derive_onion(&pk).ok_or((
+            EXIT_FAIL,
+            format!(
+                "{PUBLIC_FILE}: expected 64 bytes (tagged) or 32 bytes (bare), got {}",
+                pk.len()
+            ),
+        ))?;
         if derived != dir_onion {
             return Err((EXIT_FAIL, format!("address derived from public key ({derived}) disagrees with the generated address ({dir_onion})")));
         }
@@ -1733,10 +2172,16 @@ fn harden(dir: &str, uid: Option<u32>, gid: Option<u32>) -> Result<(), String> {
     let (u, g) = (uid.unwrap_or(u32::MAX), gid.unwrap_or(u32::MAX));
     let chown = uid.is_some() || gid.is_some();
     let dfd = fsops::open_dir_nofollow(dir).map_err(|e| e.msg)?;
-    let mut names: Vec<String> = std::fs::read_dir(dir).map_err(|e| e.to_string())?.flatten().filter_map(|e| e.file_name().to_str().map(String::from)).collect();
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .map_err(|e| e.to_string())?
+        .flatten()
+        .filter_map(|e| e.file_name().to_str().map(String::from))
+        .collect();
     names.sort();
     for n in names {
-        let Ok(fd) = fsops::open(&join(dir, &n), libc::O_RDONLY | libc::O_NOFOLLOW, 0) else { continue };
+        let Ok(fd) = fsops::open(&join(dir, &n), libc::O_RDONLY | libc::O_NOFOLLOW, 0) else {
+            continue;
+        };
         fsops::fchmod(&fd, if n == HOSTNAME_FILE { 0o644 } else { 0o600 }).map_err(|e| e.msg)?;
         if chown {
             // SAFETY: fd open; -1 (u32::MAX) leaves that id unchanged.
@@ -1753,15 +2198,30 @@ fn harden(dir: &str, uid: Option<u32>, gid: Option<u32>) -> Result<(), String> {
 
 fn cmd_vanity(argv: &[String]) -> i32 {
     let specs = [
-        Opt { required: true, ..o("--prefix", Kind::Value) },
+        Opt {
+            required: true,
+            ..o("--prefix", Kind::Value)
+        },
         o("--name", Kind::Value),
         o("--out", Kind::Value),
-        Opt { int: true, ..o("--threads", Kind::Value) },
+        Opt {
+            int: true,
+            ..o("--threads", Kind::Value)
+        },
         o("--force", Kind::Flag),
-        Opt { int: true, ..o("--uid", Kind::Value) },
-        Opt { int: true, ..o("--gid", Kind::Value) },
+        Opt {
+            int: true,
+            ..o("--uid", Kind::Value)
+        },
+        Opt {
+            int: true,
+            ..o("--gid", Kind::Value)
+        },
         o("--bench", Kind::Flag),
-        Opt { int: true, ..o("--seconds", Kind::Value) },
+        Opt {
+            int: true,
+            ..o("--seconds", Kind::Value)
+        },
         o("--json", Kind::Flag),
     ];
     let a = match parse("vanity.py", &specs, argv) {
@@ -1771,13 +2231,33 @@ fn cmd_vanity(argv: &[String]) -> i32 {
     let json = a.flag("json");
     let prefix = a.get("prefix").unwrap_or("");
     let name = a.get("name").unwrap_or(DEFAULT_NAME);
-    if !(1..=12).contains(&prefix.len()) || !prefix.bytes().all(|b| matches!(b, b'a'..=b'z' | b'2'..=b'7')) {
+    if !(1..=12).contains(&prefix.len())
+        || !prefix
+            .bytes()
+            .all(|b| matches!(b, b'a'..=b'z' | b'2'..=b'7'))
+    {
         let r = py::py_repr(prefix);
-        return emit_vanity(EXIT_USAGE, json, vec![("error", format!("invalid prefix {r}: use base32 characters a-z and 2-7 (no 0,1,8,9), max 12").into())], &format!("error: invalid prefix {r}"));
+        return emit_vanity(
+            EXIT_USAGE,
+            json,
+            vec![(
+                "error",
+                format!(
+                    "invalid prefix {r}: use base32 characters a-z and 2-7 (no 0,1,8,9), max 12"
+                )
+                .into(),
+            )],
+            &format!("error: invalid prefix {r}"),
+        );
     }
     if !name_ok(name) {
         let r = py::py_repr(name);
-        return emit_vanity(EXIT_USAGE, json, vec![("error", format!("invalid name {r}").into())], &format!("error: invalid name {r}"));
+        return emit_vanity(
+            EXIT_USAGE,
+            json,
+            vec![("error", format!("invalid name {r}").into())],
+            &format!("error: invalid name {r}"),
+        );
     }
     let threads = match int_arg(&a, "threads", 0) {
         t if t > 0 => t,
@@ -1787,9 +2267,18 @@ fn cmd_vanity(argv: &[String]) -> i32 {
     let seconds = int_arg(&a, "seconds", 5);
     let rate = match benchmark(seconds, threads) {
         Ok(r) => r,
-        Err(e) => return emit_vanity(EXIT_USAGE, json, vec![("error", format!("benchmark failed: {e}").into())], &format!("error: benchmark failed: {e}")),
+        Err(e) => {
+            return emit_vanity(
+                EXIT_USAGE,
+                json,
+                vec![("error", format!("benchmark failed: {e}").into())],
+                &format!("error: benchmark failed: {e}"),
+            )
+        }
     };
-    let rows: Vec<(i64, i64, f64)> = (1..=8).map(|l: u32| (i64::from(l), 32i64.pow(l), 32f64.powi(l as i32) / rate)).collect();
+    let rows: Vec<(i64, i64, f64)> = (1..=8)
+        .map(|l: u32| (i64::from(l), 32i64.pow(l), 32f64.powi(l as i32) / rate))
+        .collect();
     if a.flag("bench") {
         let table = Json::Arr(
             rows.iter()
@@ -1807,7 +2296,10 @@ fn cmd_vanity(argv: &[String]) -> i32 {
             ("threads", Json::Int(threads)),
             ("seconds", Json::Int(seconds)),
             ("keys_per_sec", Json::Float(py::py_round(rate, 2))),
-            ("keys_per_sec_per_thread", Json::Float(py::py_round(rate / threads as f64, 2))),
+            (
+                "keys_per_sec_per_thread",
+                Json::Float(py::py_round(rate / threads as f64, 2)),
+            ),
             ("difficulty", table),
         ];
         if json {
@@ -1815,7 +2307,9 @@ fn cmd_vanity(argv: &[String]) -> i32 {
         }
         let commas = |x: f64| {
             let s = format!("{:.0}", x);
-            let (neg, d) = s.strip_prefix('-').map_or((false, s.as_str()), |r| (true, r));
+            let (neg, d) = s
+                .strip_prefix('-')
+                .map_or((false, s.as_str()), |r| (true, r));
             let mut out = String::new();
             for (i, ch) in d.chars().enumerate() {
                 if i > 0 && (d.len() - i) % 3 == 0 {
@@ -1823,15 +2317,27 @@ fn cmd_vanity(argv: &[String]) -> i32 {
                 }
                 out.push(ch);
             }
-            if neg { format!("-{out}") } else { out }
+            if neg {
+                format!("-{out}")
+            } else {
+                out
+            }
         };
         let mut lines = vec![
-            format!("mkp224o throughput: {} keys/sec ({threads} threads, {} keys/sec/thread)", commas(rate), commas(rate / threads as f64)),
+            format!(
+                "mkp224o throughput: {} keys/sec ({threads} threads, {} keys/sec/thread)",
+                commas(rate),
+                commas(rate / threads as f64)
+            ),
             String::new(),
             "prefix len   average attempts        expected time".into(),
         ];
         for (l, at, s) in &rows {
-            lines.push(format!("{l:>9}   {:>18}   {:>13}", commas(*at as f64), human_duration(*s)));
+            lines.push(format!(
+                "{l:>9}   {:>18}   {:>13}",
+                commas(*at as f64),
+                human_duration(*s)
+            ));
         }
         return emit_vanity(EXIT_OK, false, payload, &lines.join("\n"));
     }
@@ -1843,11 +2349,30 @@ fn cmd_vanity(argv: &[String]) -> i32 {
             human_duration(est)
         );
     }
-    let out = a.get("out").map_or_else(|| std::env::var("HIDDENFORGE_KEYS_DIR").unwrap_or_else(|_| "/var/lib/tor/hidden_service".into()), String::from);
+    let out = a.get("out").map_or_else(
+        || {
+            std::env::var("HIDDENFORGE_KEYS_DIR")
+                .unwrap_or_else(|_| "/var/lib/tor/hidden_service".into())
+        },
+        String::from,
+    );
     let uid = a.get("uid").and_then(|v| v.trim().parse().ok());
     let gid = a.get("gid").and_then(|v| v.trim().parse().ok());
-    match vanity_generate(prefix, name, &py_path(&out), threads, a.flag("force"), uid, gid) {
-        Err((code, e)) => emit_vanity(code, json, vec![("error", e.clone().into()), ("name", name.into())], &format!("error: {e}")),
+    match vanity_generate(
+        prefix,
+        name,
+        &py_path(&out),
+        threads,
+        a.flag("force"),
+        uid,
+        gid,
+    ) {
+        Err((code, e)) => emit_vanity(
+            code,
+            json,
+            vec![("error", e.clone().into()), ("name", name.into())],
+            &format!("error: {e}"),
+        ),
         Ok(mut r) => {
             let onion = match r.get("onion") {
                 Some(Json::Str(s)) => s.clone(),
@@ -1863,7 +2388,9 @@ fn cmd_vanity(argv: &[String]) -> i32 {
                 s("key_path"),
                 s("key_dir")
             );
-            let Json::Obj(items) = r else { return EXIT_FAIL };
+            let Json::Obj(items) = r else {
+                return EXIT_FAIL;
+            };
             let payload: Vec<(&str, Json)> = items.into_iter().map(|(k, v)| (leak(k), v)).collect();
             emit_vanity(EXIT_OK, json, payload, &human)
         }

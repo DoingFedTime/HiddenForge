@@ -28,7 +28,15 @@ const NET_CONNECT_TCP: u64 = 1 << 1;
 
 pub const READ: u64 = READ_FILE | READ_DIR;
 /// Everything needed to create, replace and remove files in a directory.
-pub const RW: u64 = READ | WRITE_FILE | REMOVE_FILE | REMOVE_DIR | MAKE_DIR | MAKE_REG | MAKE_SOCK | REFER | TRUNCATE;
+pub const RW: u64 = READ
+    | WRITE_FILE
+    | REMOVE_FILE
+    | REMOVE_DIR
+    | MAKE_DIR
+    | MAKE_REG
+    | MAKE_SOCK
+    | REFER
+    | TRUNCATE;
 
 const SYS_CREATE: libc::c_long = 444;
 const SYS_ADD_RULE: libc::c_long = 445;
@@ -51,8 +59,19 @@ struct PathBeneath {
 /// The kernel's Landlock ABI version, or 0 if unavailable.
 pub fn abi() -> i64 {
     // SAFETY: the documented ABI probe: NULL attr, size 0, VERSION flag.
-    let v = unsafe { libc::syscall(SYS_CREATE, std::ptr::null::<RulesetAttr>(), 0usize, CREATE_RULESET_VERSION) };
-    if v < 0 { 0 } else { v }
+    let v = unsafe {
+        libc::syscall(
+            SYS_CREATE,
+            std::ptr::null::<RulesetAttr>(),
+            0usize,
+            CREATE_RULESET_VERSION,
+        )
+    };
+    if v < 0 {
+        0
+    } else {
+        v
+    }
 }
 
 fn fs_mask(abi: i64) -> u64 {
@@ -90,12 +109,26 @@ pub fn build(rules: &[(&str, u64)], deny_tcp: bool) -> Result<Ruleset, String> {
         return Err("Landlock is not available in this kernel or runtime".into());
     }
     let handled = fs_mask(abi);
-    let attr = RulesetAttr { handled_access_fs: handled, handled_access_net: if deny_tcp && abi >= 4 { NET_BIND_TCP | NET_CONNECT_TCP } else { 0 } };
-    let size = if abi >= 4 { std::mem::size_of::<RulesetAttr>() } else { 8 };
+    let attr = RulesetAttr {
+        handled_access_fs: handled,
+        handled_access_net: if deny_tcp && abi >= 4 {
+            NET_BIND_TCP | NET_CONNECT_TCP
+        } else {
+            0
+        },
+    };
+    let size = if abi >= 4 {
+        std::mem::size_of::<RulesetAttr>()
+    } else {
+        8
+    };
     // SAFETY: attr is a valid ruleset_attr of `size` bytes.
     let fd = unsafe { libc::syscall(SYS_CREATE, &attr as *const RulesetAttr, size, 0u32) };
     if fd < 0 {
-        return Err(format!("landlock_create_ruleset: {}", crate::py::strerror(crate::py::last_errno())));
+        return Err(format!(
+            "landlock_create_ruleset: {}",
+            crate::py::strerror(crate::py::last_errno())
+        ));
     }
     let rs = Ruleset { fd: fd as i32, abi };
     for (path, rights) in rules {
@@ -112,14 +145,28 @@ pub fn build(rules: &[(&str, u64)], deny_tcp: bool) -> Result<Ruleset, String> {
             // Rights that only make sense on directories are refused on files.
             allowed &= EXECUTE | WRITE_FILE | READ_FILE | TRUNCATE | IOCTL_DEV;
         }
-        let pb = PathBeneath { allowed_access: allowed, parent_fd: pfd };
+        let pb = PathBeneath {
+            allowed_access: allowed,
+            parent_fd: pfd,
+        };
         // SAFETY: valid ruleset fd and path_beneath attr.
-        let r = unsafe { libc::syscall(SYS_ADD_RULE, rs.fd, RULE_PATH_BENEATH, &pb as *const PathBeneath, 0u32) };
+        let r = unsafe {
+            libc::syscall(
+                SYS_ADD_RULE,
+                rs.fd,
+                RULE_PATH_BENEATH,
+                &pb as *const PathBeneath,
+                0u32,
+            )
+        };
         let err = crate::py::last_errno();
         // SAFETY: closing our O_PATH fd.
         unsafe { libc::close(pfd) };
         if r != 0 {
-            return Err(format!("landlock_add_rule {path}: {}", crate::py::strerror(err)));
+            return Err(format!(
+                "landlock_add_rule {path}: {}",
+                crate::py::strerror(err)
+            ));
         }
     }
     Ok(rs)
@@ -157,7 +204,10 @@ impl Ruleset {
         // SAFETY: fd is open (we own it).
         match unsafe { self.enforce_raw() } {
             0 => Ok(()),
-            e => Err(format!("landlock_restrict_self: {}", crate::py::strerror(e))),
+            e => Err(format!(
+                "landlock_restrict_self: {}",
+                crate::py::strerror(e)
+            )),
         }
     }
 }
@@ -203,7 +253,12 @@ pub fn guards_rules() -> Vec<(&'static str, u64)> {
 
 /// The upload watcher records addresses in the DataDirectory.
 pub fn watcher_rules() -> Vec<(&'static str, u64)> {
-    vec![LIBS[0], LIBS[1], ("/usr/local/bin/hiddenforge", EXECUTE | READ_FILE), ("/var/lib/tor", RW)]
+    vec![
+        LIBS[0],
+        LIBS[1],
+        ("/usr/local/bin/hiddenforge", EXECUTE | READ_FILE),
+        ("/var/lib/tor", RW),
+    ]
 }
 
 /// The healthcheck and the small helpers read the torrc, the DataDirectory
@@ -245,10 +300,17 @@ mod tests {
                 unsafe { libc::_exit(4) };
             }
             let inside = std::fs::read(format!("{dp}/ok")).is_ok();
-            let outside = std::fs::read("/etc/hostname").is_ok() || std::fs::read("/etc/passwd").is_ok();
+            let outside =
+                std::fs::read("/etc/hostname").is_ok() || std::fs::read("/etc/passwd").is_ok();
             let write = std::fs::write(format!("{dp}/new"), b"y").is_ok();
             let tcp = std::net::TcpStream::connect("127.0.0.1:9").is_ok();
-            unsafe { libc::_exit(if inside && !outside && !write && !tcp { 0 } else { 5 }) };
+            unsafe {
+                libc::_exit(if inside && !outside && !write && !tcp {
+                    0
+                } else {
+                    5
+                })
+            };
         }
         let mut status = 0;
         // SAFETY: waiting for our child.

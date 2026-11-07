@@ -19,8 +19,8 @@ mod health;
 mod keycrypt;
 mod landlock;
 mod privs;
-mod sealed;
 mod py;
+mod sealed;
 mod sha3;
 mod supervisor;
 mod torrc;
@@ -29,8 +29,19 @@ use py::Json;
 use std::time::Duration;
 
 /// `docker run <image> <cmd>` names that run an operator command instead of booting.
-const SUBCOMMANDS: &[&str] =
-    &["setup", "show", "doctor", "version", "info", "vanity", "encrypt-key", "decrypt-key", "backup", "restore", "rotate"];
+const SUBCOMMANDS: &[&str] = &[
+    "setup",
+    "show",
+    "doctor",
+    "version",
+    "info",
+    "vanity",
+    "encrypt-key",
+    "decrypt-key",
+    "backup",
+    "restore",
+    "rotate",
+];
 /// Subcommands that read the tor-owned key directories, so they run as tor.
 const AS_TOR: &[&str] = &["show", "doctor"];
 
@@ -42,7 +53,15 @@ fn torrc_preview() -> i32 {
         .with("content", t.content.clone().into())
         .with("hs_dirs", strs(&t.hs_dirs))
         .with("dropped", strs(&t.dropped))
-        .with("resolved", Json::Obj(t.resolved.iter().map(|(k, v)| (k.clone(), Json::Str(v.clone()))).collect()))
+        .with(
+            "resolved",
+            Json::Obj(
+                t.resolved
+                    .iter()
+                    .map(|(k, v)| (k.clone(), Json::Str(v.clone())))
+                    .collect(),
+            ),
+        )
         .with("unresolved", strs(&t.unresolved))
         .with("log", strs(&t.log));
     println!("{}", py::dumps(&doc, false, None));
@@ -54,9 +73,11 @@ fn healthcheck(args: &[String]) -> i32 {
     match a.as_slice() {
         [] => health::main_check(false),
         ["--json"] => health::main_check(true),
-        ["--watch-uploads"] => {
-            health::watch_uploads(health::UPLOADS_FILE, health::CONTROL_SOCKET, Duration::from_secs(60))
-        }
+        ["--watch-uploads"] => health::watch_uploads(
+            health::UPLOADS_FILE,
+            health::CONTROL_SOCKET,
+            Duration::from_secs(60),
+        ),
         _ => {
             eprintln!("usage: healthcheck.py [-h] [--json] [--watch-uploads]");
             2
@@ -70,13 +91,20 @@ fn hiddenforge(args: &[String]) -> i32 {
         eprintln!("usage: hiddenforge <command> [options]   (see `hiddenforge info`)");
         return 2;
     };
-    match (cmd.as_str(), rest.iter().map(String::as_str).collect::<Vec<_>>().as_slice()) {
+    match (
+        cmd.as_str(),
+        rest.iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .as_slice(),
+    ) {
         ("__true", []) => 0,
         ("__is-socket", [p]) => compat::test(&["-S".into(), (*p).to_string()]),
         // Run as the tor user by the supervisor: the public hostname file only.
         ("__keys", [op, name]) => sealed::helper(op, name),
         ("__read-hostname", [p])
-            if (p.starts_with("/var/lib/tor/hidden_service/") || p.starts_with("/var/lib/tor/hs-ram/"))
+            if (p.starts_with("/var/lib/tor/hidden_service/")
+                || p.starts_with("/var/lib/tor/hs-ram/"))
                 && p.ends_with("/hostname")
                 && !p.contains("/../") =>
         {
@@ -90,7 +118,9 @@ fn hiddenforge(args: &[String]) -> i32 {
         }
         // Run as the tor user by the supervisor, which holds no CAP_KILL.
         ("__kill", [pid, sig]) => match (pid.parse::<i32>(), sig.parse::<i32>()) {
-            (Ok(p), Ok(s)) if p > 1 && (s == libc::SIGTERM || s == libc::SIGINT || s == libc::SIGKILL) => {
+            (Ok(p), Ok(s))
+                if p > 1 && (s == libc::SIGTERM || s == libc::SIGINT || s == libc::SIGKILL) =>
+            {
                 // SAFETY: kill(2); the kernel enforces that we only reach our own processes.
                 i32::from(unsafe { libc::kill(p, s) } != 0)
             }
@@ -108,7 +138,9 @@ fn hiddenforge(args: &[String]) -> i32 {
 fn python(args: &[String]) -> i32 {
     match args.split_first() {
         Some((script, rest)) if script == "/usr/local/bin/healthcheck.py" => healthcheck(rest),
-        Some((script, rest)) if script == "/usr/local/bin/vanity.py" => cli::run("vanity", rest).unwrap_or(2),
+        Some((script, rest)) if script == "/usr/local/bin/vanity.py" => {
+            cli::run("vanity", rest).unwrap_or(2)
+        }
         Some((script, rest)) if script == "/usr/local/bin/entrypoint.py" => entrypoint(rest),
         _ => {
             eprintln!(
@@ -135,7 +167,10 @@ fn by_name(name: &str, args: &[String]) -> i32 {
         "entrypoint.py" | "entrypoint" => entrypoint(args),
         other => {
             // Never boot a second supervisor under an unexpected name.
-            eprintln!("hiddenforge: started under an unknown name {}; nothing to do", py::safe_str(other));
+            eprintln!(
+                "hiddenforge: started under an unknown name {}; nothing to do",
+                py::safe_str(other)
+            );
             2
         }
     }
@@ -165,7 +200,10 @@ fn entrypoint(args: &[String]) -> i32 {
 /// No process of ours ever writes a core file or can be ptrace-attached by a
 /// same-uid process: a crash must not put key material on disk.
 fn no_dumps() {
-    let zero = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+    let zero = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
     // SAFETY: plain setrlimit/prctl with valid arguments; failures are harmless.
     unsafe {
         libc::setrlimit(libc::RLIMIT_CORE, &zero);
@@ -176,8 +214,15 @@ fn no_dumps() {
 fn main() {
     no_dumps();
     let args: Vec<String> = std::env::args().collect();
-    let argv0 = args.first().map(|a| a.rsplit('/').next().unwrap_or("").to_string()).unwrap_or_default();
+    let argv0 = args
+        .first()
+        .map(|a| a.rsplit('/').next().unwrap_or("").to_string())
+        .unwrap_or_default();
     let rest = &args[args.len().min(1)..];
-    let code = if argv0 == health::GUARDS_ARGV0 { guards::main(rest) } else { by_name(&argv0, rest) };
+    let code = if argv0 == health::GUARDS_ARGV0 {
+        guards::main(rest)
+    } else {
+        by_name(&argv0, rest)
+    };
     std::process::exit(code);
 }

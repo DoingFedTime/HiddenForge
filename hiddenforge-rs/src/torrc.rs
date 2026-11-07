@@ -108,7 +108,9 @@ pub fn validate_service_name(name: &[PyChar]) -> Result<String, String> {
     let ok = !name.is_empty()
         && name.len() <= 63
         && matches!(name[0], PyChar::C('a'..='z' | '0'..='9'))
-        && name.iter().all(|c| matches!(c, PyChar::C('a'..='z' | '0'..='9' | '-')));
+        && name
+            .iter()
+            .all(|c| matches!(c, PyChar::C('a'..='z' | '0'..='9' | '-')));
     if ok {
         Ok(py::to_string(name).unwrap_or_default())
     } else {
@@ -123,9 +125,16 @@ pub fn validate_service_name(name: &[PyChar]) -> Result<String, String> {
 pub fn validate_port(value: &[PyChar], label: &[PyChar]) -> Result<String, String> {
     let stripped = py::strip(value);
     if !is_digits_1_5(stripped) {
-        return Err(format!("Invalid port '{}' in {}", py::safe(value), py::safe(label)));
+        return Err(format!(
+            "Invalid port '{}' in {}",
+            py::safe(value),
+            py::safe(label)
+        ));
     }
-    let port: u32 = py::to_string(stripped).unwrap_or_default().parse().unwrap_or(0);
+    let port: u32 = py::to_string(stripped)
+        .unwrap_or_default()
+        .parse()
+        .unwrap_or(0);
     if !(1..=65535).contains(&port) {
         return Err(format!("Port {port} out of range in {}", py::safe(label)));
     }
@@ -136,11 +145,20 @@ pub fn validate_port(value: &[PyChar], label: &[PyChar]) -> Result<String, Strin
 pub fn validate_hostname(value: &[PyChar], label: &[PyChar]) -> Result<String, String> {
     let v = py::strip(value);
     let ok = (1..=253).contains(&v.len())
-        && v.iter().all(|c| matches!(c, PyChar::C('a'..='z' | 'A'..='Z' | '0'..='9' | '.' | '_' | '-')));
+        && v.iter().all(|c| {
+            matches!(
+                c,
+                PyChar::C('a'..='z' | 'A'..='Z' | '0'..='9' | '.' | '_' | '-')
+            )
+        });
     if ok {
         Ok(py::to_string(v).unwrap_or_default())
     } else {
-        Err(format!("Invalid hostname '{}' in {}", py::safe(v), py::safe(label)))
+        Err(format!(
+            "Invalid hostname '{}' in {}",
+            py::safe(v),
+            py::safe(label)
+        ))
     }
 }
 
@@ -171,10 +189,18 @@ pub fn fmt_ipv4(o: [u8; 4]) -> String {
 
 fn looks_dotted(s: &str) -> bool {
     let parts: Vec<&str> = s.split('.').collect();
-    parts.len() == 4 && parts.iter().all(|p| (1..=3).contains(&p.len()) && p.bytes().all(|b| b.is_ascii_digit()))
+    parts.len() == 4
+        && parts
+            .iter()
+            .all(|p| (1..=3).contains(&p.len()) && p.bytes().all(|b| b.is_ascii_digit()))
 }
 
-fn resolve_to_ip(host: &str, label: &[PyChar], resolver: Resolver, log: &mut Vec<String>) -> Result<String, MapErr> {
+fn resolve_to_ip(
+    host: &str,
+    label: &[PyChar],
+    resolver: Resolver,
+    log: &mut Vec<String>,
+) -> Result<String, MapErr> {
     let stripped = py::strip_str(host);
     if looks_dotted(stripped) {
         return parse_ipv4_strict(stripped).map(fmt_ipv4).ok_or_else(|| {
@@ -210,7 +236,10 @@ fn resolve_to_ip(host: &str, label: &[PyChar], resolver: Resolver, log: &mut Vec
                 py::safe(label)
             ))
         })?;
-    log.push(format!("Resolved '{}' → {validated}", py::safe_str(stripped)));
+    log.push(format!(
+        "Resolved '{}' → {validated}",
+        py::safe_str(stripped)
+    ));
     Ok(validated)
 }
 
@@ -240,7 +269,13 @@ fn lower_and_hyphenate(s: &[PyChar]) -> PyStr {
     for c in s {
         match c {
             PyChar::C('_') => out.push(PyChar::C('-')),
-            PyChar::C(ch) => out.extend(ch.to_lowercase().map(|l| if l == '_' { PyChar::C('-') } else { PyChar::C(l) })),
+            PyChar::C(ch) => out.extend(ch.to_lowercase().map(|l| {
+                if l == '_' {
+                    PyChar::C('-')
+                } else {
+                    PyChar::C(l)
+                }
+            })),
             PyChar::Surr(b) => out.push(PyChar::Surr(*b)),
         }
     }
@@ -253,7 +288,9 @@ fn split_on(s: &[PyChar], sep: char) -> Vec<PyStr> {
         if *c == PyChar::C(sep) {
             out.push(Vec::new());
         } else {
-            out.last_mut().map(|v| v.push(c.clone()));
+            if let Some(v) = out.last_mut() {
+                v.push(c.clone());
+            }
         }
     }
     out
@@ -290,8 +327,11 @@ pub fn build(env: &[(PyStr, PyStr)], resolver: Resolver) -> Torrc {
         let service_name = match validate_service_name(&raw_name) {
             Ok(n) => n,
             Err(e) => {
-                out.log.push(format!("Skipping invalid service name from {safe_env}: {e}"));
-                out.dropped.push(format!("{safe_env}: invalid service name: {e}"));
+                out.log.push(format!(
+                    "Skipping invalid service name from {safe_env}: {e}"
+                ));
+                out.dropped
+                    .push(format!("{safe_env}: invalid service name: {e}"));
                 continue;
             }
         };
@@ -302,12 +342,15 @@ pub fn build(env: &[(PyStr, PyStr)], resolver: Resolver) -> Torrc {
                  Service names are lowercased and underscores become hyphens, so names that differ only in case or \
                  in _ vs - collide. Rename one."
             ));
-            out.dropped.push(format!("{safe_env}: service name '{service_name}' collides with {first}"));
+            out.dropped.push(format!(
+                "{safe_env}: service name '{service_name}' collides with {first}"
+            ));
             continue;
         }
         seen.push((service_name.clone(), env_var.clone()));
 
-        out.log.push(format!("Configuring hidden service: {service_name}"));
+        out.log
+            .push(format!("Configuring hidden service: {service_name}"));
         out.log.push(format!("Service hosts: {safe_hosts}"));
 
         let hs_dir = format!("{KEYS_ROOT}/{service_name}");
@@ -329,7 +372,10 @@ pub fn build(env: &[(PyStr, PyStr)], resolver: Resolver) -> Torrc {
             let stripped = py::strip(&mapping).to_vec();
             if !mapping.contains(&PyChar::C(':')) {
                 if !stripped.is_empty() {
-                    out.dropped.push(format!("{safe_env}: malformed mapping '{}'", py::safe(&stripped)));
+                    out.dropped.push(format!(
+                        "{safe_env}: malformed mapping '{}'",
+                        py::safe(&stripped)
+                    ));
                 }
                 continue;
             }
@@ -338,28 +384,44 @@ pub fn build(env: &[(PyStr, PyStr)], resolver: Resolver) -> Torrc {
             let result: Result<(), MapErr> = (|| {
                 match parts.len() {
                     3 => {
-                        let hs_port = validate_port(&parts[0], &mapping).map_err(MapErr::Invalid)?;
-                        let host = validate_hostname(&parts[1], &mapping).map_err(MapErr::Invalid)?;
+                        let hs_port =
+                            validate_port(&parts[0], &mapping).map_err(MapErr::Invalid)?;
+                        let host =
+                            validate_hostname(&parts[1], &mapping).map_err(MapErr::Invalid)?;
                         backend_name.clone_from(&host);
                         let ip = resolve_to_ip(&host, &mapping, resolver, &mut out.log)?;
                         if backend_name != ip {
-                            if let Some(slot) = out.resolved.iter_mut().find(|(n, _)| *n == backend_name) {
+                            if let Some(slot) =
+                                out.resolved.iter_mut().find(|(n, _)| *n == backend_name)
+                            {
                                 slot.1.clone_from(&ip);
                             } else {
                                 out.resolved.push((backend_name.clone(), ip.clone()));
                             }
                         }
-                        let target_port = validate_port(&parts[2], &mapping).map_err(MapErr::Invalid)?;
-                        port_lines.push(format!("HiddenServicePort {hs_port} {ip}:{target_port}\n"));
+                        let target_port =
+                            validate_port(&parts[2], &mapping).map_err(MapErr::Invalid)?;
+                        port_lines
+                            .push(format!("HiddenServicePort {hs_port} {ip}:{target_port}\n"));
                     }
                     2 => {
-                        let hs_port = validate_port(&parts[0], &mapping).map_err(MapErr::Invalid)?;
-                        let target_port = validate_port(&parts[1], &mapping).map_err(MapErr::Invalid)?;
-                        port_lines.push(format!("HiddenServicePort {hs_port} 127.0.0.1:{target_port}\n"));
+                        let hs_port =
+                            validate_port(&parts[0], &mapping).map_err(MapErr::Invalid)?;
+                        let target_port =
+                            validate_port(&parts[1], &mapping).map_err(MapErr::Invalid)?;
+                        port_lines.push(format!(
+                            "HiddenServicePort {hs_port} 127.0.0.1:{target_port}\n"
+                        ));
                     }
                     _ => {
-                        out.log.push(format!("Skipping malformed mapping: '{}'", py::safe(&mapping)));
-                        out.dropped.push(format!("{safe_env}: malformed mapping '{}'", py::safe(&stripped)));
+                        out.log.push(format!(
+                            "Skipping malformed mapping: '{}'",
+                            py::safe(&mapping)
+                        ));
+                        out.dropped.push(format!(
+                            "{safe_env}: malformed mapping '{}'",
+                            py::safe(&stripped)
+                        ));
                     }
                 }
                 Ok(())
@@ -367,7 +429,10 @@ pub fn build(env: &[(PyStr, PyStr)], resolver: Resolver) -> Torrc {
             match result {
                 Ok(()) => {}
                 Err(MapErr::Unresolved(e)) => {
-                    out.log.push(format!("Skipping mapping '{}' for now: {e}", py::safe(&mapping)));
+                    out.log.push(format!(
+                        "Skipping mapping '{}' for now: {e}",
+                        py::safe(&mapping)
+                    ));
                     if !out.unresolved.contains(&backend_name) {
                         out.unresolved.push(backend_name.clone());
                     }
@@ -377,8 +442,14 @@ pub fn build(env: &[(PyStr, PyStr)], resolver: Resolver) -> Torrc {
                     ));
                 }
                 Err(MapErr::Invalid(e)) => {
-                    out.log.push(format!("Skipping invalid mapping '{}': {e}", py::safe(&mapping)));
-                    out.dropped.push(format!("{safe_env}: invalid mapping '{}': {e}", py::safe(&stripped)));
+                    out.log.push(format!(
+                        "Skipping invalid mapping '{}': {e}",
+                        py::safe(&mapping)
+                    ));
+                    out.dropped.push(format!(
+                        "{safe_env}: invalid mapping '{}': {e}",
+                        py::safe(&stripped)
+                    ));
                 }
             }
         }
@@ -389,7 +460,9 @@ pub fn build(env: &[(PyStr, PyStr)], resolver: Resolver) -> Torrc {
                  skipping it. Tor cannot start a hidden service with no ports, so emitting it would take down \
                  every other service too. Fix this mapping."
             ));
-            out.dropped.push(format!("{safe_env}: no valid port mappings; service dropped"));
+            out.dropped.push(format!(
+                "{safe_env}: no valid port mappings; service dropped"
+            ));
             continue;
         }
         out.content += &block;
@@ -422,7 +495,9 @@ pub fn libc_resolve(name: &str) -> Result<Vec<String>, String> {
     let rc = unsafe { libc::getaddrinfo(c.as_ptr(), std::ptr::null(), &hints, &mut res) };
     if rc != 0 {
         // SAFETY: gai_strerror returns a static NUL-terminated string.
-        let msg = unsafe { CStr::from_ptr(libc::gai_strerror(rc)) }.to_string_lossy().into_owned();
+        let msg = unsafe { CStr::from_ptr(libc::gai_strerror(rc)) }
+            .to_string_lossy()
+            .into_owned();
         return Err(format!("[Errno {rc}] {msg}"));
     }
     let mut out = Vec::new();
@@ -451,7 +526,10 @@ mod tests {
     use super::*;
 
     fn env(pairs: &[(&str, &str)]) -> Vec<(PyStr, PyStr)> {
-        let mut v: Vec<(PyStr, PyStr)> = pairs.iter().map(|(k, v)| (py::from_str(k), py::from_str(v))).collect();
+        let mut v: Vec<(PyStr, PyStr)> = pairs
+            .iter()
+            .map(|(k, v)| (py::from_str(k), py::from_str(v)))
+            .collect();
         v.sort_by(|a, b| a.0.iter().map(py::ord).cmp(b.0.iter().map(py::ord)));
         v
     }
@@ -464,22 +542,39 @@ mod tests {
 
     #[test]
     fn single_and_twopart() {
-        let t = build(&env(&[("MYAPP_TOR_SERVICE_HOSTS", "80:10.0.0.2:8080,443:8443")]), &dns);
-        assert!(t.content.contains("HiddenServicePort 80 10.0.0.2:8080\nHiddenServicePort 443 127.0.0.1:8443\n"));
+        let t = build(
+            &env(&[("MYAPP_TOR_SERVICE_HOSTS", "80:10.0.0.2:8080,443:8443")]),
+            &dns,
+        );
+        assert!(t.content.contains(
+            "HiddenServicePort 80 10.0.0.2:8080\nHiddenServicePort 443 127.0.0.1:8443\n"
+        ));
         assert_eq!(t.hs_dirs, vec!["/var/lib/tor/hidden_service/myapp"]);
     }
 
     #[test]
     fn resolves_and_records() {
-        let t = build(&env(&[("A_TOR_SERVICE_HOSTS", "80:web:80,81:gone:80")]), &dns);
-        assert_eq!(t.resolved, vec![("web".to_string(), "10.0.0.5".to_string())]);
+        let t = build(
+            &env(&[("A_TOR_SERVICE_HOSTS", "80:web:80,81:gone:80")]),
+            &dns,
+        );
+        assert_eq!(
+            t.resolved,
+            vec![("web".to_string(), "10.0.0.5".to_string())]
+        );
         assert_eq!(t.unresolved, vec!["gone".to_string()]);
         assert!(t.log.iter().any(|l| l == "Resolved 'web' → 10.0.0.5"));
     }
 
     #[test]
     fn rejects_bad_ipv4_and_injection() {
-        let t = build(&env(&[("A_TOR_SERVICE_HOSTS", "80:010.0.0.1:80,80:1.2.3.4:80\nSocksPort 9050")]), &dns);
+        let t = build(
+            &env(&[(
+                "A_TOR_SERVICE_HOSTS",
+                "80:010.0.0.1:80,80:1.2.3.4:80\nSocksPort 9050",
+            )]),
+            &dns,
+        );
         assert!(!t.content.contains("SocksPort 9050"));
         assert!(t.hs_dirs.is_empty());
     }

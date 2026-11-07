@@ -34,15 +34,50 @@ const EVP_CTRL_GCM_SET_TAG: c_int = 0x11;
 
 #[link(name = "crypto")]
 extern "C" {
-    fn EVP_PBE_scrypt(pass: *const c_char, passlen: usize, salt: *const u8, saltlen: usize, n: u64, r: u64, p: u64, maxmem: u64, key: *mut u8, keylen: usize) -> c_int;
+    fn EVP_PBE_scrypt(
+        pass: *const c_char,
+        passlen: usize,
+        salt: *const u8,
+        saltlen: usize,
+        n: u64,
+        r: u64,
+        p: u64,
+        maxmem: u64,
+        key: *mut u8,
+        keylen: usize,
+    ) -> c_int;
     fn EVP_CIPHER_CTX_new() -> *mut c_void;
     fn EVP_CIPHER_CTX_free(ctx: *mut c_void);
     fn EVP_aes_256_gcm() -> *const c_void;
-    fn EVP_EncryptInit_ex(ctx: *mut c_void, cipher: *const c_void, engine: *mut c_void, key: *const u8, iv: *const u8) -> c_int;
-    fn EVP_EncryptUpdate(ctx: *mut c_void, out: *mut u8, outl: *mut c_int, inp: *const u8, inl: c_int) -> c_int;
+    fn EVP_EncryptInit_ex(
+        ctx: *mut c_void,
+        cipher: *const c_void,
+        engine: *mut c_void,
+        key: *const u8,
+        iv: *const u8,
+    ) -> c_int;
+    fn EVP_EncryptUpdate(
+        ctx: *mut c_void,
+        out: *mut u8,
+        outl: *mut c_int,
+        inp: *const u8,
+        inl: c_int,
+    ) -> c_int;
     fn EVP_EncryptFinal_ex(ctx: *mut c_void, out: *mut u8, outl: *mut c_int) -> c_int;
-    fn EVP_DecryptInit_ex(ctx: *mut c_void, cipher: *const c_void, engine: *mut c_void, key: *const u8, iv: *const u8) -> c_int;
-    fn EVP_DecryptUpdate(ctx: *mut c_void, out: *mut u8, outl: *mut c_int, inp: *const u8, inl: c_int) -> c_int;
+    fn EVP_DecryptInit_ex(
+        ctx: *mut c_void,
+        cipher: *const c_void,
+        engine: *mut c_void,
+        key: *const u8,
+        iv: *const u8,
+    ) -> c_int;
+    fn EVP_DecryptUpdate(
+        ctx: *mut c_void,
+        out: *mut u8,
+        outl: *mut c_int,
+        inp: *const u8,
+        inl: c_int,
+    ) -> c_int;
     fn EVP_DecryptFinal_ex(ctx: *mut c_void, out: *mut u8, outl: *mut c_int) -> c_int;
     fn EVP_CIPHER_CTX_ctrl(ctx: *mut c_void, typ: c_int, arg: c_int, ptr: *mut c_void) -> c_int;
     fn RAND_bytes(buf: *mut u8, num: c_int) -> c_int;
@@ -73,12 +108,26 @@ fn derive(pass: &[u8], salt: &[u8], log2n: u32, r: u32, p: u32) -> Result<Secret
     }
     let need = 128u64 * u64::from(r) * ((1u64 << log2n) + u64::from(p) + 2);
     if need > MAXMEM {
-        return Err(format!("refusing scrypt parameters needing {} MiB", need / (1024 * 1024)));
+        return Err(format!(
+            "refusing scrypt parameters needing {} MiB",
+            need / (1024 * 1024)
+        ));
     }
     let mut key = Secret(vec![0u8; 32]);
     // SAFETY: all pointers/lengths describe live buffers.
     let ok = unsafe {
-        EVP_PBE_scrypt(pass.as_ptr().cast(), pass.len(), salt.as_ptr(), salt.len(), 1u64 << log2n, u64::from(r), u64::from(p), MAXMEM, key.0.as_mut_ptr(), 32)
+        EVP_PBE_scrypt(
+            pass.as_ptr().cast(),
+            pass.len(),
+            salt.as_ptr(),
+            salt.len(),
+            1u64 << log2n,
+            u64::from(r),
+            u64::from(p),
+            MAXMEM,
+            key.0.as_mut_ptr(),
+            32,
+        )
     };
     if ok != 1 {
         return Err("scrypt key derivation failed".into());
@@ -95,7 +144,8 @@ impl Drop for Ctx {
 }
 
 pub fn check_passphrase(pass: &[u8]) -> Result<(), String> {
-    let s = std::str::from_utf8(pass).map_err(|_| "the passphrase is not valid UTF-8".to_string())?;
+    let s =
+        std::str::from_utf8(pass).map_err(|_| "the passphrase is not valid UTF-8".to_string())?;
     let n = s.chars().count();
     if n < MIN_PASSPHRASE_CHARS {
         return Err(format!(
@@ -123,15 +173,37 @@ pub fn encrypt(plain: &[u8], pass: &[u8]) -> Result<Vec<u8>, String> {
     // SAFETY: OpenSSL EVP calls on live buffers; return codes checked.
     unsafe {
         let ctx = Ctx(EVP_CIPHER_CTX_new());
-        if ctx.0.is_null() || EVP_EncryptInit_ex(ctx.0, EVP_aes_256_gcm(), std::ptr::null_mut(), key.0.as_ptr(), nonce.as_ptr()) != 1 {
+        if ctx.0.is_null()
+            || EVP_EncryptInit_ex(
+                ctx.0,
+                EVP_aes_256_gcm(),
+                std::ptr::null_mut(),
+                key.0.as_ptr(),
+                nonce.as_ptr(),
+            ) != 1
+        {
             return Err("AES-256-GCM init failed".into());
         }
         let mut outl: c_int = 0;
-        if EVP_EncryptUpdate(ctx.0, std::ptr::null_mut(), &mut outl, header.as_ptr(), header.len() as c_int) != 1 {
+        if EVP_EncryptUpdate(
+            ctx.0,
+            std::ptr::null_mut(),
+            &mut outl,
+            header.as_ptr(),
+            header.len() as c_int,
+        ) != 1
+        {
             return Err("AES-256-GCM AAD failed".into());
         }
         let mut ct = vec![0u8; plain.len() + 16];
-        if EVP_EncryptUpdate(ctx.0, ct.as_mut_ptr(), &mut outl, plain.as_ptr(), plain.len() as c_int) != 1 {
+        if EVP_EncryptUpdate(
+            ctx.0,
+            ct.as_mut_ptr(),
+            &mut outl,
+            plain.as_ptr(),
+            plain.len() as c_int,
+        ) != 1
+        {
             return Err("AES-256-GCM encrypt failed".into());
         }
         let mut total = outl as usize;
@@ -141,7 +213,13 @@ pub fn encrypt(plain: &[u8], pass: &[u8]) -> Result<Vec<u8>, String> {
         total += outl as usize;
         ct.truncate(total);
         let mut tag = [0u8; TAG_LEN];
-        if EVP_CIPHER_CTX_ctrl(ctx.0, EVP_CTRL_GCM_GET_TAG, TAG_LEN as c_int, tag.as_mut_ptr().cast()) != 1 {
+        if EVP_CIPHER_CTX_ctrl(
+            ctx.0,
+            EVP_CTRL_GCM_GET_TAG,
+            TAG_LEN as c_int,
+            tag.as_mut_ptr().cast(),
+        ) != 1
+        {
             return Err("AES-256-GCM tag failed".into());
         }
         let mut out = header;
@@ -184,21 +262,49 @@ pub fn decrypt(env: &[u8], pass: &[u8]) -> Result<Secret, String> {
     // SAFETY: OpenSSL EVP calls on live buffers; return codes checked.
     unsafe {
         let ctx = Ctx(EVP_CIPHER_CTX_new());
-        if ctx.0.is_null() || EVP_DecryptInit_ex(ctx.0, EVP_aes_256_gcm(), std::ptr::null_mut(), key.0.as_ptr(), nonce.as_ptr()) != 1 {
+        if ctx.0.is_null()
+            || EVP_DecryptInit_ex(
+                ctx.0,
+                EVP_aes_256_gcm(),
+                std::ptr::null_mut(),
+                key.0.as_ptr(),
+                nonce.as_ptr(),
+            ) != 1
+        {
             return Err("AES-256-GCM init failed".into());
         }
         let mut outl: c_int = 0;
-        if EVP_DecryptUpdate(ctx.0, std::ptr::null_mut(), &mut outl, header.as_ptr(), header.len() as c_int) != 1 {
+        if EVP_DecryptUpdate(
+            ctx.0,
+            std::ptr::null_mut(),
+            &mut outl,
+            header.as_ptr(),
+            header.len() as c_int,
+        ) != 1
+        {
             return Err("AES-256-GCM AAD failed".into());
         }
         let mut pt = Secret(vec![0u8; ct.len() + 16]);
-        if EVP_DecryptUpdate(ctx.0, pt.0.as_mut_ptr(), &mut outl, ct.as_ptr(), ct.len() as c_int) != 1 {
+        if EVP_DecryptUpdate(
+            ctx.0,
+            pt.0.as_mut_ptr(),
+            &mut outl,
+            ct.as_ptr(),
+            ct.len() as c_int,
+        ) != 1
+        {
             return Err("decryption failed".into());
         }
         let total = outl as usize;
         let mut tagb = [0u8; TAG_LEN];
         tagb.copy_from_slice(tag);
-        if EVP_CIPHER_CTX_ctrl(ctx.0, EVP_CTRL_GCM_SET_TAG, TAG_LEN as c_int, tagb.as_mut_ptr().cast()) != 1 {
+        if EVP_CIPHER_CTX_ctrl(
+            ctx.0,
+            EVP_CTRL_GCM_SET_TAG,
+            TAG_LEN as c_int,
+            tagb.as_mut_ptr().cast(),
+        ) != 1
+        {
             return Err("AES-256-GCM tag failed".into());
         }
         if EVP_DecryptFinal_ex(ctx.0, pt.0.as_mut_ptr().add(total), &mut outl) != 1 {
@@ -211,7 +317,8 @@ pub fn decrypt(env: &[u8], pass: &[u8]) -> Result<Secret, String> {
 
 /// Read the passphrase file: trailing newline removed, size-capped.
 pub fn read_passphrase(path: &str) -> Result<Secret, String> {
-    let d = crate::fsops::read_small_regular_file(path, 4096).map_err(|e| format!("cannot read the passphrase file {path}: {e}"))?;
+    let d = crate::fsops::read_small_regular_file(path, 4096)
+        .map_err(|e| format!("cannot read the passphrase file {path}: {e}"))?;
     let mut d = Secret(d);
     while d.0.last().is_some_and(|b| *b == b'\n' || *b == b'\r') {
         d.0.pop();

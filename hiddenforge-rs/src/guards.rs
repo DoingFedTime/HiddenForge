@@ -15,10 +15,10 @@
 //! (a consensus with no Exit-flagged bandwidth) and crashed, this uses weight 0
 //! for those relays and keeps running.
 
+use crate::py;
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
-use crate::py;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 // ── bandguards options (Vanguards 0.3.1 defaults) ───────────────────────────
@@ -77,7 +77,10 @@ impl Level {
 }
 
 pub fn now() -> f64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0)
 }
 
 fn asctime() -> String {
@@ -139,8 +142,17 @@ pub fn parse_event(line: &str, arrived_at: f64) -> Option<Event> {
     let mut toks = rest.split(' ').filter(|t| !t.is_empty());
     let kind = toks.next()?.to_string();
     let toks: Vec<&str> = toks.collect();
-    let mut ev = Event { kind: kind.clone(), raw: line.to_string(), arrived_at, ..Event::default() };
-    let positional: Vec<&str> = toks.iter().copied().take_while(|t| !t.contains('=')).collect();
+    let mut ev = Event {
+        kind: kind.clone(),
+        raw: line.to_string(),
+        arrived_at,
+        ..Event::default()
+    };
+    let positional: Vec<&str> = toks
+        .iter()
+        .copied()
+        .take_while(|t| !t.contains('='))
+        .collect();
     for t in &toks[positional.len()..] {
         if let Some((k, v)) = t.split_once('=') {
             ev.kw.insert(k.to_string(), v.to_string());
@@ -160,7 +172,11 @@ pub fn parse_event(line: &str, arrived_at: f64) -> Option<Event> {
         "ORCONN" => {
             let target = positional.first()?;
             let fp = fingerprint(target);
-            ev.path = vec![if target.starts_with('$') && is_fp(&fp) { fp } else { String::new() }];
+            ev.path = vec![if target.starts_with('$') && is_fp(&fp) {
+                fp
+            } else {
+                String::new()
+            }];
             ev.status = positional.get(1)?.to_string();
             ev.id = ev.kw("ID").unwrap_or("").to_string();
         }
@@ -198,7 +214,8 @@ impl CircStat {
         self.read_bytes + self.sent_bytes
     }
     fn dropped_read_cells(&self) -> f64 {
-        self.read_bytes / CELL_PAYLOAD_SIZE - (self.delivered_read_bytes + self.overhead_read_bytes) / RELAY_PAYLOAD_SIZE
+        self.read_bytes / CELL_PAYLOAD_SIZE
+            - (self.delivered_read_bytes + self.overhead_read_bytes) / RELAY_PAYLOAD_SIZE
     }
     fn states(&self) -> String {
         let s = |o: &Option<String>| o.clone().unwrap_or_else(|| "None".into());
@@ -242,7 +259,11 @@ fn py_int(x: f64) -> i64 {
 impl Bandguards {
     /// `orconn_status` is GETINFO orconn-status; `liveness` is GETINFO network-liveness.
     pub fn new(orconn_status: &str, liveness: &str, t: f64, sink: &mut dyn Sink) -> Bandguards {
-        let mut b = Bandguards { no_conns_since: t.trunc(), max_fake_id: -1, ..Bandguards::default() };
+        let mut b = Bandguards {
+            no_conns_since: t.trunc(),
+            max_fake_id: -1,
+            ..Bandguards::default()
+        };
         let mut fake_id = 0i64;
         for l in orconn_status.split('\n').filter(|l| !l.is_empty()) {
             if let Some(ev) = parse_event(&format!("650 ORCONN {l} ID={fake_id}"), t) {
@@ -269,7 +290,13 @@ impl Bandguards {
             "CONNECTED" => {
                 if self.disconnected_conns {
                     let secs = ev.arrived_at - self.no_conns_since;
-                    sink.log(Level::Notice, &format!("Reconnected to the Tor network after {} seconds.", py_int(secs)));
+                    sink.log(
+                        Level::Notice,
+                        &format!(
+                            "Reconnected to the Tor network after {} seconds.",
+                            py_int(secs)
+                        ),
+                    );
                 }
                 self.live_guard_conns.insert(id, guard_fp.clone());
                 if let Some(g) = self.guards.get_mut(&guard_fp) {
@@ -299,7 +326,11 @@ impl Bandguards {
                                 marked = true;
                                 sink.log(
                                     Level::Info,
-                                    &format!("Marking possibly destroyed circ {} at {}", c.circ_id, py_int(ev.arrived_at)),
+                                    &format!(
+                                        "Marking possibly destroyed circ {} at {}",
+                                        c.circ_id,
+                                        py_int(ev.arrived_at)
+                                    ),
                                 );
                             }
                         }
@@ -333,33 +364,52 @@ impl Bandguards {
         if ev.arrived_at - g.killed_conn_at <= MAX_CIRC_DESTROY_LAG_SECS {
             g.killed_conn_at = 0.0;
             g.killed_conns += 1;
-            sink.log(Level::Notice, &format!("The connection to guard {guardfp} was closed with a live circuit."));
+            sink.log(
+                Level::Notice,
+                &format!("The connection to guard {guardfp} was closed with a live circuit."),
+            );
         }
-        sink.log(Level::Info, &format!("The connection to guard {guardfp} was closed with circuit {} on it.", ev.id));
+        sink.log(
+            Level::Info,
+            &format!(
+                "The connection to guard {guardfp} was closed with circuit {} on it.",
+                ev.id
+            ),
+        );
     }
 
     fn any_circuits_pending(&self, except: Option<&str>) -> bool {
-        self.circ_ids().any(|c| !c.built && Some(c.circ_id.as_str()) != except)
+        self.circ_ids()
+            .any(|c| !c.built && Some(c.circ_id.as_str()) != except)
     }
 
     fn set_drop_allowance_for_purpose(c: &mut CircStat, purpose: &str, hs_state: Option<&str>) {
         match purpose {
-            "HS_SERVICE_REND" => c.dropped_cells_allowed = f64::from(u8::from(hs_state == Some("HSSR_CONNECTING"))),
+            "HS_SERVICE_REND" => {
+                c.dropped_cells_allowed = f64::from(u8::from(hs_state == Some("HSSR_CONNECTING")))
+            }
             "HS_CLIENT_REND" => c.dropped_cells_allowed = 1.0,
-            "HS_CLIENT_INTRO" => c.dropped_cells_allowed = f64::from(u8::from(hs_state == Some("HSCI_DONE"))),
+            "HS_CLIENT_INTRO" => {
+                c.dropped_cells_allowed = f64::from(u8::from(hs_state == Some("HSCI_DONE")))
+            }
             _ => {}
         }
     }
 
     pub fn circ_event(&mut self, ev: &Event, sink: &mut dyn Sink) {
-        if ev.status == "FAILED" && self.no_circs_since.is_none() && self.any_circuits_pending(Some(&ev.id)) {
+        if ev.status == "FAILED"
+            && self.no_circs_since.is_none()
+            && self.any_circuits_pending(Some(&ev.id))
+        {
             self.no_circs_since = Some(ev.arrived_at);
         }
         if ev.status == "FAILED" || ev.status == "CLOSED" {
             if let Some(c) = self.circs.get(&ev.id).cloned() {
                 if c.in_use {
                     if let Some(pd) = c.possibly_destroyed_at {
-                        if ev.arrived_at - pd <= MAX_CIRC_DESTROY_LAG_SECS && ev.kw("REMOTE_REASON") == Some("CHANNEL_CLOSED") {
+                        if ev.arrived_at - pd <= MAX_CIRC_DESTROY_LAG_SECS
+                            && ev.kw("REMOTE_REASON") == Some("CHANNEL_CLOSED")
+                        {
                             self.circuit_destroyed(ev, sink);
                         } else {
                             sink.log(
@@ -406,7 +456,11 @@ impl Bandguards {
                     c.guard_fp = ev.path.first().cloned();
                     sink.log(
                         Level::Debug,
-                        &format!("Circ {} now in-use. {} delivered bytes.", ev.id, py_int(c.delivered_read_bytes)),
+                        &format!(
+                            "Circ {} now in-use. {} delivered bytes.",
+                            ev.id,
+                            py_int(c.delivered_read_bytes)
+                        ),
                     );
                 }
             } else if ev.status == "EXTENDED" {
@@ -421,14 +475,19 @@ impl Bandguards {
     fn circuits_resumed(&mut self, at: f64, sink: &mut dyn Sink) {
         if self.disconnected_circs {
             let secs = at - self.no_circs_since.unwrap_or(at);
-            sink.log(Level::Notice, &format!("Circuit use resumed after {} seconds.", py_int(secs)));
+            sink.log(
+                Level::Notice,
+                &format!("Circuit use resumed after {} seconds.", py_int(secs)),
+            );
         }
         self.no_circs_since = None;
         self.disconnected_circs = false;
     }
 
     pub fn circ_minor_event(&mut self, ev: &Event, sink: &mut dyn Sink) {
-        let Some(c) = self.circs.get_mut(&ev.id) else { return };
+        let Some(c) = self.circs.get_mut(&ev.id) else {
+            return;
+        };
         let purpose = ev.purpose().to_string();
         let hs_state = ev.hs_state().map(String::from);
         let old_purpose = ev.kw("OLD_PURPOSE").map(String::from);
@@ -446,7 +505,11 @@ impl Bandguards {
                 c.guard_fp = ev.path.first().cloned();
                 sink.log(
                     Level::Debug,
-                    &format!("Circ {} now in-use. {} delivered bytes.", ev.id, py_int(c.delivered_read_bytes)),
+                    &format!(
+                        "Circ {} now in-use. {} delivered bytes.",
+                        ev.id,
+                        py_int(c.delivered_read_bytes)
+                    ),
                 );
             }
             if purpose == "PATH_BIAS_TESTING" {
@@ -475,12 +538,23 @@ impl Bandguards {
         sink.log(Level::Debug, &ev.raw);
         let num = |k: &str| ev.kw(k).and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
         let (read, written) = (num("READ"), num("WRITTEN"));
-        let (dr, dw, or, ow) = (num("DELIVERED_READ"), num("DELIVERED_WRITTEN"), num("OVERHEAD_READ"), num("OVERHEAD_WRITTEN"));
+        let (dr, dw, or, ow) = (
+            num("DELIVERED_READ"),
+            num("DELIVERED_WRITTEN"),
+            num("OVERHEAD_READ"),
+            num("OVERHEAD_WRITTEN"),
+        );
         if dr + or > read * CELL_DATA_RATE {
-            sink.log(Level::Error, &format!("Application read data exceeds cell data:{}", ev.raw));
+            sink.log(
+                Level::Error,
+                &format!("Application read data exceeds cell data:{}", ev.raw),
+            );
         }
         if dw + ow > written * CELL_DATA_RATE {
-            sink.log(Level::Error, &format!("Application written data exceeds cell data:{}", ev.raw));
+            sink.log(
+                Level::Error,
+                &format!("Application written data exceeds cell data:{}", ev.raw),
+            );
         }
         let c = match self.circs.get_mut(&ev.id) {
             Some(c) => c,
@@ -501,11 +575,23 @@ impl Bandguards {
             if p == Some("HS_SERVICE_INTRO") && c.hs_state.as_deref() == Some("HSSI_ESTABLISHED") {
                 sink.log(
                     Level::Notice,
-                    &format!("Tor bug #29699: Got {} dropped cell on circ {} {}.", py_int(dropped), c.circ_id, c.states()),
+                    &format!(
+                        "Tor bug #29699: Got {} dropped cell on circ {} {}.",
+                        py_int(dropped),
+                        c.circ_id,
+                        c.states()
+                    ),
                 );
                 sink.close_circuit(&c.circ_id);
             } else if !c.built {
-                sink.log(Level::Info, &format!("Tor bug #29927: Got a dropped cell on circ {} {}.", c.circ_id, c.states()));
+                sink.log(
+                    Level::Info,
+                    &format!(
+                        "Tor bug #29927: Got a dropped cell on circ {} {}.",
+                        c.circ_id,
+                        c.states()
+                    ),
+                );
             } else {
                 sink.log(
                     Level::Warn,
@@ -521,12 +607,21 @@ impl Bandguards {
         } else if dropped > 0.0 {
             let bug = if p == Some("PATH_BIAS_TESTING") {
                 "29786"
-            } else if p == Some("HS_SERVICE_REND") && c.hs_state.as_deref() == Some("HSSR_CONNECTING") {
+            } else if p == Some("HS_SERVICE_REND")
+                && c.hs_state.as_deref() == Some("HSSR_CONNECTING")
+            {
                 "29700"
             } else {
                 "29927"
             };
-            sink.log(Level::Info, &format!("Tor bug #{bug}: Got a dropped cell on circ {} {}.", c.circ_id, c.states()));
+            sink.log(
+                Level::Info,
+                &format!(
+                    "Tor bug #{bug}: Got a dropped cell on circ {} {}.",
+                    c.circ_id,
+                    c.states()
+                ),
+            );
         }
         if CIRC_MAX_MEGABYTES > 0.0 && c.total_bytes() > CIRC_MAX_MEGABYTES * BYTES_PER_MB {
             limit_exceeded(
@@ -539,7 +634,10 @@ impl Bandguards {
             );
             sink.close_circuit(&c.circ_id);
         }
-        if CIRC_MAX_HSDESC_KILOBYTES > 0.0 && c.is_hsdir && c.total_bytes() > CIRC_MAX_HSDESC_KILOBYTES * BYTES_PER_KB {
+        if CIRC_MAX_HSDESC_KILOBYTES > 0.0
+            && c.is_hsdir
+            && c.total_bytes() > CIRC_MAX_HSDESC_KILOBYTES * BYTES_PER_KB
+        {
             limit_exceeded(
                 sink,
                 Level::Warn,
@@ -566,13 +664,21 @@ impl Bandguards {
             let secs = py_int(t - self.no_conns_since);
             if CONN_MAX_DISCONNECTED_SECS > 0 && secs >= CONN_MAX_DISCONNECTED_SECS {
                 if !self.disconnected_conns || secs % CONN_MAX_DISCONNECTED_SECS == 0 {
-                    sink.log(Level::Warn, &format!("We've been disconnected from the Tor network for {secs} seconds!"));
+                    sink.log(
+                        Level::Warn,
+                        &format!(
+                            "We've been disconnected from the Tor network for {secs} seconds!"
+                        ),
+                    );
                 }
                 self.disconnected_conns = true;
             }
         } else if let Some(since) = self.no_circs_since {
             let secs = py_int(t - since);
-            if CIRC_MAX_DISCONNECTED_SECS > 0 && secs >= CIRC_MAX_DISCONNECTED_SECS && self.any_circuits_pending(None) {
+            if CIRC_MAX_DISCONNECTED_SECS > 0
+                && secs >= CIRC_MAX_DISCONNECTED_SECS
+                && self.any_circuits_pending(None)
+            {
                 if !self.disconnected_circs || secs % CIRC_MAX_DISCONNECTED_SECS == 0 {
                     match self.network_down_since {
                         Some(d) => sink.log(
@@ -594,8 +700,11 @@ impl Bandguards {
         if CIRC_MAX_AGE_HOURS <= 0.0 {
             return;
         }
-        let old: Vec<CircStat> =
-            self.circ_ids().filter(|c| t - c.created_at > CIRC_MAX_AGE_HOURS * SECS_PER_HOUR).cloned().collect();
+        let old: Vec<CircStat> = self
+            .circ_ids()
+            .filter(|c| t - c.created_at > CIRC_MAX_AGE_HOURS * SECS_PER_HOUR)
+            .cloned()
+            .collect();
         for c in old {
             limit_exceeded(
                 sink,
@@ -629,7 +738,10 @@ fn py_int_str(x: f64) -> String {
 }
 
 fn limit_exceeded(sink: &mut dyn Sink, level: Level, name: &str, id: &str, cur: &str, max: &str) {
-    sink.log(level, &format!("Circ {id} exceeded {name}: {cur} > {max}. "));
+    sink.log(
+        level,
+        &format!("Circ {id} exceeded {name}: {cur} > {max}. "),
+    );
 }
 
 // ───────────────────────────── rendguard ────────────────────────────────────
@@ -662,13 +774,18 @@ impl Rendguard {
             sink.log(Level::Info, &format!("Relay {r} is not in our consensus."));
             name = format!("{r} (not in-consensus)");
             key = NOT_IN_CONSENSUS_ID.to_string();
-            self.use_counts.entry(key.clone()).or_insert(UseCount { used: 0.0, weight: 0.0 });
+            self.use_counts.entry(key.clone()).or_insert(UseCount {
+                used: 0.0,
+                weight: 0.0,
+            });
         }
         let total = {
             self.total_use_counts += 1.0;
             self.total_use_counts
         };
-        let Some(u) = self.use_counts.get_mut(&key) else { return true };
+        let Some(u) = self.use_counts.get_mut(&key) else {
+            return true;
+        };
         u.used += 1.0;
         let rate = 100.0 * u.used / total;
         sink.log(
@@ -684,7 +801,11 @@ impl Rendguard {
             && u.used >= REND_USE_RELAY_START_COUNT
             && u.used / total > u.weight * REND_USE_MAX_USE_TO_BW_RATIO
         {
-            let level = if REND_USE_CLOSE_CIRCUITS_ON_OVERUSE { Level::Notice } else { Level::Warn };
+            let level = if REND_USE_CLOSE_CIRCUITS_ON_OVERUSE {
+                Level::Notice
+            } else {
+                Level::Warn
+            };
             sink.log(
                 level,
                 &format!(
@@ -701,12 +822,24 @@ impl Rendguard {
 
     /// xfer_use_counts for the Fast+Valid, non-Authority middle-position
     /// generator, after repair_exits.
-    pub fn xfer_use_counts(&mut self, routers: &[Router], weights: &BTreeMap<String, f64>, sink: &mut dyn Sink) {
+    pub fn xfer_use_counts(
+        &mut self,
+        routers: &[Router],
+        weights: &BTreeMap<String, f64>,
+        sink: &mut dyn Sink,
+    ) {
         let mut sorted: Vec<&Router> = routers.iter().collect();
-        sorted.sort_by(|a, b| b.measured.partial_cmp(&a.measured).unwrap_or(std::cmp::Ordering::Equal));
+        sorted.sort_by(|a, b| {
+            b.measured
+                .partial_cmp(&a.measured)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         let has = |r: &Router, f: &str| r.flags.iter().any(|x| x == f);
-        let rstr: Vec<&Router> =
-            sorted.iter().copied().filter(|r| has(r, "Fast") && has(r, "Valid") && !has(r, "Authority")).collect();
+        let rstr: Vec<&Router> = sorted
+            .iter()
+            .copied()
+            .filter(|r| has(r, "Fast") && has(r, "Valid") && !has(r, "Authority"))
+            .collect();
         let w = |k: &str| weights.get(k).copied().unwrap_or(0.0) / 10000.0;
         let flag_to_weight = |r: &Router, pos: char| {
             let (g, e) = (has(r, "Guard"), has(r, "Exit"));
@@ -720,7 +853,10 @@ impl Rendguard {
                 w("Wmm")
             }
         };
-        let mut node_weights: Vec<f64> = rstr.iter().map(|r| r.measured * flag_to_weight(r, 'm')).collect();
+        let mut node_weights: Vec<f64> = rstr
+            .iter()
+            .map(|r| r.measured * flag_to_weight(r, 'm'))
+            .collect();
         let weight_total: f64 = node_weights.iter().sum();
         let mut exit_total = 0.0;
         for (i, r) in rstr.iter().enumerate() {
@@ -731,16 +867,40 @@ impl Rendguard {
         }
         let old = std::mem::take(&mut self.use_counts);
         for r in &sorted {
-            self.use_counts.insert(r.fingerprint.clone(), UseCount { used: 0.0, weight: 0.0 });
+            self.use_counts.insert(
+                r.fingerprint.clone(),
+                UseCount {
+                    used: 0.0,
+                    weight: 0.0,
+                },
+            );
         }
         let churn = REND_USE_MAX_CONSENSUS_WEIGHT_CHURN / 100.0;
         let mut old = old;
-        old.entry(NOT_IN_CONSENSUS_ID.to_string()).or_insert(UseCount { used: 0.0, weight: churn });
-        self.use_counts.insert(NOT_IN_CONSENSUS_ID.to_string(), UseCount { used: 0.0, weight: churn });
+        old.entry(NOT_IN_CONSENSUS_ID.to_string())
+            .or_insert(UseCount {
+                used: 0.0,
+                weight: churn,
+            });
+        self.use_counts.insert(
+            NOT_IN_CONSENSUS_ID.to_string(),
+            UseCount {
+                used: 0.0,
+                weight: churn,
+            },
+        );
         for (i, r) in rstr.iter().enumerate() {
-            let total = if has(r, "Exit") { exit_total } else { weight_total };
+            let total = if has(r, "Exit") {
+                exit_total
+            } else {
+                weight_total
+            };
             if let Some(u) = self.use_counts.get_mut(&r.fingerprint) {
-                u.weight = if total > 0.0 { node_weights[i] / total } else { 0.0 };
+                u.weight = if total > 0.0 {
+                    node_weights[i] / total
+                } else {
+                    0.0
+                };
             }
         }
         let scale = self.total_use_counts >= REND_USE_SCALE_AT_COUNT;
@@ -766,7 +926,10 @@ impl Rendguard {
     }
 
     pub fn circ_event(&mut self, ev: &Event, sink: &mut dyn Sink) {
-        if ev.status == "BUILT" && ev.purpose() == "HS_SERVICE_REND" && ev.hs_state() == Some("HSSR_CONNECTING") {
+        if ev.status == "BUILT"
+            && ev.purpose() == "HS_SERVICE_REND"
+            && ev.hs_state() == Some("HSSR_CONNECTING")
+        {
             if let Some(last) = ev.path.last() {
                 if !self.valid_rend_use(last, sink) && REND_USE_CLOSE_CIRCUITS_ON_OVERUSE {
                     sink.close_circuit(&ev.id);
@@ -813,7 +976,11 @@ pub fn parse_ns(body: &str) -> Vec<Router> {
         match parts.next() {
             Some("r") => {
                 let f: Vec<&str> = line.split(' ').collect();
-                if let Some(fp) = f.get(2).and_then(|id| b64decode(id)).filter(|b| b.len() == 20) {
+                if let Some(fp) = f
+                    .get(2)
+                    .and_then(|id| b64decode(id))
+                    .filter(|b| b.len() == 20)
+                {
                     out.push(Router {
                         fingerprint: fp.iter().map(|x| format!("{x:02X}")).collect(),
                         flags: vec![],
@@ -848,11 +1015,16 @@ pub fn parse_ns(body: &str) -> Vec<Router> {
 
 /// The `bandwidth-weights` line of a consensus document.
 pub fn parse_weights(consensus: &str) -> Option<BTreeMap<String, f64>> {
-    let line = consensus.lines().find(|l| l.starts_with("bandwidth-weights "))?;
+    let line = consensus
+        .lines()
+        .find(|l| l.starts_with("bandwidth-weights "))?;
     Some(
         line.split(' ')
             .skip(1)
-            .filter_map(|kv| kv.split_once('=').and_then(|(k, v)| Some((k.to_string(), v.parse::<f64>().ok()?))))
+            .filter_map(|kv| {
+                kv.split_once('=')
+                    .and_then(|(k, v)| Some((k.to_string(), v.parse::<f64>().ok()?)))
+            })
             .collect(),
     )
 }
@@ -869,17 +1041,27 @@ impl Link {
     fn connect(path: &str) -> std::io::Result<Link> {
         let s = UnixStream::connect(path)?;
         let w = s.try_clone()?;
-        Ok(Link { r: BufReader::new(s), w, pending: Vec::new() })
+        Ok(Link {
+            r: BufReader::new(s),
+            w,
+            pending: Vec::new(),
+        })
     }
 
     fn read_line(&mut self) -> std::io::Result<String> {
         let mut buf = Vec::new();
         let n = self.r.read_until(b'\n', &mut buf)?;
         if n == 0 {
-            return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "closed"));
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "closed",
+            ));
         }
         if buf.len() > 1 << 20 {
-            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "line too long"));
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "line too long",
+            ));
         }
         let s = String::from_utf8_lossy(&buf).into_owned();
         Ok(s.trim_end_matches(['\r', '\n']).to_string())
@@ -891,7 +1073,10 @@ impl Link {
         loop {
             let l = self.read_line()?;
             if l.len() < 4 {
-                return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "short line"));
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "short line",
+                ));
             }
             let code = l[..3].to_string();
             let sep = l.as_bytes()[3];
@@ -902,7 +1087,12 @@ impl Link {
                     if d == "." {
                         break;
                     }
-                    lines.push(d.strip_prefix('.').filter(|_| d.starts_with("..")).unwrap_or(&d).to_string());
+                    lines.push(
+                        d.strip_prefix('.')
+                            .filter(|_| d.starts_with(".."))
+                            .unwrap_or(&d)
+                            .to_string(),
+                    );
                 }
             } else if sep == b' ' {
                 return Ok((code, lines));
@@ -977,7 +1167,10 @@ fn flush_closes(link: &mut Link, p: &mut Printer) -> std::io::Result<()> {
         if code == "250" {
             p.log(Level::Notice, &format!("We force-closed circuit {id}"));
         } else {
-            let msg = lines.first().map(|l| l.get(4..).unwrap_or("").to_string()).unwrap_or_default();
+            let msg = lines
+                .first()
+                .map(|l| l.get(4..).unwrap_or("").to_string())
+                .unwrap_or_default();
             p.log(Level::Info, &format!("Failed to close circuit {id}: {msg}"));
         }
     }
@@ -989,11 +1182,15 @@ fn new_consensus(link: &mut Link, rg: &mut Rendguard, p: &mut Printer) -> Result
     let data_dir = link
         .command("GETCONF DataDirectory")
         .ok()
-        .and_then(|(_, l)| l.first().and_then(|x| x.split_once('=').map(|(_, v)| v.to_string())))
+        .and_then(|(_, l)| {
+            l.first()
+                .and_then(|x| x.split_once('=').map(|(_, v)| v.to_string()))
+        })
         .unwrap_or_else(|| "/var/lib/tor".into());
     let file = format!("{data_dir}/cached-microdesc-consensus");
     let text = std::fs::read(&file).map_err(|e| format!("Cannot read {file}: {e}"))?;
-    let weights = parse_weights(&String::from_utf8_lossy(&text)).ok_or_else(|| format!("Cannot read {file}: no bandwidth-weights"))?;
+    let weights = parse_weights(&String::from_utf8_lossy(&text))
+        .ok_or_else(|| format!("Cannot read {file}: no bandwidth-weights"))?;
     rg.xfer_use_counts(&parse_ns(&ns), &weights, p);
     Ok(())
 }
@@ -1007,20 +1204,34 @@ fn control_loop(sock: &str, rg: &mut Rendguard, p: &mut Printer) -> String {
     let r = (|| -> Result<(), String> {
         let (code, l) = link.command("AUTHENTICATE").map_err(|e| e.to_string())?;
         if code != "250" {
-            p.log(Level::Error, &format!("Unable to authenticate: {}", l.join(" ")));
+            p.log(
+                Level::Error,
+                &format!("Unable to authenticate: {}", l.join(" ")),
+            );
             std::process::exit(1);
         }
         let version = link.getinfo("version").unwrap_or_default();
-        p.log(Level::Notice, &format!("Vanguards (HiddenForge guards {}) connected to Tor {version}", env!("CARGO_PKG_VERSION")));
+        p.log(
+            Level::Notice,
+            &format!(
+                "Vanguards (HiddenForge guards {}) connected to Tor {version}",
+                env!("CARGO_PKG_VERSION")
+            ),
+        );
         if let Err(e) = new_consensus(&mut link, rg, p) {
-            p.log(Level::Notice, &format!("Tor needs descriptors: {e}. Trying again..."));
+            p.log(
+                Level::Notice,
+                &format!("Tor needs descriptors: {e}. Trying again..."),
+            );
             return Err(format!("failed: {e}"));
         }
         let orconn = link.getinfo("orconn-status").unwrap_or_default();
         let live = link.getinfo("network-liveness").unwrap_or_default();
         let mut bg = Bandguards::new(&orconn, &live, now(), p);
         let (code, l) = link
-            .command("SETEVENTS CIRC BW ORCONN NETWORK_LIVENESS CIRC_BW CIRC_MINOR NEWCONSENSUS SIGNAL")
+            .command(
+                "SETEVENTS CIRC BW ORCONN NETWORK_LIVENESS CIRC_BW CIRC_MINOR NEWCONSENSUS SIGNAL",
+            )
             .map_err(|e| e.to_string())?;
         if code != "250" {
             return Err(format!("failed: SETEVENTS refused: {}", l.join(" ")));
@@ -1036,7 +1247,10 @@ fn control_loop(sock: &str, rg: &mut Rendguard, p: &mut Printer) -> String {
                     continue;
                 }
                 let t = now();
-                if lines.first().is_some_and(|l| l.starts_with("650+NEWCONSENSUS")) {
+                if lines
+                    .first()
+                    .is_some_and(|l| l.starts_with("650+NEWCONSENSUS"))
+                {
                     if let Err(e) = new_consensus(&mut link, rg, p) {
                         p.log(Level::Notice, &format!("Tor needs descriptors: {e}."));
                     }
@@ -1101,7 +1315,10 @@ pub fn main(args: &[String]) -> i32 {
         eprintln!("hiddenforge-guards: --control_socket is required");
         return 2;
     }
-    let mut p = Printer { level, closes: vec![] };
+    let mut p = Printer {
+        level,
+        closes: vec![],
+    };
     let mut rg = Rendguard::default();
     let mut reconnects: u64 = 0;
     let mut first_try: Option<f64> = None;
@@ -1110,8 +1327,15 @@ pub fn main(args: &[String]) -> i32 {
         let t = now();
         let since = *first_try.get_or_insert(t);
         if ret == "closed" || reconnects % 10 == 0 {
-            let lvl = if t - since > CONN_MAX_DISCONNECTED_SECS as f64 { Level::Warn } else { Level::Notice };
-            p.log(lvl, &format!("Tor daemon connection {ret}. Trying again..."));
+            let lvl = if t - since > CONN_MAX_DISCONNECTED_SECS as f64 {
+                Level::Warn
+            } else {
+                Level::Notice
+            };
+            p.log(
+                lvl,
+                &format!("Tor daemon connection {ret}. Trying again..."),
+            );
         }
         reconnects += 1;
         std::thread::sleep(Duration::from_secs(1));
@@ -1144,7 +1368,9 @@ mod tests {
 
     #[test]
     fn parses_circ_path_and_keywords() {
-        let e = ev(&format!("650 CIRC 7 BUILT {G},{R} PURPOSE=HS_SERVICE_REND HS_STATE=HSSR_CONNECTING"));
+        let e = ev(&format!(
+            "650 CIRC 7 BUILT {G},{R} PURPOSE=HS_SERVICE_REND HS_STATE=HSSR_CONNECTING"
+        ));
         assert_eq!(e.id, "7");
         assert_eq!(e.path.last().unwrap(), &"B".repeat(40));
         assert_eq!(e.hs_state(), Some("HSSR_CONNECTING"));
@@ -1155,7 +1381,12 @@ mod tests {
     fn dropped_cells_on_established_intro_close_the_circuit() {
         let mut s = Rec::default();
         let mut b = Bandguards::new("", "up", now(), &mut s);
-        b.circ_event(&ev(&format!("650 CIRC 5 BUILT {G},{R} PURPOSE=HS_SERVICE_INTRO HS_STATE=HSSI_ESTABLISHED")), &mut s);
+        b.circ_event(
+            &ev(&format!(
+                "650 CIRC 5 BUILT {G},{R} PURPOSE=HS_SERVICE_INTRO HS_STATE=HSSI_ESTABLISHED"
+            )),
+            &mut s,
+        );
         // 2 cells read, nothing delivered or overhead: 2 dropped cells > 0 allowed.
         b.circbw_event(&ev("650 CIRC_BW ID=5 READ=1018 WRITTEN=0 TIME=x DELIVERED_READ=0 OVERHEAD_READ=0 DELIVERED_WRITTEN=0 OVERHEAD_WRITTEN=0"), &mut s);
         assert_eq!(s.closes, vec!["5"]);
@@ -1165,7 +1396,12 @@ mod tests {
     fn one_dropped_cell_allowed_on_connecting_rend() {
         let mut s = Rec::default();
         let mut b = Bandguards::new("", "up", now(), &mut s);
-        b.circ_event(&ev(&format!("650 CIRC 6 BUILT {G},{R} PURPOSE=HS_SERVICE_REND HS_STATE=HSSR_CONNECTING")), &mut s);
+        b.circ_event(
+            &ev(&format!(
+                "650 CIRC 6 BUILT {G},{R} PURPOSE=HS_SERVICE_REND HS_STATE=HSSR_CONNECTING"
+            )),
+            &mut s,
+        );
         b.circbw_event(&ev("650 CIRC_BW ID=6 READ=509 WRITTEN=0 DELIVERED_READ=0 OVERHEAD_READ=0 DELIVERED_WRITTEN=0 OVERHEAD_WRITTEN=0"), &mut s);
         assert!(s.closes.is_empty());
     }
@@ -1174,17 +1410,28 @@ mod tests {
     fn hsdir_circuit_over_30kb_is_closed() {
         let mut s = Rec::default();
         let mut b = Bandguards::new("", "up", now(), &mut s);
-        b.circ_event(&ev(&format!("650 CIRC 8 BUILT {G},{R} PURPOSE=HS_SERVICE_HSDIR")), &mut s);
+        b.circ_event(
+            &ev(&format!(
+                "650 CIRC 8 BUILT {G},{R} PURPOSE=HS_SERVICE_HSDIR"
+            )),
+            &mut s,
+        );
         b.circbw_event(&ev("650 CIRC_BW ID=8 READ=0 WRITTEN=31745 DELIVERED_READ=0 OVERHEAD_READ=0 DELIVERED_WRITTEN=0 OVERHEAD_WRITTEN=0"), &mut s);
         assert_eq!(s.closes, vec!["8"]);
-        assert!(s.logs.iter().any(|(_, m)| m == "Circ 8 exceeded CIRC_MAX_HSDESC_KILOBYTES: 31745 > 30720. "));
+        assert!(s
+            .logs
+            .iter()
+            .any(|(_, m)| m == "Circ 8 exceeded CIRC_MAX_HSDESC_KILOBYTES: 31745 > 30720. "));
     }
 
     #[test]
     fn circuits_older_than_a_day_are_closed() {
         let mut s = Rec::default();
         let mut b = Bandguards::new("", "up", now(), &mut s);
-        b.circ_event(&ev(&format!("650 CIRC 9 EXTENDED {G} PURPOSE=GENERAL")), &mut s);
+        b.circ_event(
+            &ev(&format!("650 CIRC 9 EXTENDED {G} PURPOSE=GENERAL")),
+            &mut s,
+        );
         b.set_created_at("9", now() - 25.0 * 3600.0);
         b.bw_event(&ev("650 BW 0 0"), &mut s);
         assert_eq!(s.closes, vec!["9"]);
@@ -1195,15 +1442,29 @@ mod tests {
         let mut s = Rec::default();
         let mut rg = Rendguard::default();
         let routers = vec![
-            Router { fingerprint: "B".repeat(40), flags: vec!["Fast".into(), "Valid".into()], measured: 1.0 },
-            Router { fingerprint: "C".repeat(40), flags: vec!["Fast".into(), "Valid".into()], measured: 999.0 },
+            Router {
+                fingerprint: "B".repeat(40),
+                flags: vec!["Fast".into(), "Valid".into()],
+                measured: 1.0,
+            },
+            Router {
+                fingerprint: "C".repeat(40),
+                flags: vec!["Fast".into(), "Valid".into()],
+                measured: 999.0,
+            },
         ];
         let w: BTreeMap<String, f64> = [("Wmm".to_string(), 10000.0)].into_iter().collect();
         rg.xfer_use_counts(&routers, &w, &mut s);
         let mut closed = 0;
         for i in 0..1100 {
-            let fp = if i % 2 == 0 { "B".repeat(40) } else { "C".repeat(40) };
-            let e = ev(&format!("650 CIRC {i} BUILT {G},${fp} PURPOSE=HS_SERVICE_REND HS_STATE=HSSR_CONNECTING"));
+            let fp = if i % 2 == 0 {
+                "B".repeat(40)
+            } else {
+                "C".repeat(40)
+            };
+            let e = ev(&format!(
+                "650 CIRC {i} BUILT {G},${fp} PURPOSE=HS_SERVICE_REND HS_STATE=HSSR_CONNECTING"
+            ));
             let before = s.closes.len();
             rg.circ_event(&e, &mut s);
             closed += s.closes.len() - before;
@@ -1211,7 +1472,10 @@ mod tests {
         // B carries 0.1% of the weight but half the use: every use past the
         // global start count is refused.
         assert!(closed > 0);
-        assert!(s.closes.iter().all(|id| id.parse::<u32>().unwrap() % 2 == 0));
+        assert!(s
+            .closes
+            .iter()
+            .all(|id| id.parse::<u32>().unwrap() % 2 == 0));
     }
 
     #[test]

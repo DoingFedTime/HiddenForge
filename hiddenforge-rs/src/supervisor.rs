@@ -5,11 +5,11 @@
 
 use crate::fsops::{self, PublishState};
 use crate::health;
+use crate::keycrypt::Secret;
 use crate::landlock;
 use crate::privs::{self, AsUser};
-use crate::sealed;
-use crate::keycrypt::Secret;
 use crate::py::{self, Json};
+use crate::sealed;
 use crate::torrc;
 use std::process::Child;
 use std::sync::atomic::{AtomicI32, Ordering};
@@ -37,7 +37,12 @@ extern "C" fn on_signal(sig: libc::c_int) {
 fn install_signals() {
     for sig in [libc::SIGTERM, libc::SIGINT] {
         // SAFETY: the handler only stores to an atomic, which is async-signal-safe.
-        unsafe { libc::signal(sig, on_signal as extern "C" fn(libc::c_int) as libc::sighandler_t) };
+        unsafe {
+            libc::signal(
+                sig,
+                on_signal as extern "C" fn(libc::c_int) as libc::sighandler_t,
+            )
+        };
     }
 }
 
@@ -72,7 +77,11 @@ impl Ctx {
     fn confined(&self, argv0: &str, args: &[&str], rules: &[(&str, u64)]) -> Cmd {
         use std::os::unix::process::CommandExt;
         let mut cmd = privs::command(&self.exe, Some(argv0), args, self.tor, &self.home);
-        let rs = if self.landlock { landlock::build(rules, true).ok() } else { None };
+        let rs = if self.landlock {
+            landlock::build(rules, true).ok()
+        } else {
+            None
+        };
         if let Some(r) = rs.as_ref() {
             let fd = r.fd();
             // SAFETY: the closure only makes two system calls (no allocation),
@@ -88,13 +97,13 @@ impl Ctx {
     }
 }
 
-
-
 /// Sleep up to `d`, waking at once for a shutdown signal.
 fn nap(d: Duration) {
     let end = Instant::now() + d;
     while Instant::now() < end && SIGNAL.load(Ordering::SeqCst) == 0 {
-        std::thread::sleep(Duration::from_millis(50).min(end.saturating_duration_since(Instant::now())));
+        std::thread::sleep(
+            Duration::from_millis(50).min(end.saturating_duration_since(Instant::now())),
+        );
     }
 }
 
@@ -120,20 +129,30 @@ fn socket_ready(ctx: &Ctx) -> bool {
 
 fn service_reachable(ctx: &Ctx) -> bool {
     let c = ctx.self_cmd("hiddenforge", &["healthcheck", "--json"]);
-    let Ok((_, out, _)) = privs::run_timeout(c.cmd, Duration::from_secs(15)) else { return false };
+    let Ok((_, out, _)) = privs::run_timeout(c.cmd, Duration::from_secs(15)) else {
+        return false;
+    };
     let text = String::from_utf8_lossy(&out);
-    matches!(py::parse(text.trim()).and_then(|d| d.get("hidden_service_reachable").cloned()), Some(Json::Bool(true)))
+    matches!(
+        py::parse(text.trim()).and_then(|d| d.get("hidden_service_reachable").cloned()),
+        Some(Json::Bool(true))
+    )
 }
 
+/// (backend name, IP the torrc uses or None if it never resolved, IPs it resolves to now)
+type Moved = (String, Option<String>, Vec<String>);
+
 struct BackendWatch {
-    moved: Arc<Mutex<Option<(String, Option<String>, Vec<String>)>>>,
+    moved: Arc<Mutex<Option<Moved>>>,
 }
 
 impl BackendWatch {
     fn start(recorded: &[(String, String)], pending: &[String]) -> BackendWatch {
         let moved = Arc::new(Mutex::new(None));
-        let mut names: Vec<(String, Option<String>)> =
-            recorded.iter().map(|(n, ip)| (n.clone(), Some(ip.clone()))).collect();
+        let mut names: Vec<(String, Option<String>)> = recorded
+            .iter()
+            .map(|(n, ip)| (n.clone(), Some(ip.clone())))
+            .collect();
         for p in pending {
             if !names.iter().any(|(n, _)| n == p) {
                 names.push((p.clone(), None));
@@ -182,12 +201,23 @@ fn now_s(start: Instant) -> f64 {
 impl Ctx {
     /// Deliver a signal as the tor user (see privs::signal).
     fn signal_as_tor(&self, pid: u32, sig: i32) -> bool {
-        let c = self.self_cmd("hiddenforge", &["__kill", &pid.to_string(), &sig.to_string()]);
-        matches!(privs::run_timeout(c.cmd, Duration::from_secs(5)), Ok((Some(0), _, _)))
+        let c = self.self_cmd(
+            "hiddenforge",
+            &["__kill", &pid.to_string(), &sig.to_string()],
+        );
+        matches!(
+            privs::run_timeout(c.cmd, Duration::from_secs(5)),
+            Ok((Some(0), _, _))
+        )
     }
 }
 
-fn shutdown(ctx: &Ctx, watcher: &mut Option<Child>, guards: &mut Option<Child>, tor: &mut Option<Child>) {
+fn shutdown(
+    ctx: &Ctx,
+    watcher: &mut Option<Child>,
+    guards: &mut Option<Child>,
+    tor: &mut Option<Child>,
+) {
     let k = |p: u32, s: i32| ctx.signal_as_tor(p, s);
     privs::kill_proc(watcher, "upload watcher", Duration::from_secs(5), &k);
     privs::kill_proc(guards, "Vanguards", Duration::from_secs(5), &k);
@@ -195,14 +225,30 @@ fn shutdown(ctx: &Ctx, watcher: &mut Option<Child>, guards: &mut Option<Child>, 
 }
 
 fn start_guards(ctx: &Ctx) -> std::io::Result<Child> {
-    let args = ["--control_socket", health::CONTROL_SOCKET, "--state", GUARDS_STATE, "--loglevel", "NOTICE", "--disable_vanguards"];
-    println!("Starting Vanguards: {} {}", health::GUARDS_ARGV0, args.join(" "));
+    let args = [
+        "--control_socket",
+        health::CONTROL_SOCKET,
+        "--state",
+        GUARDS_STATE,
+        "--loglevel",
+        "NOTICE",
+        "--disable_vanguards",
+    ];
+    println!(
+        "Starting Vanguards: {} {}",
+        health::GUARDS_ARGV0,
+        args.join(" ")
+    );
     let mut c = ctx.confined(health::GUARDS_ARGV0, &args, &landlock::guards_rules());
     c.cmd.spawn()
 }
 
 fn start_upload_watcher(ctx: &Ctx) -> std::io::Result<Child> {
-    let mut c = ctx.confined("hiddenforge-upload-watch", &["healthcheck", "--watch-uploads"], &landlock::watcher_rules());
+    let mut c = ctx.confined(
+        "hiddenforge-upload-watch",
+        &["healthcheck", "--watch-uploads"],
+        &landlock::watcher_rules(),
+    );
     c.cmd.spawn()
 }
 
@@ -215,8 +261,15 @@ pub fn run() -> i32 {
     };
     let root = privs::is_root();
     let mut ctx = Ctx {
-        tor: root.then_some(AsUser { uid: tor_uid, gid: tor_gid }),
-        home: if home.is_empty() { DATA_DIR.into() } else { home },
+        tor: root.then_some(AsUser {
+            uid: tor_uid,
+            gid: tor_gid,
+        }),
+        home: if home.is_empty() {
+            DATA_DIR.into()
+        } else {
+            home
+        },
         exe: privs::self_exe(),
         landlock: false,
     };
@@ -243,7 +296,11 @@ pub fn run() -> i32 {
             Err(e) => Some(py::strerror(e.raw_os_error().unwrap_or(0))),
         };
         if let Some(detail) = failed {
-            let detail = if detail.is_empty() { "privilege drop failed".to_string() } else { detail };
+            let detail = if detail.is_empty() {
+                "privilege drop failed".to_string()
+            } else {
+                detail
+            };
             println!(
                 "FATAL: cannot switch to the tor user: {detail}. If this deployment sets a low `ulimits.nproc`, remove it: \
                  RLIMIT_NPROC is counted per host uid, and uid 100 is shared with other containers (i2pforge's i2pd is \
@@ -316,14 +373,25 @@ pub fn run() -> i32 {
                 let name = d.rsplit('/').next().unwrap_or("").to_string();
                 let ram = format!("{}/{name}", sealed::RAM);
                 fsops::mkdir_owned(&ram, tor_uid, tor_gid)?;
-                t.content = t.content.replace(&format!("HiddenServiceDir     {d}\n"), &format!("HiddenServiceDir     {ram}\n"));
+                t.content = t.content.replace(
+                    &format!("HiddenServiceDir     {d}\n"),
+                    &format!("HiddenServiceDir     {ram}\n"),
+                );
                 ram_dirs.push(ram);
             }
             fsops::mkdir_owned(sealed::RAM, tor_uid, tor_gid)?;
             t.hs_dirs = ram_dirs;
-            println!("Key encryption at rest is on: keys are decrypted into {} at start.", sealed::RAM);
+            println!(
+                "Key encryption at rest is on: keys are decrypted into {} at start.",
+                sealed::RAM
+            );
         }
-        fsops::write_nofollow(TORRC_PATH, t.content.as_bytes(), 0o640, Some((tor_uid, tor_gid)))?;
+        fsops::write_nofollow(
+            TORRC_PATH,
+            t.content.as_bytes(),
+            0o640,
+            Some((tor_uid, tor_gid)),
+        )?;
         println!("Generated Tor configuration at {TORRC_PATH}");
         Ok(t)
     })();
@@ -345,7 +413,10 @@ pub fn run() -> i32 {
     let keys_fd = match fsops::open_dir_nofollow(torrc::KEYS_ROOT) {
         Ok(fd) => Some(fd),
         Err(e) => {
-            println!("Warning: cannot open {}: {e}; addresses will not be published.", torrc::KEYS_ROOT);
+            println!(
+                "Warning: cannot open {}: {e}; addresses will not be published.",
+                torrc::KEYS_ROOT
+            );
             None
         }
     };
@@ -363,7 +434,10 @@ pub fn run() -> i32 {
             let c = std::ffi::CString::new(DATA_DIR).unwrap_or_default();
             // SAFETY: valid C string; lchown never follows a link.
             if unsafe { libc::lchown(c.as_ptr(), tor_uid, tor_gid) } != 0 {
-                println!("Error preparing {DATA_DIR}: {}", py::oserror_path(py::last_errno(), DATA_DIR));
+                println!(
+                    "Error preparing {DATA_DIR}: {}",
+                    py::oserror_path(py::last_errno(), DATA_DIR)
+                );
                 return 1;
             }
         }
@@ -376,16 +450,26 @@ pub fn run() -> i32 {
         // No-root mode: there is nothing to keep. Clear whatever the runtime left.
         privs::drop_setup_capabilities(0, &mut log);
         log.retain(|l| !l.starts_with("Note: this runtime did not grant"));
-        log.push(format!("No-root mode: running as uid {tor_uid} with no capabilities."));
+        log.push(format!(
+            "No-root mode: running as uid {tor_uid} with no capabilities."
+        ));
     }
     say(&mut log);
 
     // ── Sealed keys: decrypt into RAM before Tor starts ─────────────────────
-    let names: Vec<String> = conf.hs_dirs.iter().map(|d| d.rsplit('/').next().unwrap_or("").to_string()).collect();
+    let names: Vec<String> = conf
+        .hs_dirs
+        .iter()
+        .map(|d| d.rsplit('/').next().unwrap_or("").to_string())
+        .collect();
     if let Some(p) = pass.as_ref() {
         for n in &names {
             let r = if root {
-                let c = ctx.confined("hiddenforge", &["__keys", "unseal", n], &landlock::watcher_rules());
+                let c = ctx.confined(
+                    "hiddenforge",
+                    &["__keys", "unseal", n],
+                    &landlock::watcher_rules(),
+                );
                 match privs::run_with_input(c.cmd, &p.0, Duration::from_secs(120)) {
                     Ok((Some(0), out, _)) => Ok(String::from_utf8_lossy(&out).trim().to_string()),
                     Ok((_, _, err)) => Err(String::from_utf8_lossy(&err).trim().to_string()),
@@ -416,10 +500,14 @@ pub fn run() -> i32 {
 
     // ── Start Tor ───────────────────────────────────────────────────────────
     println!("Starting Tor...");
-    let mut tor = match privs::command("tor", None, &["-f", TORRC_PATH], ctx.tor, &ctx.home).spawn() {
+    let mut tor = match privs::command("tor", None, &["-f", TORRC_PATH], ctx.tor, &ctx.home).spawn()
+    {
         Ok(c) => Some(c),
         Err(e) => {
-            println!("FATAL: could not start Tor: {}", py::strerror(e.raw_os_error().unwrap_or(0)));
+            println!(
+                "FATAL: could not start Tor: {}",
+                py::strerror(e.raw_os_error().unwrap_or(0))
+            );
             return 1;
         }
     };
@@ -427,7 +515,9 @@ pub fn run() -> i32 {
         if let Some(t) = tor.as_ref() {
             if !privs::assert_process_dropped(t, "Tor", &mut log) {
                 say(&mut log);
-                privs::kill_proc(&mut tor, "Tor", Duration::from_secs(5), &|p, s| ctx.signal_as_tor(p, s));
+                privs::kill_proc(&mut tor, "Tor", Duration::from_secs(5), &|p, s| {
+                    ctx.signal_as_tor(p, s)
+                });
                 return 1;
             }
         }
@@ -460,7 +550,9 @@ pub fn run() -> i32 {
             ));
         }
         if wait_start.elapsed() > Duration::from_secs(120) {
-            break Err("Tor control socket not found after 120s. Will keep retrying Vanguards.".into());
+            break Err(
+                "Tor control socket not found after 120s. Will keep retrying Vanguards.".into(),
+            );
         }
         nap(Duration::from_millis(500));
     };
@@ -517,15 +609,30 @@ pub fn run() -> i32 {
             }
         };
         if let Some(kfd) = keys_fd.as_ref() {
-            fsops::publish_addresses(&conf.hs_dirs, torrc::KEYS_ROOT, kfd, &mut gate, &read_as_tor, &mut publish, &mut log);
+            fsops::publish_addresses(
+                &conf.hs_dirs,
+                torrc::KEYS_ROOT,
+                kfd,
+                &mut gate,
+                &read_as_tor,
+                &mut publish,
+                &mut log,
+            );
         }
         say(&mut log);
 
         if let Some(Ok(Some(st))) = tor.as_mut().map(Child::try_wait) {
             let rc = st.code().unwrap_or(1);
             println!("Tor exited with code {rc}, shutting down.");
-            privs::kill_proc(&mut watcher, "upload watcher", Duration::from_secs(5), &|p, s| ctx.signal_as_tor(p, s));
-            privs::kill_proc(&mut guards, "Vanguards", Duration::from_secs(5), &|p, s| ctx.signal_as_tor(p, s));
+            privs::kill_proc(
+                &mut watcher,
+                "upload watcher",
+                Duration::from_secs(5),
+                &|p, s| ctx.signal_as_tor(p, s),
+            );
+            privs::kill_proc(&mut guards, "Vanguards", Duration::from_secs(5), &|p, s| {
+                ctx.signal_as_tor(p, s)
+            });
             return if rc != 0 { rc } else { 1 };
         }
 
@@ -537,10 +644,18 @@ pub fn run() -> i32 {
                         continue;
                     }
                     let r = if root {
-                        let c = ctx.confined("hiddenforge", &["__keys", "seal", n], &landlock::watcher_rules());
+                        let c = ctx.confined(
+                            "hiddenforge",
+                            &["__keys", "seal", n],
+                            &landlock::watcher_rules(),
+                        );
                         match privs::run_with_input(c.cmd, &p.0, Duration::from_secs(120)) {
-                            Ok((Some(0), out, _)) => Ok(String::from_utf8_lossy(&out).trim().to_string()),
-                            Ok((_, _, err)) => Err(String::from_utf8_lossy(&err).trim().to_string()),
+                            Ok((Some(0), out, _)) => {
+                                Ok(String::from_utf8_lossy(&out).trim().to_string())
+                            }
+                            Ok((_, _, err)) => {
+                                Err(String::from_utf8_lossy(&err).trim().to_string())
+                            }
                             Err(e) => Err(e.to_string()),
                         }
                     } else if sealed::settled(n) {
@@ -607,7 +722,9 @@ pub fn run() -> i32 {
         }
 
         if let Some(Ok(Some(st))) = guards.as_mut().map(Child::try_wait) {
-            let code = st.code().map_or_else(|| "None".to_string(), |c| c.to_string());
+            let code = st
+                .code()
+                .map_or_else(|| "None".to_string(), |c| c.to_string());
             guards = None;
             if now - g_last_start > 60.0 {
                 g_restarts = 0;

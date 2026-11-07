@@ -24,11 +24,17 @@ impl fmt::Display for PyErr {
 impl PyErr {
     /// OSError raised by a call that names a path (os.open, os.lstat, mkdir).
     pub fn os_path(errno: i32, path: &str) -> PyErr {
-        PyErr { errno: Some(errno), msg: py::oserror_path(errno, path) }
+        PyErr {
+            errno: Some(errno),
+            msg: py::oserror_path(errno, path),
+        }
     }
     /// OSError raised by a descriptor call (fchown, fchmod, fstat).
     pub fn os(errno: i32) -> PyErr {
-        PyErr { errno: Some(errno), msg: py::oserror(errno) }
+        PyErr {
+            errno: Some(errno),
+            msg: py::oserror(errno),
+        }
     }
     pub fn runtime(msg: String) -> PyErr {
         PyErr { errno: None, msg }
@@ -119,7 +125,11 @@ pub fn fchmod(fd: &Fd, mode: u32) -> R<()> {
 
 /// Open a directory, refusing a final-component symlink (O_DIRECTORY|O_NOFOLLOW).
 pub fn open_dir_nofollow(path: &str) -> R<Fd> {
-    open(path, libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW, 0)
+    open(
+        path,
+        libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW,
+        0,
+    )
 }
 
 /// chmod a directory through an O_NOFOLLOW descriptor; optionally only when root owns it.
@@ -145,7 +155,11 @@ pub fn chown_one(path: &str, uid: u32, gid: u32, log: &mut Vec<String>) -> R<()>
         ));
         return Ok(());
     }
-    let fd = open(path, libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK, 0)?;
+    let fd = open(
+        path,
+        libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK,
+        0,
+    )?;
     let st = fstat(&fd)?;
     if !is_type(&st, libc::S_IFDIR) && st.st_nlink > 1 {
         log.push(format!(
@@ -177,7 +191,9 @@ pub fn chown_r(path: &str, uid: u32, gid: u32, log: &mut Vec<String>) -> R<()> {
     let mut stack = vec![path.to_string()];
     while let Some(dir) = stack.pop() {
         // os.walk ignores directories it cannot list (onerror=None).
-        let Some(entries) = list_dir(&dir) else { continue };
+        let Some(entries) = list_dir(&dir) else {
+            continue;
+        };
         let (dirs, files): (Vec<_>, Vec<_>) = entries.into_iter().partition(|(_, d)| *d);
         for (name, _) in dirs.iter().chain(files.iter()) {
             chown_one(&format!("{dir}/{name}"), uid, gid, log)?;
@@ -242,7 +258,9 @@ fn mkdir_p(path: &str) -> R<()> {
 pub fn mkdir_owned(path: &str, uid: u32, gid: u32) -> R<()> {
     match lstat(path) {
         Ok(st) if !is_type(&st, libc::S_IFDIR) => {
-            return Err(PyErr::runtime(format!("{path} is not a directory; refusing to use it")));
+            return Err(PyErr::runtime(format!(
+                "{path} is not a directory; refusing to use it"
+            )));
         }
         Ok(_) => {}
         Err(e) if e.errno == Some(libc::ENOENT) => {
@@ -265,7 +283,11 @@ pub fn mkdir_owned(path: &str, uid: u32, gid: u32) -> R<()> {
 pub fn prepare_hs_dir(hs_dir: &str, uid: u32, gid: u32, log: &mut Vec<String>) -> R<()> {
     match lstat(hs_dir) {
         Ok(st) if !is_type(&st, libc::S_IFDIR) => {
-            let kind = if is_type(&st, libc::S_IFLNK) { "a symlink" } else { "not a directory" };
+            let kind = if is_type(&st, libc::S_IFLNK) {
+                "a symlink"
+            } else {
+                "not a directory"
+            };
             return Err(PyErr::runtime(format!(
                 "{hs_dir} in the key volume is {kind}; refusing to use it as a service directory. Replace it with the \
                  real directory (restore it from a backup)."
@@ -313,7 +335,11 @@ fn write_all(fd: &Fd, data: &[u8]) -> R<()> {
 
 /// Write a file through O_NOFOLLOW|O_TRUNC, then fchmod/fchown that descriptor.
 pub fn write_nofollow(path: &str, data: &[u8], mode: u32, owner: Option<(u32, u32)>) -> R<()> {
-    let fd = open(path, libc::O_WRONLY | libc::O_CREAT | libc::O_TRUNC | libc::O_NOFOLLOW, mode)?;
+    let fd = open(
+        path,
+        libc::O_WRONLY | libc::O_CREAT | libc::O_TRUNC | libc::O_NOFOLLOW,
+        mode,
+    )?;
     write_all(&fd, data)?;
     fchmod(&fd, mode)?;
     if let Some((u, g)) = owner {
@@ -323,21 +349,33 @@ pub fn write_nofollow(path: &str, data: &[u8], mode: u32, owner: Option<(u32, u3
 }
 
 /// _write_dropped_mappings.
-pub fn write_dropped_mappings(path: &str, reasons: &[String], uid: u32, gid: u32, log: &mut Vec<String>) {
+pub fn write_dropped_mappings(
+    path: &str,
+    reasons: &[String],
+    uid: u32,
+    gid: u32,
+    log: &mut Vec<String>,
+) {
     if reasons.is_empty() {
         let c = cpath(path);
         // SAFETY: valid C string.
         if unsafe { libc::unlink(c.as_ptr()) } != 0 {
             let e = py::last_errno();
             if e != libc::ENOENT {
-                log.push(format!("Warning: could not remove {path}: {}", py::oserror_path(e, path)));
+                log.push(format!(
+                    "Warning: could not remove {path}: {}",
+                    py::oserror_path(e, path)
+                ));
             }
         }
         return;
     }
     let body = reasons.join("\n") + "\n";
     match write_nofollow(path, body.as_bytes(), 0o600, Some((uid, gid))) {
-        Ok(()) => log.push(format!("Recorded {} dropped mapping(s) in {path}", reasons.len())),
+        Ok(()) => log.push(format!(
+            "Recorded {} dropped mapping(s) in {path}",
+            reasons.len()
+        )),
         Err(e) => log.push(format!("Warning: could not write {path}: {e}")),
     }
 }
@@ -346,9 +384,16 @@ pub const ADDRESS_FILE_MAX: usize = 256;
 
 /// _read_small_regular_file: no-follow, non-blocking, regular files only, capped.
 pub fn read_small_regular_file(path: &str, max_bytes: usize) -> R<Vec<u8>> {
-    let fd = open(path, libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK, 0)?;
+    let fd = open(
+        path,
+        libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK,
+        0,
+    )?;
     if !is_type(&fstat(&fd)?, libc::S_IFREG) {
-        return Err(PyErr { errno: Some(libc::EINVAL), msg: format!("[Errno 22] {path} is not a regular file") });
+        return Err(PyErr {
+            errno: Some(libc::EINVAL),
+            msg: format!("[Errno 22] {path} is not a regular file"),
+        });
     }
     let mut buf = vec![0u8; max_bytes + 1];
     let mut got = 0;
@@ -380,7 +425,11 @@ pub fn read_small_regular_file(path: &str, max_bytes: usize) -> R<Vec<u8>> {
 }
 
 pub fn is_onion(s: &str) -> bool {
-    s.len() == 62 && s.ends_with(".onion") && s[..56].bytes().all(|b| matches!(b, b'a'..=b'z' | b'2'..=b'7'))
+    s.len() == 62
+        && s.ends_with(".onion")
+        && s[..56]
+            .bytes()
+            .all(|b| matches!(b, b'a'..=b'z' | b'2'..=b'7'))
 }
 
 pub fn is_label(s: &str) -> bool {
@@ -400,7 +449,10 @@ fn random_hex8() -> String {
     let n = unsafe { libc::getrandom(b.as_mut_ptr().cast(), b.len(), 0) };
     if n != 8 {
         // A fresh name is required, not a secret: fall back to pid+time.
-        let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+        let t = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
         return format!("{:016x}", (t as u64) ^ u64::from(std::process::id()));
     }
     b.iter().map(|x| format!("{x:02x}")).collect()
@@ -409,7 +461,14 @@ fn random_hex8() -> String {
 fn openat(dirfd: &Fd, name: &str, flags: i32, mode: u32, shown: &str) -> R<Fd> {
     let c = cpath(name);
     // SAFETY: dirfd is an open directory; name is a single component.
-    let fd = unsafe { libc::openat(dirfd.0, c.as_ptr(), flags | libc::O_CLOEXEC, mode as libc::c_uint) };
+    let fd = unsafe {
+        libc::openat(
+            dirfd.0,
+            c.as_ptr(),
+            flags | libc::O_CLOEXEC,
+            mode as libc::c_uint,
+        )
+    };
     if fd < 0 {
         Err(PyErr::os_path(py::last_errno(), shown))
     } else {
@@ -419,9 +478,18 @@ fn openat(dirfd: &Fd, name: &str, flags: i32, mode: u32, shown: &str) -> R<Fd> {
 
 /// read_small_regular_file relative to a held directory descriptor.
 fn read_small_at(dirfd: &Fd, name: &str, shown: &str, max_bytes: usize) -> R<Vec<u8>> {
-    let fd = openat(dirfd, name, libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK, 0, shown)?;
+    let fd = openat(
+        dirfd,
+        name,
+        libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK,
+        0,
+        shown,
+    )?;
     if !is_type(&fstat(&fd)?, libc::S_IFREG) {
-        return Err(PyErr { errno: Some(libc::EINVAL), msg: format!("[Errno 22] {shown} is not a regular file") });
+        return Err(PyErr {
+            errno: Some(libc::EINVAL),
+            msg: format!("[Errno 22] {shown} is not a regular file"),
+        });
     }
     let mut buf = vec![0u8; max_bytes + 1];
     // SAFETY: reading into a live buffer.
@@ -431,7 +499,10 @@ fn read_small_at(dirfd: &Fd, name: &str, shown: &str, max_bytes: usize) -> R<Vec
     }
     buf.truncate(n as usize);
     if buf.len() > max_bytes {
-        return Err(PyErr { errno: Some(libc::EFBIG), msg: format!("[Errno 27] {shown} is larger than {max_bytes} bytes") });
+        return Err(PyErr {
+            errno: Some(libc::EFBIG),
+            msg: format!("[Errno 27] {shown} is larger than {max_bytes} bytes"),
+        });
     }
     Ok(buf)
 }
@@ -443,12 +514,23 @@ pub struct PublishState {
 }
 
 impl PublishState {
-    fn warn_once(&mut self, name: &str, action: &str, e: &PyErr, keys_root: &str, log: &mut Vec<String>) {
+    fn warn_once(
+        &mut self,
+        name: &str,
+        action: &str,
+        e: &PyErr,
+        keys_root: &str,
+        log: &mut Vec<String>,
+    ) {
         let errno = e.errno.unwrap_or(0);
         if errno == libc::ENOENT {
             return;
         }
-        let key = (name.to_string(), action.split(' ').next().unwrap_or("").to_string(), errno);
+        let key = (
+            name.to_string(),
+            action.split(' ').next().unwrap_or("").to_string(),
+            errno,
+        );
         if self.warned.contains(&key) {
             return;
         }
@@ -498,12 +580,15 @@ pub fn publish_addresses(
                 continue;
             }
         };
-        let Some(onion) = ascii_strip(&raw) else { continue };
+        let Some(onion) = ascii_strip(&raw) else {
+            continue;
+        };
         if !is_onion(&onion) {
             continue;
         }
         let target = format!("{keys_root}/{name}.onion");
-        if let Ok(cur) = read_small_at(keys_fd, &format!("{name}.onion"), &target, ADDRESS_FILE_MAX) {
+        if let Ok(cur) = read_small_at(keys_fd, &format!("{name}.onion"), &target, ADDRESS_FILE_MAX)
+        {
             if ascii_strip(&cur).as_deref() == Some(onion.as_str()) {
                 continue;
             }
@@ -523,7 +608,13 @@ pub fn publish_addresses(
         let target_name = format!("{name}.onion");
         let mut created = false;
         let r = (|| -> R<()> {
-            let fd = openat(keys_fd, &tmp_name, libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW, 0o644, &tmp)?;
+            let fd = openat(
+                keys_fd,
+                &tmp_name,
+                libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW,
+                0o644,
+                &tmp,
+            )?;
             created = true;
             write_all(&fd, format!("{onion}\n").as_bytes())?;
             fchmod(&fd, 0o644)?;
@@ -532,7 +623,15 @@ pub fn publish_addresses(
             // SAFETY: both names are single components relative to the same open directory.
             if unsafe { libc::renameat(keys_fd.0, a.as_ptr(), keys_fd.0, b.as_ptr()) } != 0 {
                 let e = py::last_errno();
-                return Err(PyErr { errno: Some(e), msg: format!("[Errno {e}] {}: {} -> {}", py::strerror(e), py::py_repr(&tmp), py::py_repr(&target)) });
+                return Err(PyErr {
+                    errno: Some(e),
+                    msg: format!(
+                        "[Errno {e}] {}: {} -> {}",
+                        py::strerror(e),
+                        py::py_repr(&tmp),
+                        py::py_repr(&target)
+                    ),
+                });
             }
             Ok(())
         })();
@@ -554,7 +653,8 @@ pub fn getpwnam(name: &str) -> Option<(u32, u32, String)> {
     let text = std::fs::read_to_string("/etc/passwd").ok()?;
     text.lines().find_map(|l| {
         let f: Vec<&str> = l.split(':').collect();
-        (f.len() >= 7 && f[0] == name).then(|| Some((f[2].parse().ok()?, f[3].parse().ok()?, f[5].to_string())))?
+        (f.len() >= 7 && f[0] == name)
+            .then(|| Some((f[2].parse().ok()?, f[3].parse().ok()?, f[5].to_string())))?
     })
 }
 
@@ -588,7 +688,10 @@ mod tests {
         // SAFETY: getuid/getgid have no preconditions.
         let (u, g) = unsafe { (libc::getuid(), libc::getgid()) };
         prepare_hs_dir(&svc, u, g, &mut vec![]).unwrap();
-        assert_eq!(std::fs::metadata(&svc).unwrap().permissions().mode() & 0o7777, 0o700);
+        assert_eq!(
+            std::fs::metadata(&svc).unwrap().permissions().mode() & 0o7777,
+            0o700
+        );
     }
 
     #[test]
@@ -597,7 +700,11 @@ mod tests {
         let svc = format!("{d}/svc");
         std::fs::create_dir(&svc).unwrap();
         std::fs::write(format!("{d}/outside"), b"x").unwrap();
-        std::fs::hard_link(format!("{d}/outside"), format!("{svc}/hs_ed25519_secret_key")).unwrap();
+        std::fs::hard_link(
+            format!("{d}/outside"),
+            format!("{svc}/hs_ed25519_secret_key"),
+        )
+        .unwrap();
         let mut log = vec![];
         // SAFETY: as above.
         let (u, g) = unsafe { (libc::getuid(), libc::getgid()) };
@@ -616,17 +723,46 @@ mod tests {
         let mut st = PublishState::default();
         let mut log = vec![];
         let kfd = open_dir_nofollow(&d).unwrap();
-        publish_addresses(&[svc.clone()], &d, &kfd, &mut || true, &|_| None, &mut st, &mut log);
+        publish_addresses(
+            &[svc.clone()],
+            &d,
+            &kfd,
+            &mut || true,
+            &|_| None,
+            &mut st,
+            &mut log,
+        );
         assert!(log.iter().any(|l| l.contains("read hostname failed")));
         std::fs::remove_file(format!("{svc}/hostname")).unwrap();
         let onion = format!("{}.onion", "a".repeat(56));
         std::fs::write(format!("{svc}/hostname"), format!("{onion}\n")).unwrap();
         let mut log = vec![];
-        publish_addresses(&[svc.clone()], &d, &kfd, &mut || false, &|_| None, &mut st, &mut log);
-        assert!(std::fs::metadata(format!("{d}/a.onion")).is_err(), "gate said no");
+        publish_addresses(
+            &[svc.clone()],
+            &d,
+            &kfd,
+            &mut || false,
+            &|_| None,
+            &mut st,
+            &mut log,
+        );
+        assert!(
+            std::fs::metadata(format!("{d}/a.onion")).is_err(),
+            "gate said no"
+        );
         publish_addresses(&[svc], &d, &kfd, &mut || true, &|_| None, &mut st, &mut log);
-        assert_eq!(std::fs::read_to_string(format!("{d}/a.onion")).unwrap(), format!("{onion}\n"));
-        assert_eq!(std::fs::metadata(format!("{d}/a.onion")).unwrap().permissions().mode() & 0o777, 0o644);
+        assert_eq!(
+            std::fs::read_to_string(format!("{d}/a.onion")).unwrap(),
+            format!("{onion}\n")
+        );
+        assert_eq!(
+            std::fs::metadata(format!("{d}/a.onion"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o644
+        );
     }
 
     #[test]

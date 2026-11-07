@@ -35,9 +35,15 @@ impl Default for Env {
 }
 
 fn each_cmdline(proc_root: &str) -> Vec<Vec<u8>> {
-    let Ok(rd) = std::fs::read_dir(proc_root) else { return vec![] };
+    let Ok(rd) = std::fs::read_dir(proc_root) else {
+        return vec![];
+    };
     rd.flatten()
-        .filter(|e| e.file_name().to_str().is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())))
+        .filter(|e| {
+            e.file_name()
+                .to_str()
+                .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+        })
         .filter_map(|e| std::fs::read(e.path().join("cmdline")).ok())
         .collect()
 }
@@ -49,17 +55,24 @@ fn argv0_basename(cmdline: &[u8]) -> String {
 }
 
 pub fn tor_running(proc_root: &str) -> bool {
-    each_cmdline(proc_root).iter().any(|c| !c.is_empty() && argv0_basename(c) == "tor")
+    each_cmdline(proc_root)
+        .iter()
+        .any(|c| !c.is_empty() && argv0_basename(c) == "tor")
 }
 
 pub fn guards_running(proc_root: &str) -> bool {
-    each_cmdline(proc_root).iter().any(|c| argv0_basename(c) == GUARDS_ARGV0)
+    each_cmdline(proc_root)
+        .iter()
+        .any(|c| argv0_basename(c) == GUARDS_ARGV0)
 }
 
 /// `str(OSError)` for a failed socket connect/recv, as healthcheck.py reported it.
 fn sock_err(e: &std::io::Error) -> String {
     match e.raw_os_error() {
-        Some(n) if e.kind() != std::io::ErrorKind::TimedOut && e.kind() != std::io::ErrorKind::WouldBlock => {
+        Some(n)
+            if e.kind() != std::io::ErrorKind::TimedOut
+                && e.kind() != std::io::ErrorKind::WouldBlock =>
+        {
             py::oserror(n)
         }
         _ => "timed out".to_string(),
@@ -81,7 +94,14 @@ fn query(sock: &str) -> Result<Vec<u8>, String> {
         match s.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => data.extend_from_slice(&buf[..n]),
-            Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => break,
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                break
+            }
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(e) => return Err(sock_err(&e)),
         }
@@ -106,7 +126,8 @@ pub fn splitlines(s: &str) -> Vec<String> {
                 }
                 out.push(std::mem::take(&mut cur));
             }
-            '\n' | '\x0b' | '\x0c' | '\x1c' | '\x1d' | '\x1e' | '\u{85}' | '\u{2028}' | '\u{2029}' => {
+            '\n' | '\x0b' | '\x0c' | '\x1c' | '\x1d' | '\x1e' | '\u{85}' | '\u{2028}'
+            | '\u{2029}' => {
                 out.push(std::mem::take(&mut cur));
             }
             c => cur.push(c),
@@ -126,7 +147,9 @@ fn hidden_service_dirs(torrc: &str) -> Option<Vec<String>> {
     for line in text.split_inclusive('\n') {
         let l = line.strip_suffix('\n').unwrap_or(line);
         let t = l.trim_start_matches(char::is_whitespace);
-        let Some(rest) = t.strip_prefix("HiddenServiceDir") else { continue };
+        let Some(rest) = t.strip_prefix("HiddenServiceDir") else {
+            continue;
+        };
         if !rest.starts_with(char::is_whitespace) {
             continue;
         }
@@ -153,7 +176,11 @@ fn read_address_file(path: &str, max: usize) -> Option<String> {
 pub fn uploaded_addresses(path: &str) -> Vec<String> {
     match read_address_file(path, UPLOADS_MAX_BYTES) {
         Some(t) if !t.is_empty() => {
-            let mut v: Vec<String> = t.split('\n').filter(|l| fsops::is_label(l)).map(String::from).collect();
+            let mut v: Vec<String> = t
+                .split('\n')
+                .filter(|l| fsops::is_label(l))
+                .map(String::from)
+                .collect();
             v.sort();
             v.dedup();
             v
@@ -164,13 +191,20 @@ pub fn uploaded_addresses(path: &str) -> Vec<String> {
 
 fn circuit_status_lines(resp: &[u8]) -> Vec<String> {
     let lines = splitlines(&String::from_utf8_lossy(resp));
-    let Some(start) = lines.iter().position(|l| l == "250+circuit-status=") else { return vec![] };
+    let Some(start) = lines.iter().position(|l| l == "250+circuit-status=") else {
+        return vec![];
+    };
     let mut body = Vec::new();
     for line in &lines[start + 1..] {
         if line == "." {
             return body;
         }
-        body.push(line.strip_prefix('.').filter(|_| line.starts_with("..")).unwrap_or(line).to_string());
+        body.push(
+            line.strip_prefix('.')
+                .filter(|_| line.starts_with(".."))
+                .unwrap_or(line)
+                .to_string(),
+        );
     }
     vec![]
 }
@@ -188,7 +222,8 @@ fn rend_query(line: &str) -> Option<String> {
         let val_start = at + key.len();
         let val: String = line[val_start..].chars().take(56).collect();
         let after = line[val_start..].chars().nth(56);
-        if !is_word(before) && val.chars().count() == 56 && fsops::is_label(&val) && !is_word(after) {
+        if !is_word(before) && val.chars().count() == 56 && fsops::is_label(&val) && !is_word(after)
+        {
             return Some(val);
         }
         from = at + 1;
@@ -201,10 +236,13 @@ fn intro_points(resp: &[u8]) -> Vec<(String, i64)> {
     let mut seen: Vec<String> = Vec::new();
     for raw in circuit_status_lines(resp) {
         let line = py::strip_str(&raw);
-        if !line.contains("PURPOSE=HS_SERVICE_INTRO") || !line.contains("HS_STATE=HSSI_ESTABLISHED") {
+        if !line.contains("PURPOSE=HS_SERVICE_INTRO") || !line.contains("HS_STATE=HSSI_ESTABLISHED")
+        {
             continue;
         }
-        let Some(addr) = rend_query(line) else { continue };
+        let Some(addr) = rend_query(line) else {
+            continue;
+        };
         let id = line.split(' ').next().unwrap_or("").to_string();
         if seen.contains(&id) {
             continue;
@@ -252,13 +290,25 @@ pub fn evaluate(env: &Env) -> (i32, Json) {
     doc.set("vanguards", guards.into());
 
     let Some(dirs) = hidden_service_dirs(&env.torrc) else {
-        doc.set("reason", format!("cannot read {} - cannot tell which services to check", env.torrc).into());
+        doc.set(
+            "reason",
+            format!(
+                "cannot read {} - cannot tell which services to check",
+                env.torrc
+            )
+            .into(),
+        );
         return (2, doc);
     };
     let mut details = Vec::new();
     let mut published = !dirs.is_empty();
     for d in &dirs {
-        let name = d.trim_end_matches('/').rsplit('/').next().unwrap_or("").to_string();
+        let name = d
+            .trim_end_matches('/')
+            .rsplit('/')
+            .next()
+            .unwrap_or("")
+            .to_string();
         let onion = read_address_file(&format!("{d}/hostname"), 256);
         let ok = onion.as_deref().is_some_and(fsops::is_onion);
         published = published && ok;
@@ -271,8 +321,13 @@ pub fn evaluate(env: &Env) -> (i32, Json) {
     let (mut unreachable, mut not_uploaded) = (Vec::new(), Vec::new());
     let mut services = Vec::new();
     for (name, addr, ok) in &details {
-        let label = addr.as_deref().map(|a| a.trim_end_matches(".onion").to_string());
-        let ip = label.as_ref().and_then(|l| intro.iter().find(|(a, _)| a == l)).map_or(0, |(_, n)| *n);
+        let label = addr
+            .as_deref()
+            .map(|a| a.trim_end_matches(".onion").to_string());
+        let ip = label
+            .as_ref()
+            .and_then(|l| intro.iter().find(|(a, _)| a == l))
+            .map_or(0, |(_, n)| *n);
         let up = label.as_ref().is_some_and(|l| uploaded.contains(l));
         if *ok && ip < 1 {
             unreachable.push(name.clone());
@@ -299,8 +354,15 @@ pub fn evaluate(env: &Env) -> (i32, Json) {
     } else if !circ {
         Some("no circuit established yet".into())
     } else if !published {
-        let missing: Vec<&str> = details.iter().filter(|d| !d.2).map(|d| d.0.as_str()).collect();
-        Some(format!("hidden service(s) not published yet: {}", missing.join(", ")))
+        let missing: Vec<&str> = details
+            .iter()
+            .filter(|d| !d.2)
+            .map(|d| d.0.as_str())
+            .collect();
+        Some(format!(
+            "hidden service(s) not published yet: {}",
+            missing.join(", ")
+        ))
     } else if !reachable && unreachable.is_empty() {
         Some(format!(
             "no descriptor uploaded to the network yet for: {} - clients cannot find it. Tor uploads within about a minute of its introduction points.",
@@ -332,7 +394,9 @@ pub fn evaluate(env: &Env) -> (i32, Json) {
 pub fn main_check(json: bool) -> i32 {
     let (rc, doc) = evaluate(&Env::default());
     if json {
-        let mut out = Json::obj().with("ok", (rc == 0).into()).with("exit_code", Json::Int(i64::from(rc)));
+        let mut out = Json::obj()
+            .with("ok", (rc == 0).into())
+            .with("exit_code", Json::Int(i64::from(rc)));
         if let Json::Obj(items) = doc {
             for (k, v) in items {
                 out.set(&k, v);
@@ -350,7 +414,11 @@ pub fn main_check(json: bool) -> i32 {
                 .collect(),
             _ => vec![],
         };
-        let suffix = if addrs.is_empty() { String::new() } else { format!(" - {}", addrs.join(", ")) };
+        let suffix = if addrs.is_empty() {
+            String::new()
+        } else {
+            format!(" - {}", addrs.join(", "))
+        };
         println!("healthcheck: ready{suffix}");
     } else {
         let reason = match doc.get("reason") {
@@ -393,7 +461,9 @@ pub fn watch_uploads(path: &str, sock_path: &str, connect_timeout: Duration) -> 
             }
         }
     };
-    if s.write_all(b"AUTHENTICATE\r\nSETEVENTS HS_DESC\r\n").is_err() {
+    if s.write_all(b"AUTHENTICATE\r\nSETEVENTS HS_DESC\r\n")
+        .is_err()
+    {
         return 1;
     }
     let mut buf: Vec<u8> = Vec::new();
@@ -413,7 +483,11 @@ pub fn watch_uploads(path: &str, sock_path: &str, connect_timeout: Duration) -> 
             let line: Vec<u8> = buf.drain(..i + 2).take(i).collect();
             let text = String::from_utf8_lossy(&line);
             let f: Vec<&str> = text.split_whitespace().collect();
-            if f.len() >= 4 && f[..3] == ["650", "HS_DESC", "UPLOADED"] && fsops::is_label(f[3]) && !uploaded.iter().any(|a| a == f[3]) {
+            if f.len() >= 4
+                && f[..3] == ["650", "HS_DESC", "UPLOADED"]
+                && fsops::is_label(f[3])
+                && !uploaded.iter().any(|a| a == f[3])
+            {
                 uploaded.push(f[3].to_string());
                 uploaded.sort();
                 // A failed record leaves readiness withheld (safe direction).
@@ -443,7 +517,8 @@ mod tests {
 
     #[test]
     fn truncated_reply_counts_nothing() {
-        let resp = "250+circuit-status=\r\n1 PURPOSE=HS_SERVICE_INTRO HS_STATE=HSSI_ESTABLISHED\r\n";
+        let resp =
+            "250+circuit-status=\r\n1 PURPOSE=HS_SERVICE_INTRO HS_STATE=HSSI_ESTABLISHED\r\n";
         assert!(circuit_status_lines(resp.as_bytes()).is_empty());
     }
 
@@ -457,6 +532,9 @@ mod tests {
 
     #[test]
     fn splitlines_like_python() {
-        assert_eq!(splitlines("a\r\nb\rc\nd\x0ce"), vec!["a", "b", "c", "d", "e"]);
+        assert_eq!(
+            splitlines("a\r\nb\rc\nd\x0ce"),
+            vec!["a", "b", "c", "d", "e"]
+        );
     }
 }
