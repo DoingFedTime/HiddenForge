@@ -16,6 +16,7 @@ mod compat;
 mod fsops;
 mod guards;
 mod health;
+mod landlock;
 mod privs;
 mod py;
 mod sha3;
@@ -154,7 +155,19 @@ fn entrypoint(args: &[String]) -> i32 {
     supervisor::run()
 }
 
+/// No process of ours ever writes a core file or can be ptrace-attached by a
+/// same-uid process: a crash must not put key material on disk.
+fn no_dumps() {
+    let zero = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+    // SAFETY: plain setrlimit/prctl with valid arguments; failures are harmless.
+    unsafe {
+        libc::setrlimit(libc::RLIMIT_CORE, &zero);
+        libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0);
+    }
+}
+
 fn main() {
+    no_dumps();
     let args: Vec<String> = std::env::args().collect();
     let argv0 = args.first().map(|a| a.rsplit('/').next().unwrap_or("").to_string()).unwrap_or_default();
     let rest = &args[args.len().min(1)..];

@@ -5,6 +5,7 @@
 
 use crate::fsops::{self, PublishState};
 use crate::health;
+use crate::landlock;
 use crate::privs::{self, AsUser};
 use crate::py::{self, Json};
 use crate::torrc;
@@ -48,13 +49,44 @@ struct Ctx {
     tor: Option<AsUser>,
     home: String,
     exe: String,
+    landlock: bool,
+}
+
+/// A command plus the Landlock ruleset its child enforces before exec. Keep it
+/// alive until the child has been spawned.
+struct Cmd {
+    cmd: std::process::Command,
+    _rules: Option<landlock::Ruleset>,
 }
 
 impl Ctx {
-    fn self_cmd(&self, argv0: &str, args: &[&str]) -> std::process::Command {
-        privs::command(&self.exe, Some(argv0), args, self.tor, &self.home)
+    /// A helper as the tor user, confined to the reader rules. The returned
+    /// Cmd must stay alive until the child is spawned (it holds the ruleset).
+    fn self_cmd(&self, argv0: &str, args: &[&str]) -> Cmd {
+        self.confined(argv0, args, &landlock::reader_rules())
+    }
+
+    /// Our own binary as the tor user, confined to `rules` and with no TCP.
+    fn confined(&self, argv0: &str, args: &[&str], rules: &[(&str, u64)]) -> Cmd {
+        use std::os::unix::process::CommandExt;
+        let mut cmd = privs::command(&self.exe, Some(argv0), args, self.tor, &self.home);
+        let rs = if self.landlock { landlock::build(rules, true).ok() } else { None };
+        if let Some(r) = rs.as_ref() {
+            let fd = r.fd();
+            // SAFETY: the closure only makes two system calls (no allocation),
+            // and the ruleset fd stays open until the spawn returns (held in Cmd).
+            unsafe {
+                cmd.pre_exec(move || match landlock::enforce_fd(fd) {
+                    0 => Ok(()),
+                    e => Err(std::io::Error::from_raw_os_error(e)),
+                });
+            }
+        }
+        Cmd { cmd, _rules: rs }
     }
 }
+
+
 
 /// Sleep up to `d`, waking at once for a shutdown signal.
 fn nap(d: Duration) {
@@ -64,14 +96,29 @@ fn nap(d: Duration) {
     }
 }
 
+static SPAWN_WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn warn_spawn(what: &str, e: &std::io::Error) {
+    if !SPAWN_WARNED.swap(true, Ordering::SeqCst) {
+        println!("Warning: could not start {what}: {e} (reported once)");
+    }
+}
+
 fn socket_ready(ctx: &Ctx) -> bool {
     let c = ctx.self_cmd("hiddenforge", &["__is-socket", health::CONTROL_SOCKET]);
-    matches!(privs::run_timeout(c, Duration::from_secs(10)), Ok((Some(0), _, _)))
+    match privs::run_timeout(c.cmd, Duration::from_secs(10)) {
+        Ok((Some(0), _, _)) => true,
+        Ok(_) => false,
+        Err(e) => {
+            warn_spawn("the control-socket probe", &e);
+            false
+        }
+    }
 }
 
 fn service_reachable(ctx: &Ctx) -> bool {
     let c = ctx.self_cmd("hiddenforge", &["healthcheck", "--json"]);
-    let Ok((_, out, _)) = privs::run_timeout(c, Duration::from_secs(15)) else { return false };
+    let Ok((_, out, _)) = privs::run_timeout(c.cmd, Duration::from_secs(15)) else { return false };
     let text = String::from_utf8_lossy(&out);
     matches!(py::parse(text.trim()).and_then(|d| d.get("hidden_service_reachable").cloned()), Some(Json::Bool(true)))
 }
@@ -134,7 +181,7 @@ impl Ctx {
     /// Deliver a signal as the tor user (see privs::signal).
     fn signal_as_tor(&self, pid: u32, sig: i32) -> bool {
         let c = self.self_cmd("hiddenforge", &["__kill", &pid.to_string(), &sig.to_string()]);
-        matches!(privs::run_timeout(c, Duration::from_secs(5)), Ok((Some(0), _, _)))
+        matches!(privs::run_timeout(c.cmd, Duration::from_secs(5)), Ok((Some(0), _, _)))
     }
 }
 
@@ -148,11 +195,13 @@ fn shutdown(ctx: &Ctx, watcher: &mut Option<Child>, guards: &mut Option<Child>, 
 fn start_guards(ctx: &Ctx) -> std::io::Result<Child> {
     let args = ["--control_socket", health::CONTROL_SOCKET, "--state", GUARDS_STATE, "--loglevel", "NOTICE", "--disable_vanguards"];
     println!("Starting Vanguards: {} {}", health::GUARDS_ARGV0, args.join(" "));
-    ctx.self_cmd(health::GUARDS_ARGV0, &args).spawn()
+    let mut c = ctx.confined(health::GUARDS_ARGV0, &args, &landlock::guards_rules());
+    c.cmd.spawn()
 }
 
 fn start_upload_watcher(ctx: &Ctx) -> std::io::Result<Child> {
-    ctx.self_cmd("hiddenforge-upload-watch", &["healthcheck", "--watch-uploads"]).spawn()
+    let mut c = ctx.confined("hiddenforge-upload-watch", &["healthcheck", "--watch-uploads"], &landlock::watcher_rules());
+    c.cmd.spawn()
 }
 
 pub fn run() -> i32 {
@@ -163,15 +212,17 @@ pub fn run() -> i32 {
         return 1;
     };
     let root = privs::is_root();
-    let ctx = Ctx {
+    let mut ctx = Ctx {
         tor: root.then_some(AsUser { uid: tor_uid, gid: tor_gid }),
         home: if home.is_empty() { DATA_DIR.into() } else { home },
         exe: privs::self_exe(),
+        landlock: false,
     };
 
     if root {
         // _assert_can_drop_privileges: one probe turns an RLIMIT_NPROC failure into a named error.
-        let probe = privs::run_timeout(ctx.self_cmd("hiddenforge", &["__true"]), Duration::from_secs(10));
+        let pc = ctx.self_cmd("hiddenforge", &["__true"]);
+        let probe = privs::run_timeout(pc.cmd, Duration::from_secs(10));
         let failed = match &probe {
             Ok((Some(0), _, _)) => None,
             Ok((_, _, err)) => Some(String::from_utf8_lossy(err).trim().to_string()),
@@ -282,6 +333,15 @@ pub fn run() -> i32 {
     }
     say(&mut log);
 
+    // ── Landlock: confine the supervisor (and so Tor) to what they use ──────
+    match landlock::build(&landlock::supervisor_rules(), false).and_then(|r| r.enforce().map(|()| r.abi)) {
+        Ok(abi) => {
+            ctx.landlock = true;
+            println!("Landlock enforced (ABI {abi}): filesystem access limited to what Tor and the supervisor use; helpers have no TCP.");
+        }
+        Err(e) => println!("Note: Landlock not applied ({e}); continuing with the capability, seccomp and sandbox layers."),
+    }
+
     // ── Start Tor ───────────────────────────────────────────────────────────
     println!("Starting Tor...");
     let mut tor = match privs::command("tor", None, &["-f", TORRC_PATH], ctx.tor, &ctx.home).spawn() {
@@ -377,7 +437,7 @@ pub fn run() -> i32 {
         let read_as_tor = |path: &str| -> Option<Vec<u8>> {
             ctx.tor?; // only meaningful when we are root and tor is someone else
             let c = ctx.self_cmd("hiddenforge", &["__read-hostname", path]);
-            match privs::run_timeout(c, Duration::from_secs(10)) {
+            match privs::run_timeout(c.cmd, Duration::from_secs(10)) {
                 Ok((Some(0), out, _)) => Some(out),
                 _ => None,
             }
