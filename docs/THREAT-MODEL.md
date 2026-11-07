@@ -151,9 +151,10 @@ identity. The README has the operational version of this list.
   files carry a comment so the ulimit is not re-added.
 - **Multi-arch.** The image is one two-platform index (amd64 and arm64). The
   arm64 half is built under qemu emulation and reproduces to the same index
-  digest. It boots and publishes an address under qemu user emulation with
-  `TOR_SANDBOX=0` (qemu cannot load Tor's seccomp filter), but it has not run on
-  real ARM hardware.
+  digest. In a full-system arm64 VM (Debian 13, aarch64 kernel 6.12, emulated
+  CPU) the shipped compose file brought it healthy in 62 seconds with Tor at uid
+  100, no capabilities and both seccomp filters loaded, and it served HTTP 200
+  over Tor. It has not run on real ARM hardware.
   See `docs/PRODUCTION-READINESS.md` R1 and R6.
 - **Host-mode CI runner.** Jobs run as the operator on the workstation, so the
   workflow guards against fork pull requests (fail-closed). A compromised

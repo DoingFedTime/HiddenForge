@@ -247,7 +247,7 @@ just starts Tor. The full list of changes is in the [CHANGELOG](CHANGELOG.md).
 |---|---|
 | 2.1.1 shipped `/opt/hiddenforge` and `/usr/local/bin/tests` as mode 0644 | Fixed in 2.1.2 and later. Do not deploy 2.1.1 |
 | 3.0.0 and 2.1.x have no hardware (SSH-FIDO2) signature | ML-DSA-65 only. `hiddenforge verify-image` needs `--allow-pq-only` and reports `complete: false` |
-| arm64 was tested under emulation | Not tested on real ARM hardware |
+| arm64 was tested in a full-system arm64 VM (real aarch64 kernel, emulated CPU) | Not tested on real ARM hardware |
 
 ## Not planned
 
