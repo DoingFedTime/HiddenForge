@@ -32,6 +32,7 @@ import os
 import shlex
 import socket
 import sys
+from typing import Any
 
 import yaml
 
@@ -40,11 +41,12 @@ for _p in (ROOT, os.path.join(ROOT, "tests")):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-# Populated by _load(); module globals so TestOneInput can reach them.
-e = None
-hf = None
-vanity = None
-ALLOWED_DIRECTIVES = frozenset()
+# Populated by _load(); module globals so TestOneInput can reach them. Typed
+# Any: they are modules (and a set) that only exist once _load() has run.
+e: Any = None
+hf: Any = None
+vanity: Any = None
+ALLOWED_DIRECTIVES: Any = frozenset()
 
 SERVICES = {"fuzz": ["80:127.0.0.1:8080"]}
 RUNTIMES = ("docker", "podman")
@@ -66,6 +68,8 @@ def _load() -> None:
     loader = importlib.machinery.SourceFileLoader(
         "hf_cli", os.path.join(ROOT, "scripts", "hiddenforge"))
     spec = importlib.util.spec_from_loader("hf_cli", loader)
+    if spec is None:
+        raise ImportError("cannot build a module spec for scripts/hiddenforge")
     _hf = importlib.util.module_from_spec(spec)
     loader.exec_module(_hf)
 
