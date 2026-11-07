@@ -294,9 +294,11 @@ mod tests {
         if pid == 0 {
             let rs = match build(&[(&dp, READ)], true) {
                 Ok(r) => r,
+                // SAFETY: _exit(2) in the forked child; no destructors are owed.
                 Err(_) => unsafe { libc::_exit(3) },
             };
             if rs.enforce().is_err() {
+                // SAFETY: as above.
                 unsafe { libc::_exit(4) };
             }
             let inside = std::fs::read(format!("{dp}/ok")).is_ok();
@@ -304,6 +306,7 @@ mod tests {
                 std::fs::read("/etc/hostname").is_ok() || std::fs::read("/etc/passwd").is_ok();
             let write = std::fs::write(format!("{dp}/new"), b"y").is_ok();
             let tcp = std::net::TcpStream::connect("127.0.0.1:9").is_ok();
+            // SAFETY: as above.
             unsafe {
                 libc::_exit(if inside && !outside && !write && !tcp {
                     0

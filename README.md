@@ -1,6 +1,6 @@
 # HiddenForge
 
-**Latest release: [2.1.6](https://sambent.dev/sam/HiddenForge/releases/tag/v2.1.6) (2026-11-03).**
+**Latest release: [3.0.0](https://sambent.dev/sam/HiddenForge/releases/tag/v3.0.0).**
 
 I run my own services as onion services, and I wanted one container that gets
 the Tor side right and that anyone can check: pinned inputs, signed releases and
@@ -18,10 +18,10 @@ one. Verify what you pulled with the
 [verification guide](https://sambent.dev/sam/HiddenForge/wiki/Verifying-the-Image).
 The full guide is in the [wiki](https://sambent.dev/sam/HiddenForge/wiki).
 
-> **Upgrading from 2.0.4?** Your keys and onion address carry over, but a copy of
-> the 2.0.4 compose file will not pick up the changes. Read
-> [Upgrading from 2.0.4](#upgrading-from-204) first. Upgrading from 2.1.0,
-> any 2.1.x release to 2.1.6 needs nothing: same compose file, same keys, same address.
+> **Upgrading from 2.1.x?** Nothing to do: same compose file, same keys, same
+> address, same commands. See [Upgrading to 3.0](#upgrading-to-30).
+> **From 2.0.4?** Your keys carry over, but read
+> [Upgrading from 2.0.4](#upgrading-from-204) first.
 
 ![HiddenForge](docs/img/hiddenforge.webp)
 
@@ -52,12 +52,16 @@ network-isolated and never exposed to the internet.
 The compose file pulls `:latest`. Run `hiddenforge verify-image` before you
 deploy, and pin the verified digest if you want a deployment that never moves.
 
-**What it is:** a hardened Tor hidden service container: Tor 0.4.9.15 on Alpine
-3.23 with Tor's built-in vanguards-lite pinned on, plus the Vanguards addon's
-bandguards and rendguard attack detectors. Every directly installed dependency is
-pinned (pip ones by SHA256, apk ones against Alpine's signed index) and the build
-is reproducible. It is built against a state-level adversary; the assumptions and
-their limits are in [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md).
+**What it is:** a hardened Tor onion service container. Tor 0.4.9.16, compiled
+from Tor Project's signed source, on Docker Hardened Images' minimal `static`
+base, with Tor's vanguards-lite pinned on and native bandguards and rendguard
+attack detectors. The image holds Tor, its libraries and one small Rust binary:
+no shell, no package manager, no Python. Zero known vulnerabilities at every
+severity, from two scanners. It is built offline from a locked set of verified
+inputs, and the build is reproducible. It is built against a state-level
+adversary; the assumptions and their limits are in
+[docs/THREAT-MODEL.md](docs/THREAT-MODEL.md), and how it maps to NIST and CIS
+guidance is in [docs/COMPLIANCE.md](docs/COMPLIANCE.md).
 
 ## The compose files
 
@@ -166,6 +170,34 @@ The only two edits you need to make are flagged with `<-- EDIT`.
 
 ---
 
+## Upgrading to 3.0
+
+From any 2.1.x release: pull the new image and recreate the container. The
+compose files, the key volume, the `*_TOR_SERVICE_HOSTS` lines, the onion
+address and every command you run (`cat` of the hostname, `su-exec tor ...`,
+`hiddenforge ...`) work as before. Upgrading a 2.1.6 volume to 3.0 and rolling
+it back were both tested with the same key.
+
+What changed is inside the image: there is no shell or Python any more, so a
+command that is not one 2.x documented, such as `docker exec tor sh`, is
+refused with a message naming the 3.0 command. The full list is in the
+[CHANGELOG](CHANGELOG.md).
+
+Two hardening options are new in 3.0, both off by default:
+
+| Option | What it does | How |
+|---|---|---|
+| No-root mode | The container starts as the tor user with no capabilities at all; nothing ever runs as root | `hiddenforge setup --no-root` |
+| Key encryption at rest | The service key is kept on the volume only encrypted (AES-256-GCM, scrypt), and decrypted into RAM at every start | `hiddenforge setup --encrypt-keys`. The generated `deploy.sh` creates a random passphrase in `./key-passphrase.txt` if there is none |
+
+Key encryption protects a volume, disk or backup taken while the service is
+stopped. It does not protect a running host, and it protects nothing if the
+passphrase file sits on the same disk. Back the passphrase up separately: without
+it the address is gone. To turn it off (or before rolling back to 2.1.6, which
+cannot read a sealed key), stop the service and run
+`hiddenforge unseal-keys --keys ./tor-keys --name myapp --passphrase-file ./key-passphrase.txt`,
+then remove the passphrase lines from the compose file.
+
 ## Upgrading from 2.0.4
 
 Your key directory and `*_TOR_SERVICE_HOSTS` lines carry over unchanged, and the
@@ -192,88 +224,40 @@ just starts Tor. The full list of changes is in the [CHANGELOG](CHANGELOG.md).
 | Issue | Status |
 |---|---|
 | 2.1.1 shipped `/opt/hiddenforge` and `/usr/local/bin/tests` as mode 0644 | Fixed in 2.1.2 and later. Do not deploy 2.1.1 |
-| 2.1.x has no hardware (SSH-FIDO2) signature | ML-DSA-65 only. `hiddenforge verify-image` needs `--allow-pq-only` and reports `complete: false` |
-| arm64 was tested under emulation and in an emulated full-system VM | Not tested on real ARM hardware |
-| Under the shipped Podman file, `<name>.onion` is not written to the key volume | By design; see [Rootless Podman](#rootless-podman-recommended-for-high-risk-deployments) |
+| 3.0.0 and 2.1.x have no hardware (SSH-FIDO2) signature | ML-DSA-65 only. `hiddenforge verify-image` needs `--allow-pq-only` and reports `complete: false` |
+| arm64 was tested under emulation | Not tested on real ARM hardware |
 
 ## Not planned
 
 | Decision |
 |---|
-| No desktop installer and no web setup wizard: the CLI and compose files are the interface |
+| No desktop installer and no hosted setup page. The setup wizard is one offline file (`wizard/hiddenforge-wizard.html`) that makes no network request |
 | No cosign or Sigstore after 2.0.3: signatures are ML-DSA-65 plus SSH-FIDO2 |
 
 ## Supply Chain Security
 
 Supply chain attacks (xz-utils, PyPI package hijacks, compromised npm packages)
-make dependency pinning essential for security-sensitive software. HiddenForge
-pins the base image by digest and every package it installs directly by exact
-version. Their own apk dependencies resolve from the same Alpine branch at build
-time. The throwaway stage that compiles the vanity generator installs its
-compilers unpinned; only the hash-checked, statically linked binary it produces is
-kept in the image.
+are why the build trusts nothing it has not checked. 3.0 is built **offline**
+from a locked set of inputs; nothing is downloaded while the image builds.
 
-**What is pinned and why** (checked against the Dockerfile and `requirements.txt`
-on 2026-11-03, release 2.1.6):
-
-| Dependency | Pinned to | Why it matters |
+| Input | Where it comes from | How it is checked |
 |---|---|---|
-| Alpine base image | `alpine:3.23.5@sha256:...` | Digest pinning locks the exact OS bytes. A tag like `latest` or even `3.23.5` can be silently updated on the registry |
-| `tor` apk | `0.4.9.15-r0` | A tampered Tor binary could de-anonymise every circuit |
-| `python3` apk | `3.12.16-r0` | The Python runtime executes the entrypoint and Vanguards |
-| `su-exec` apk | `0.3-r0` | This binary performs the privilege drop to the `tor` user |
-| `openssl` apk | `3.5.9-r0` | Pinned explicitly rather than inherited from the base image, so a known-vulnerable OpenSSL cannot ride in with it |
-| `zlib` apk | `1.3.2-r1` | Pinned explicitly for the same reason: the base's `1.3.2-r0` has a heap overflow (CVE-2026-85091) in code Tor runs on data from relays |
-| `libexpat` apk | `2.10.0-r0` | Pinned explicitly for the same reason: the base's `2.9.0-r0` carries CVE-2026-117610 and CVE-2026-118370. Nothing in the image parses XML |
-| `musl` apk | `1.2.5-r24` | The C library everything links against. Pinned for the same reason: the base's `1.2.5-r23` carries CVE-2026-107891 |
-| `musl-utils` apk | `1.2.5-r24` | musl's tools, moved with it |
-| `py3-pip` apk | `25.1.1-r1` | Build-only; pinned so it can't be updated to a version that silently ignores `--require-hashes` |
-| `mkp224o` source | commit `5172c0fd` + SHA256 | The vanity generator, vendored as a tarball the Dockerfile hash-checks before building it |
-| `vanguards` pip | `0.3.1` + SHA256 | Guard protection addon; a compromised version could leak circuit topology |
-| `stem` pip | `1.8.2` + SHA256 | Tor controller library; underpins all Vanguards communication |
-| `setuptools` pip | `84.0.0` + SHA256 | Build dep for stem; uninstalled post-build but listed for hash verification completeness |
+| Base image | `dhi.io/static` (Docker Hardened Images), by digest | Docker's signed provenance verified when the digest was adopted. Used unchanged: the image is that base plus one layer |
+| Builder images | DHI python dev and DHI rust dev, by digest | Same |
+| Tor 0.4.9.16 | Tor Project's release tarball | Its SHA-256 file is signed by Tor's release keys, pinned in `signatures/tor-release-keys.gpg`; the build checks the hash again |
+| Tor's libraries and the build tools | DHI's apk repository (zlib from Alpine's) | Each package index is RSA-signed by a key pinned in `signatures/`; each package must match the checksum its signed index lists |
+| `libc` crate (the Rust binary's only dependency) | crates.io, vendored | The checksum `Cargo.lock` pins |
+| mkp224o | vendored source | SHA-256 in the `Dockerfile` |
 
-**How hash verification works.** pip's `--require-hashes` flag makes the build
-abort if any downloaded file's SHA256 does not match what is recorded in
-`requirements.txt`. A compromised PyPI package, even one with the correct version
-number, cannot enter the image silently.
+`build-inputs.sha256` lists every input file with its hash. Before a build,
+`scripts/build_inputs.py verify <dir>` refuses an archive that differs from it
+in any file, then runs every check above. An older archive, even one where
+everything is validly signed, fails at the first step.
 
-**How apk packages are verified.** apk packages are not pinned by an explicit
-SHA256 in the Dockerfile the way pip packages are, but they are not unverified.
-apk authenticates every package against a signed package index (`APKINDEX.tar.gz`,
-validated against the Alpine signing keys in `/etc/apk/keys`), and each package
-record carries a checksum anchored by that signed index. The legacy index
-signature is SHA1-based, so the practical integrity anchor is the signed index
-plus the exact-version pin, not the hash algorithm.
-
-This has a limit. `apk add --no-cache` fetches the index from
-`dl-cdn.alpinelinux.org` at build time, and digest-pinning the base image does
-not freeze it. The exact-version pin (`=3.12.16-r0`) still makes the resolved
-package deterministic: apk installs that version or fails, never a silently newer
-one. But Alpine prunes superseded versions from the index, so a pin that was valid
-at release time stops resolving once a security update lands. The build then fails
-instead of drifting.
-
-That failure is intended. A source build of an older tag may not reproduce, and
-pins have to be refreshed whenever Alpine ships an update. It has happened
-repeatedly: `tor=0.4.9.8-r0` (fixed in 2.0.2), `python3=3.12.13-r0`
-(fixed in 2.0.4), and during 2.1.0 development `tor=0.4.9.11-r0`,
-`tor=0.4.9.12-r0`, then `tor=0.4.9.13-r0`, `python3=3.12.14-r0` and
-`openssl=3.5.8-r0` together (all fixed in 2.1.0), then `python3=3.12.15-r0` (fixed in 2.1.3) and `tor=0.4.9.14-r0` (fixed in 2.1.4). A scheduled CI job
-(`pin-freshness`) checks every pin against the live index, so the next one is
-caught before a build needs it.
-
-**Updating pinned versions.** Do not just change version numbers. Verify the new
-hashes first:
-
-```bash
-# Get the new SHA256 for a pip package:
-pip download vanguards==0.3.2 -d /tmp/dl --no-deps
-sha256sum /tmp/dl/vanguards-0.3.2*.whl
-
-# Then update requirements.txt with the new version and hash,
-# rebuild, and verify the build passes before deploying.
-```
+This replaces 2.x's exact-version apk pins. Alpine removes superseded packages
+from its index, and every time it did a 2.x build stopped resolving. The 3.0
+inputs are archived for the current release and the one before it, so that can
+no longer happen. The full list is in [docs/DEPENDENCIES.md](docs/DEPENDENCIES.md).
 
 ---
 
@@ -285,7 +269,7 @@ you verify the image you pull.
 Releases are signed over the image digest with a post-quantum **ML-DSA-65**
 signature (FIPS 204) and, when the hardware key is available, an **SSH-FIDO2**
 YubiKey signature. Neither depends on an outside service or a transparency log.
-The files are in `signatures/`. **2.1.6 carries the ML-DSA-65 signature only.**
+The files are in `signatures/`. **3.0.0 carries the ML-DSA-65 signature only.**
 There is no hardware signature for it, so `hiddenforge verify-image` needs
 `--allow-pq-only` and reports `complete: false`.
 
@@ -303,8 +287,8 @@ from the root of this repository or pass `--sigdir`. `sbom` runs on the host: it
 drives a digest-pinned syft container through the Docker socket, which the image
 deliberately does not have.
 
-The signed digest for 2.1.6 is
-`sha256:1127470c84f461004dbca2f35e45c20e5fb669dddde05b13d433ce040692979c`. Signature
+The signed digest for 3.0.0 is
+`sha256:RELEASE-DIGEST`. Signature
 files verify against whatever public key sits beside them, so the keys are the
 trust anchor. They must match these values, which are also pinned in
 `scripts/hiddenforge`:
@@ -319,7 +303,26 @@ Releases up to 2.0.3 also carried a cosign signature; `cosign.pub` stays in the
 repository so those releases remain verifiable. Later releases do not use it.
 
 Verify from `master`, not from a release tag: signatures are committed after the
-tag they sign. The step-by-step procedure, the manual `openssl` and `ssh-keygen`
+tag they sign.
+
+**Reproduce it yourself.** The build inputs for each release are published as
+one archive. Fetch and verify it, then build from the release tag; the digest
+must match the signed one:
+
+```bash
+git checkout v3.0.0
+python3 scripts/build_inputs.py fetch \
+  https://sambent.dev/api/packages/sam/generic/hiddenforge-inputs/3.0.0/hiddenforge-inputs-3.0.0.tar ./inputs
+docker buildx create --name hf-repro --driver docker-container \
+  --driver-opt image=moby/buildkit@sha256:0168606be2315b7c807a03b3d8aa79beefdb31c98740cebdffdfeebf31190c9f
+docker buildx build --builder hf-repro --no-cache --provenance=false \
+  --platform linux/amd64,linux/arm64 --build-context inputs=./inputs \
+  --build-arg SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) \
+  --output type=oci,dest=hf.tar,rewrite-timestamp=true .
+```
+
+Building the arm64 half on an x86_64 machine needs QEMU user emulation
+(`binfmt_misc`) on the host. The step-by-step procedure, the manual `openssl` and `ssh-keygen`
 checks, and how to reproduce the build are in the wiki:
 
 **→ [Verifying the Image](https://sambent.dev/sam/HiddenForge/wiki/Verifying-the-Image)**
@@ -457,13 +460,12 @@ What to know before you rely on it:
 
 - **Use Docker Compose v2 on the Podman socket.** `podman-compose` skips
   `memswap_limit` in every version and `pids_limit` before 1.1.
-- **Read the address with `su-exec tor`.** The Podman file drops `DAC_OVERRIDE`
-  and `FOWNER`, so a root exec cannot traverse the tor-owned key directory. Do not
-  add the capability back to make a permission error go away.
-- **The `<name>.onion` file is not written under the shipped Podman file**, so
-  `hiddenforge show` reports the address as not published. The address is still
-  served. A fragment from `hiddenforge setup --runtime podman` keeps all five
-  capabilities, and there the file is written.
+- **The Podman file drops `DAC_OVERRIDE` and `FOWNER`**, so a root exec cannot
+  traverse the tor-owned key directory. `hiddenforge show` and `doctor` switch
+  to the tor user for the read by themselves; for `cat`, use `su-exec tor` as
+  above. Do not add the capabilities back to make a permission error go away.
+- **The `<name>.onion` file is written** to the key volume under the Podman
+  file too (2.1.x could not).
 - **There is no healthcheck under Podman.** Rootless Podman 4.9 never restarts a
   container that has one when no systemd user manager is reachable, and this
   container heals itself by exiting and being restarted.
@@ -484,24 +486,26 @@ podman info --format '{{.Host.Security.Rootless}}'   # expected: true
 
 | Layer | Mechanism |
 |---|---|
-| Syscall filtering | `Sandbox 1` (seccomp-bpf) |
-| Privilege drop | `su-exec tor` for Tor and Vanguards |
-| Debugger blocking | `DisableDebuggerAttachment 1` |
+| Minimal image | DHI `static` base, unchanged, plus Tor, its libraries and one binary. No shell, package manager or interpreter; no setuid file |
+| Syscall filtering | Engine default seccomp profile, with Tor's `Sandbox 1` stacked under it |
+| Filesystem confinement | Landlock: the supervisor confines itself after start-up; each helper gets a stricter domain with TCP denied |
+| Privilege drop | Tor and the guard monitors run as uid 100 with no capabilities. The supervisor keeps only what republishing the address needs: measured `CapEff 0xc2` under Docker, `0xc0` under rootless Podman, and no `CAP_KILL` |
+| No-root mode (opt-in) | `setup --no-root`: the container starts as uid 100 with no capabilities; nothing runs as root |
+| Key encryption at rest (opt-in) | `setup --encrypt-keys`: AES-256-GCM, scrypt-derived key, decrypted only into RAM |
+| No core dumps | `RLIMIT_CORE` 0 and not dumpable for every HiddenForge process; `DisableDebuggerAttachment 1` for Tor |
 | Disk minimisation | `AvoidDiskWrites 1` |
 | Log scrubbing | `SafeLogging 1` |
 | DoS defence (rendezvous) | `HiddenServicePoWDefensesEnabled 1` per service |
 | DoS defence (intro point) | `HiddenServiceEnableIntroDoSDefense 1` (rate 25/s, burst 200) |
 | Circuit overload | `HiddenServiceMaxStreams 100`, `HiddenServiceMaxStreamsCloseCircuit 1` |
-| Guard protection | Vanguards addon (bandguards + rendguard) + built-in vanguards-lite, pinned with `VanguardsLiteEnabled 1` so it cannot be switched off by a consensus parameter (**L2 only**; see the [Security Model](https://sambent.dev/sam/HiddenForge/wiki/Security-Model) wiki page for the L3 limitation on long-lived services) |
-| Key-volume tampering | Privileged startup chown/chmod refuse to follow symlinks out of the hidden-service directory |
-| No relay/exit | `ClientOnly 1`, `ExitPolicy reject *:*` |
-| No telemetry | pip/setuptools/urllib3 stripped from final image (Python stdlib remains) |
-| Input validation | All env vars validated before torrc write |
-| Supply chain | Base image by digest; every directly installed apk package by exact version; pip packages and the vendored generator source by SHA256 |
-| Base image | Alpine 3.23.5 digest-pinned |
-| Host isolation (optional) | Rootless Podman: container escape = host user, not real root |
+| Guard protection | Tor's vanguards-lite, pinned with `VanguardsLiteEnabled 1` so a consensus parameter cannot switch it off, plus native bandguards and rendguard detectors (**L2 only**; see the [Security Model](https://sambent.dev/sam/HiddenForge/wiki/Security-Model) wiki page for the L3 limitation on long-lived services) |
+| Key-volume tampering | Privileged start-up chown/chmod refuse to follow symlinks out of the hidden-service directory |
+| No relay or exit | Relay code compiled out of Tor; `ClientOnly 1`, `ExitPolicy reject *:*` |
+| Input validation | All environment variables validated before the torrc is written |
+| Supply chain | Offline build from locked, signature-checked inputs; reproducible; zero known vulnerabilities from two scanners |
+| Host isolation (optional) | Rootless Podman: a container escape lands in an unprivileged host user |
 
-**Tor version: 0.4.9.15** (2.1.x; the published 2.0.4 image runs 0.4.9.11)
+**Tor version: 0.4.9.16** (3.0; 2.1.6 runs 0.4.9.15)
 
 ## Documentation
 
@@ -511,15 +515,15 @@ podman info --format '{{.Host.Security.Rootless}}'   # expected: true
 | [docs/INTEGRATION.md](docs/INTEGRATION.md) | Using HiddenForge from another project; compose differences |
 | [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md) | What it defends against and what it does not |
 | [docs/CI.md](docs/CI.md) | What each CI job checks and when it runs |
-| [docs/DEPENDENCIES.md](docs/DEPENDENCIES.md) | Every pinned dependency and its status |
+| [docs/DEPENDENCIES.md](docs/DEPENDENCIES.md) | Every build input and how it is checked |
+| [docs/COMPLIANCE.md](docs/COMPLIANCE.md) | How it maps to NIST SP 800-190, 800-218, 800-53, 800-57, SLSA and CIS |
 | [docs/PRODUCTION-READINESS.md](docs/PRODUCTION-READINESS.md) | The release checks and the commit each was measured on |
 | [docs/IMPROVEMENTS.md](docs/IMPROVEMENTS.md) | Historical: design decisions through 2.1.0 |
 | [SECURITY.md](SECURITY.md) | Supported versions and how to report a vulnerability |
 | [CHANGELOG.md](CHANGELOG.md) | Every release |
 
-Both registries served the same digest when this page was last checked
-(2026-11-03). Mutation testing runs on tags and nightly, and the pin-freshness
-check runs nightly.
+Mutation testing runs on tags and nightly. The input-integrity check runs
+nightly.
 
 ## License
 

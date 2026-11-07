@@ -4,8 +4,9 @@
 
 | Version | Supported |
 |---|---|
-| 2.1.x | Yes. Use 2.1.6: 2.1.1 ships `/opt/hiddenforge` and `/usr/local/bin/tests` as mode 0644, so no non-root user can enter them |
-| 2.0.x | No, upgrade to 2.1. 2.0.4's image carries known CVEs that 2.1.0 fixed: python3 3.12.14 (CVE-2026-19445, CVE-2026-19553, CVE-2026-82049), OpenSSL 3.5.7 (CVE-2026-14456 and others) and zlib 1.3.2-r0 (CVE-2026-85091); see the 2.1.0 entry in the [CHANGELOG](CHANGELOG.md). Its pinned packages are gone from Alpine, so it cannot be rebuilt |
+| 3.0.x | Yes |
+| 2.1.x | No. Upgrade to 3.0: it is a drop-in replacement (same compose files, keys, address and commands). 2.1.x images cannot be rebuilt from source any more, because their pinned Alpine packages have been pruned |
+| 2.0.x | No. 2.0.4's image carries known CVEs that 2.1.0 fixed; see the [CHANGELOG](CHANGELOG.md) |
 | 1.x | No |
 
 ## Reporting a Vulnerability
@@ -30,74 +31,51 @@ Please include:
 ## Scope
 
 In scope:
-- Dockerfile / build process
-- `entrypoint.py` logic and torrc generation
+- The Dockerfile, the build inputs and their verification (`scripts/build_inputs.py`)
+- The runtime binary (`hiddenforge-rs/`): torrc generation, the supervisor,
+  the guard monitors, key sealing, the 2.x compatibility names
 - The operator CLI (`scripts/hiddenforge`): `setup`'s generated files, key
-  handling in `backup`/`restore`/`encrypt-key`/`decrypt-key`/`vanity`, and
-  `verify-image`'s signature checking
+  handling in `backup`/`restore`/`encrypt-key`/`decrypt-key`/`unseal-keys`/`vanity`,
+  and `verify-image`'s signature checking
+- The offline setup wizard (`wizard/`)
 - Tor configuration hardening gaps
-- Supply chain / dependency issues
 - Container escape via misconfiguration
 
 Out of scope:
 - Vulnerabilities in Tor itself (report to the [Tor Project](https://gitlab.torproject.org/tpo/core/tor/-/issues))
-- Vulnerabilities in Vanguards (report to the [Vanguards repo](https://github.com/mikeperry-tor/vanguards))
+- Vulnerabilities in Docker Hardened Images packages (report to Docker)
 - Social engineering
 - Physical attacks on the host
 
 ## Accepted findings (and why)
 
-Static scanners flag three things here that are deliberate. All are recorded so a
-future reader does not "fix" them into a regression.
+Static scanners flag a few things here that are deliberate. They are recorded so
+a future reader does not "fix" them into a regression.
 
-**The container starts as root.** `hadolint`/Trivy DS-0002 and
-`semgrep dockerfile.security.missing-user-entrypoint` both want a `USER`
-instruction. The entrypoint needs root for exactly two things at startup: it
-chowns the operator's key bind mount to the `tor` user, and it uses `su-exec` to
-drop to `tor` before Tor and Vanguards run. A non-root `USER` would make both
-impossible. The processes that face the network (Tor, Vanguards) and the CLI
-commands that only read keys (`show`, `doctor`) run as `tor`. The supervisor
-itself stays root for the container's life, because it republishes the address
-and restarts Vanguards, but it never touches the network, and once setup is done
-it drops everything except what that needs: measured, it holds `DAC_OVERRIDE`,
-`SETUID` and `SETGID` under the Docker compose file (`CapEff 0xc2`) and only
-`SETUID` and `SETGID` under the Podman one (`0xc0`). Tor itself runs with no
-capabilities at all. The mitigations that matter are that capability set and
-`no-new-privileges`, which `hiddenforge doctor` verifies.
+**The image starts as root by default.** `hadolint`/Trivy DS-0002 want a non-root
+`USER`. At start-up the supervisor needs root for one job: handing the
+operator's key bind mount to the `tor` user (uid 100) and dropping to it before
+Tor and the guard monitors run. After that it keeps only what republishing the
+address needs. Measured: `CapEff 0xc2` (`DAC_OVERRIDE`, `SETUID`, `SETGID`) under
+the Docker compose file and `0xc0` under the Podman one; Tor and the monitors hold
+no capabilities at all, and the supervisor holds no `CAP_KILL`. It confines
+itself with Landlock and never touches the network. If you can hand the key
+directory to uid 100 yourself, `hiddenforge setup --no-root` starts the container
+as uid 100 with no capabilities, and nothing ever runs as root.
 
-**`setuptools` is listed in `requirements.txt` with a CVE against it.** It is a
-build-only dependency: `stem` is built from an sdist and needs it, and it is
-listed so `--require-hashes` can verify every downloaded file. It is uninstalled
-from the venv after the build (`pip uninstall -y pip setuptools wheel`), so it is
-not in the final image. Verified:
+**Names like `sh`, `cat`, `python3` and `su-exec` exist in an image with no
+shell, no coreutils and no Python.** They are the `hiddenforge` binary. Compose
+files, scripts and older CLIs run those exact commands inside the container
+(the healthcheck is `su-exec tor python3 /usr/local/bin/healthcheck.py`), so each
+name answers only the forms 2.x documented and refuses everything else
+(`hiddenforge-rs/src/compat.rs`). `sh -c` accepts exactly one script, the 2.1.x
+`doctor` probe, byte for byte. A scanner that sees `/bin/sh` is not seeing a
+shell.
 
-```bash
-docker run --rm --entrypoint python3 sambent.dev/sam/hiddenforge:latest -c \
-  "import setuptools"    # ModuleNotFoundError: No module named 'setuptools'
-```
-
-A finding against a package that does not ship is not a finding against the
-image, but the reason is written down rather than silently suppressed.
-
-**semgrep's `dangerous-subprocess-use`, `dangerous-os-exec` and
-`arbitrary-sleep` rules fire on this project.** All of them are structural false
-positives, and each was reviewed rather than waved away:
-
-- Every `subprocess` call uses a **fixed argv list** with `shell=False`, and no
-  value reaches it that has not already been validated or checked against a
-  fixed set. There is no string-built command anywhere.
-- `os.execvp` in `dispatch_subcommand` is how `docker run <image> show` becomes
-  the CLI instead of booting Tor. It execs a fixed in-image path with the
-  operator's arguments and no shell. It is deliberate: replacing PID 1 keeps
-  signals (`docker stop`) going straight to the CLI, which matters when a
-  `vanity` search runs for hours.
-- The `time.sleep` calls are the polling loops in `wait_for_socket` and the
-  Vanguards supervisor. They are bounded and part of the control flow, not a
-  delay primitive.
-
-These are recorded per rule so a future run does not re-litigate them, and so
-that nobody "fixes" the exec into a subprocess call and loses the signal
-behaviour.
+**`unsafe` in the Rust binary.** Every `unsafe` block is a system call or an
+OpenSSL call through `libc`, with a `SAFETY:` comment saying why the arguments
+are valid. The binary depends on no other crate, so there is no unsafe code it
+did not write itself.
 
 ## Repository history
 

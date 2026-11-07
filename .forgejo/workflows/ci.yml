@@ -84,7 +84,7 @@ jobs:
         run: |
           cd hiddenforge-rs
           cargo fmt --check
-          cargo clippy --release --locked -- -D warnings
+          cargo clippy --release --locked --all-targets -- -D warnings
       - name: wizard is built from its sources and its script parses
         run: |
           node --check wizard/render.js

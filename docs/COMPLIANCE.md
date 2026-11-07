@@ -57,7 +57,7 @@ Section 4 lists the risks; section 5 the countermeasures. One row per risk.
 | PW.4 Reuse well-secured software | Met | Hardened vendor base images; Tor from its developers' signed release; one Rust crate (`libc`). | `Dockerfile`; `hiddenforge-rs/Cargo.lock` |
 | PW.6 Compiler and build hardening | Met | Tor: `-D_FORTIFY_SOURCE=3` with fortify-headers, `-fstack-clash-protection`. Rust: overflow checks on in release, `panic = "abort"`, LTO. Control-flow integrity (CET) is not available on musl. | `Dockerfile`; `hiddenforge-rs/Cargo.toml` |
 | PW.7 Review and analyse code | Met | `cargo clippy -D warnings`, `cargo fmt --check`, ruff; the Rust runtime was checked against the 2.x Python reference by differential tests. | CI |
-| PW.8 Test executable code | Met | Unit tests, differential tests (torrc, setup, wizard, guard decisions), live end-to-end tests on Docker and rootless Podman. Mutation testing runs on changed code. | `tests/`; CI |
+| PW.8 Test executable code | Partial | Unit tests, differential tests (torrc, setup, wizard, guard decisions), live end-to-end tests on Docker and rootless Podman. Mutation testing covers the 2.x Python reference the differential tests compare against; the Rust runtime has not been mutation-tested yet. | `tests/`; CI |
 | PW.9 Secure defaults | Met | The shipped compose files are the hardened configuration; nothing needs turning on. | compose files |
 | RV.1 Identify vulnerabilities continuously | Met | Nightly rescan at every severity; SECURITY.md reporting channel. | watchdog; `SECURITY.md` |
 | RV.2 Assess, prioritise and remediate | Met | Response timeline in SECURITY.md; a finding in the published image triggers a release. | `SECURITY.md` |
@@ -73,7 +73,7 @@ Section 4 lists the risks; section 5 the countermeasures. One row per risk.
 | CM-14 Signed components | Met | Package indexes verified against pinned DHI and Alpine keys; Tor against Tor's release keys; the release image is signed. | `scripts/build_inputs.py`; `signatures/` |
 | RA-5 Vulnerability monitoring and scanning | Met | Two scanners at build; nightly rescan of the published image. | CI; watchdog |
 | SA-10 Developer configuration management | Met | All changes through version control; release tags; CHANGELOG. | repository |
-| SA-11 Developer testing and evaluation | Met | See SSDF PW.7 and PW.8. | CI |
+| SA-11 Developer testing and evaluation | Partial | See SSDF PW.7 and PW.8 (the Rust runtime is not yet mutation-tested). | CI |
 | SC-28 Protection of information at rest | Partial | Opt-in: service keys sealed with AES-256-GCM under an scrypt-derived key, decrypted only into RAM. Off by default, and it protects a stopped volume or a backup, not a running host or a passphrase kept beside the volume. | `hiddenforge-rs/src/keycrypt.rs`, `sealed.rs` |
 | SC-39 Process isolation | Met | Separate users, Landlock domains per helper, seccomp, no ptrace. | `hiddenforge-rs/src/landlock.rs` |
 | SI-2 Flaw remediation | Met | Tor is compiled from source, so a Tor security release ships without waiting for a distribution package. | `Dockerfile` |

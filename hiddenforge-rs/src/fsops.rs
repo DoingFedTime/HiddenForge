@@ -724,7 +724,7 @@ mod tests {
         let mut log = vec![];
         let kfd = open_dir_nofollow(&d).unwrap();
         publish_addresses(
-            &[svc.clone()],
+            std::slice::from_ref(&svc),
             &d,
             &kfd,
             &mut || true,
@@ -738,7 +738,7 @@ mod tests {
         std::fs::write(format!("{svc}/hostname"), format!("{onion}\n")).unwrap();
         let mut log = vec![];
         publish_addresses(
-            &[svc.clone()],
+            std::slice::from_ref(&svc),
             &d,
             &kfd,
             &mut || false,
