@@ -1,9 +1,12 @@
 # CI
 
 HiddenForge's CI runs on **Forgejo Actions** on `sambent.dev`; nothing runs on
-GitHub. The workflow does fetch two pinned actions from github.com
-(`actions/checkout`, `hadolint-action`), `upload-artifact` from code.forgejo.org,
-and its scanner images from Docker Hub.
+GitHub. The workflow fetches one pinned action from github.com
+(`actions/checkout`) and `upload-artifact` from code.forgejo.org. Every tool
+container (hadolint, trivy, grype, semgrep, gitleaks) comes from this project's
+own registry, `sambent.dev/sambent/hf-tools-*`, copied byte for byte from its
+publisher and pinned by the publisher's digest. trivy and grype download their
+vulnerability databases from their publishers when they run.
 The workflow runs on a self-hosted runner, which is where the build and the
 tests happen.
 
@@ -13,7 +16,7 @@ tests happen.
 
 | Job | What it does |
 |---|---|
-| `lint` | hadolint (threshold `warning`); `cargo fmt --check` and `cargo clippy --all-targets -D warnings` for the runtime; the wizard is rebuilt from its sources and must match (`wizard/build.py --check`); `ruff`, `py_compile` incl. the extensionless CLI, `mypy` over sources *and* tests, `tests/test_version_consistency.py`, and `docker compose config -q` on both shipped compose files |
+| `lint` | hadolint (threshold `warning`, rules that cannot apply listed in `.hadolint.yaml`); `cargo fmt --check` and `cargo clippy --all-targets -D warnings` for the runtime; the wizard is rebuilt from its sources and must match (`wizard/build.py --check`); `ruff`, `py_compile` incl. the extensionless CLI, `mypy` over sources *and* tests, `tests/test_version_consistency.py`, and `docker compose config -q` on both shipped compose files |
 | `unit` | host unit + property tests with the coverage floor enforced; `cargo test`; the differential tests that hold the Rust runtime to the 2.x reference (torrc, `setup`, the guard monitors' decisions) and the wizard to `setup`; `manifest.json` is checked against the code; `scripts/mutation_spotcheck.py` |
 | `mutation (tags and nightly)` | a full `mutmut run` over the 2.x Python reference (`entrypoint.py`, `healthcheck.py`, `vanity.py`), then `scripts/mutation_gate.py`: every mutant that survives must be explained in the gate's allowlist or the job fails. The gate also re-runs each mutant mutmut recorded as a `timeout` on its own, because that label is a wall-clock bound rather than a verdict; a mutant that really hangs must be named in `DOCUMENTED_HANGS`. Tag/schedule only. See `review/MUTATION-2026-09-18.md` |
 | `build-and-test` | verifies the build inputs, builds the image offline from them, checks the generated torrc is accepted by the image's Tor, checks the 2.x compatibility forms (and that `sh -c id` and `python3 -c` are refused), the CLI contract, a vanity smoke test, and the live acceptance suite (`HIDDENFORGE_E2E=1`) |

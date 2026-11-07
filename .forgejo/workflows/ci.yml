@@ -24,9 +24,16 @@
 # The host is part of the pin. A short name like `actions/checkout` resolves
 # against the instance's DEFAULT_ACTIONS_URL, a value this repository cannot
 # read, so the pin would only be as reproducible as an out-of-band setting. All
-# of them are therefore written as full URLs: `actions/checkout` and
-# `hadolint/hadolint-action` from github.com, `forgejo/upload-artifact` from
-# code.forgejo.org (it does not exist on github.com).
+# of them are therefore written as full URLs: `actions/checkout` from
+# github.com, `forgejo/upload-artifact` from code.forgejo.org (it does not exist
+# on github.com).
+#
+# Every tool CONTAINER comes from the project's own registry
+# (sambent.dev/sambent/hf-tools-*), copied byte for byte from its publisher: the
+# digest here is the publisher's digest, so a copy that differed would not
+# match. trivy and grype still download their vulnerability databases from
+# their publishers at run time; a scan against a stale local copy would be the
+# worse risk.
 name: ci
 
 on:
@@ -66,16 +73,12 @@ jobs:
     steps:
       - uses: https://github.com/actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: hadolint Dockerfile
-        # Fully-qualified GitHub URL, deliberately. `hadolint/hadolint-action`
-        # does NOT exist on code.forgejo.org (verified with git ls-remote), and
-        # the runner resolves short action names against the instance's
-        # DEFAULT_ACTIONS_URL. Which of those two it is cannot be seen from the
-        # repository, so this step must not depend on the answer. i2pforge, on
-        # the same runner, calls the host `hadolint` binary for the same reason.
-        uses: https://github.com/hadolint/hadolint-action@54c9adbab1582c2ef04b2016b760714a4bfde3cf # v3.1.0
-        with:
-          dockerfile: Dockerfile
-          failure-threshold: warning
+        # hadolint from the project's own registry, by digest (the image the
+        # upstream action wraps); .hadolint.yaml says which rules cannot apply.
+        run: |
+          docker run --rm -i -v "$PWD/.hadolint.yaml:/cfg.yaml:ro" \
+            sambent.dev/sambent/hf-tools-hadolint@sha256:a1d49ae1a4e83c1dbad26b8c1ad7588c8bd1e04f4866b34ad3cac50335198552 \
+            hadolint -c /cfg.yaml --failure-threshold warning - < Dockerfile
       - name: python syntax (the 2.x reference sources, the host CLI, the tools)
         run: |
           python3 -m py_compile entrypoint.py healthcheck.py vanity.py
@@ -286,7 +289,7 @@ jobs:
           mkdir -p security-reports
           docker run --rm \
             -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD:/src" \
-            aquasec/trivy@sha256:ab70a02200597efa04748f210f793936eb647cbcdb0ea69cc30b226d6f5a22c7 image \
+            sambent.dev/sambent/hf-tools-trivy@sha256:ab70a02200597efa04748f210f793936eb647cbcdb0ea69cc30b226d6f5a22c7 image \
             --exit-code 1 --scanners vuln \
             --format json --output /src/security-reports/trivy-image.json \
             sambent.dev/sam/hiddenforge:ci
@@ -296,13 +299,13 @@ jobs:
           # trivy reported 0 for 2.1.6 while grype found 19: one scanner's
           # database is a blind spot, so both must agree on zero.
           docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
-            anchore/grype@sha256:6a36234da13f9faa327306ac0b3dab3405cfa2b4eb20c8f904125a8707863913 \
+            sambent.dev/sambent/hf-tools-grype@sha256:6a36234da13f9faa327306ac0b3dab3405cfa2b4eb20c8f904125a8707863913 \
             docker:sambent.dev/sam/hiddenforge:ci --fail-on negligible
 
       - name: trivy fs (secrets and misconfiguration)
         run: |
           mkdir -p security-reports
-          docker run --rm -v "$PWD:/src" aquasec/trivy@sha256:ab70a02200597efa04748f210f793936eb647cbcdb0ea69cc30b226d6f5a22c7 fs \
+          docker run --rm -v "$PWD:/src" sambent.dev/sambent/hf-tools-trivy@sha256:ab70a02200597efa04748f210f793936eb647cbcdb0ea69cc30b226d6f5a22c7 fs \
             --scanners secret,misconfig --exit-code 1 --severity HIGH,CRITICAL \
             --ignorefile /src/.trivyignore \
             --format json --output /src/security-reports/trivy-fs.json /src
@@ -312,7 +315,7 @@ jobs:
           # The only excluded rule is the accepted root-at-PID1 design: the
           # container MUST start as root to chown the key mount and su-exec to
           # tor. See SECURITY.md. Everything else must be clean.
-          docker run --rm -v "$PWD:/src" semgrep/semgrep@sha256:7acf76eaa621465588fdfcc84f46fd7ea1e8337ebb1aa1ed6f4685f6eedaec25 semgrep \
+          docker run --rm -v "$PWD:/src" sambent.dev/sambent/hf-tools-semgrep@sha256:7acf76eaa621465588fdfcc84f46fd7ea1e8337ebb1aa1ed6f4685f6eedaec25 semgrep \
             --config=p/security-audit --config=p/dockerfile \
             --exclude-rule=dockerfile.security.missing-user-entrypoint.missing-user-entrypoint \
             --error --quiet /src
@@ -323,9 +326,9 @@ jobs:
           # was committed and later deleted would pass. The history scan is the
           # one that matters for a public repository; the tree scan also covers
           # anything the build left untracked.
-          docker run --rm -v "$PWD:/src" zricethezav/gitleaks@sha256:cdbb7c955abce02001a9f6c9f602fb195b7fadc1e812065883f695d1eeaba854 detect \
+          docker run --rm -v "$PWD:/src" sambent.dev/sambent/hf-tools-gitleaks@sha256:cdbb7c955abce02001a9f6c9f602fb195b7fadc1e812065883f695d1eeaba854 detect \
             --redact --config /src/.gitleaks.toml --source /src --log-opts="--all"
-          docker run --rm -v "$PWD:/src" zricethezav/gitleaks@sha256:cdbb7c955abce02001a9f6c9f602fb195b7fadc1e812065883f695d1eeaba854 detect \
+          docker run --rm -v "$PWD:/src" sambent.dev/sambent/hf-tools-gitleaks@sha256:cdbb7c955abce02001a9f6c9f602fb195b7fadc1e812065883f695d1eeaba854 detect \
             --no-git --redact --config /src/.gitleaks.toml --source /src
 
       - name: Upload security reports
