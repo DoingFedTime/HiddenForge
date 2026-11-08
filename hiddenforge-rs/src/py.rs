@@ -527,8 +527,13 @@ fn parse_value(b: &[u8], i: &mut usize, depth: usize) -> Option<Json> {
             if b[*i] == b'-' {
                 *i += 1;
             }
+            let digits = *i;
             while *i < b.len() && b[*i].is_ascii_digit() {
                 *i += 1;
+            }
+            // JSON (and json.loads) has no leading zeros: "0" yes, "01" no.
+            if b.get(digits) == Some(&b'0') && *i - digits > 1 {
+                return None;
             }
             std::str::from_utf8(&b[start..*i])
                 .ok()?
@@ -585,8 +590,12 @@ fn parse_string(b: &[u8], i: &mut usize) -> Option<String> {
                     b'r' => out.push(13),
                     b't' => out.push(9),
                     b'u' => {
-                        let hex = std::str::from_utf8(b.get(*i..*i + 4)?).ok()?;
-                        out.push(u16::from_str_radix(hex, 16).ok()?);
+                        let hex = b.get(*i..*i + 4)?;
+                        // Exactly four hex digits: from_str_radix alone accepts "+123".
+                        if !hex.iter().all(u8::is_ascii_hexdigit) {
+                            return None;
+                        }
+                        out.push(u16::from_str_radix(std::str::from_utf8(hex).ok()?, 16).ok()?);
                         *i += 4;
                     }
                     _ => return None,
@@ -601,6 +610,27 @@ fn parse_string(b: &[u8], i: &mut usize) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_rejects_what_json_loads_rejects() {
+        for bad in [
+            "\"\\u+123\"",
+            "\"\\u-123\"",
+            "01",
+            "-01",
+            "[00]",
+            "{\"a\": 012}",
+        ] {
+            assert_eq!(parse(bad), None, "{bad}");
+        }
+        assert_eq!(parse("0"), Some(Json::Int(0)));
+        assert_eq!(parse("-0"), Some(Json::Int(0)));
+        assert_eq!(
+            parse("[0, 10, -7]"),
+            Some(Json::Arr(vec![Json::Int(0), Json::Int(10), Json::Int(-7)]))
+        );
+        assert_eq!(parse("\"\\u00e9\\u00E9\""), Some(Json::Str("éé".into())));
+    }
 
     #[test]
     fn safe_matches_python() {
