@@ -76,19 +76,40 @@ fn cap_data(mask: u64) -> [CapData; 2] {
     [half(mask & 0xFFFF_FFFF), half(mask >> 32)]
 }
 
+/// What to ask capset for, given the permitted set the runtime granted: the
+/// mask narrowed to `held` (capset refuses a request that is not a subset), and
+/// the note to log when something was not granted.
+fn plan_drop(mask: u64, held: Option<u64>) -> (u64, Option<String>) {
+    let Some(held) = held else {
+        return (mask, None);
+    };
+    let wanted = mask & held;
+    let note = (wanted != mask).then(|| {
+        format!(
+            "Note: this runtime did not grant {}; dropping everything else regardless.",
+            missing_caps(mask, held).join(", ")
+        )
+    });
+    (wanted, note)
+}
+
+/// The line logged once the drop worked: what the supervisor kept.
+fn retained_summary(mask: u64) -> String {
+    let kept: Vec<String> = (0..64)
+        .filter(|b| (mask >> b) & 1 == 1)
+        .map(cap_name)
+        .collect();
+    let kept = if kept.is_empty() {
+        "nothing".to_string()
+    } else {
+        kept.join(", ")
+    };
+    format!("Dropped setup capabilities; supervisor retains 0x{mask:02x} ({kept}).")
+}
+
 pub fn drop_setup_capabilities(mask: u64, log: &mut Vec<String>) -> bool {
-    let mut mask = mask;
-    if let Some(held) = permitted_capabilities() {
-        let wanted = mask & held;
-        if wanted != mask {
-            let missing = missing_caps(mask, held);
-            log.push(format!(
-                "Note: this runtime did not grant {}; dropping everything else regardless.",
-                missing.join(", ")
-            ));
-        }
-        mask = wanted;
-    }
+    let (mask, note) = plan_drop(mask, permitted_capabilities());
+    log.extend(note);
     let mut h = CapHeader {
         version: LINUX_CAPABILITY_VERSION_3,
         pid: 0,
@@ -103,18 +124,7 @@ pub fn drop_setup_capabilities(mask: u64, log: &mut Vec<String>) -> bool {
         ));
         return false;
     }
-    let kept: Vec<String> = (0..64)
-        .filter(|b| (mask >> b) & 1 == 1)
-        .map(cap_name)
-        .collect();
-    let kept = if kept.is_empty() {
-        "nothing".to_string()
-    } else {
-        kept.join(", ")
-    };
-    log.push(format!(
-        "Dropped setup capabilities; supervisor retains 0x{mask:02x} ({kept})."
-    ));
+    log.push(retained_summary(mask));
     true
 }
 
@@ -274,20 +284,26 @@ pub fn uid_from_status(status: &str) -> Option<u32> {
         .ok()
 }
 
+/// Some(true) = the process runs as a non-root user, Some(false) = as root,
+/// None = the status text has no readable Uid line yet.
+fn drop_verdict(status: &str) -> Option<bool> {
+    uid_from_status(status).map(|uid| uid != 0)
+}
+
 /// _assert_process_dropped: refuse to continue if the child still runs as root.
 pub fn assert_process_dropped(child: &Child, name: &str, log: &mut Vec<String>) -> bool {
     let deadline = Instant::now() + Duration::from_secs(5);
     let pid = child.id();
     while Instant::now() < deadline {
         if let Ok(s) = std::fs::read_to_string(format!("/proc/{pid}/status")) {
-            match uid_from_status(&s) {
-                Some(0) => {
+            match drop_verdict(&s) {
+                Some(true) => return true,
+                Some(false) => {
                     log.push(format!(
                         "FATAL: {name} (pid {pid}) is running as root; the privilege drop to the tor user failed. Refusing to continue."
                     ));
                     return false;
                 }
-                Some(_) => return true,
                 None => {}
             }
         }
@@ -304,11 +320,27 @@ pub fn assert_process_dropped(child: &Child, name: &str, log: &mut Vec<String>) 
 /// children itself: when that is refused, `as_owner` delivers it from a
 /// process running as the children's own user.
 pub fn signal(pid: u32, sig: i32, as_owner: &dyn Fn(u32, i32) -> bool) -> bool {
-    // SAFETY: kill(2) on a pid we started.
-    if unsafe { libc::kill(pid as i32, sig) } == 0 {
-        return true;
+    signal_via(
+        |pid, sig|
+        // SAFETY: kill(2) on a pid we started.
+        if unsafe { libc::kill(pid as i32, sig) } == 0 { Ok(()) } else { Err(py::last_errno()) },
+        pid,
+        sig,
+        as_owner,
+    )
+}
+
+/// `signal` with the kill(2) call injected: Err carries the errno.
+fn signal_via(
+    kill: impl Fn(u32, i32) -> Result<(), i32>,
+    pid: u32,
+    sig: i32,
+    as_owner: &dyn Fn(u32, i32) -> bool,
+) -> bool {
+    match kill(pid, sig) {
+        Ok(()) => true,
+        Err(e) => e == libc::EPERM && as_owner(pid, sig),
     }
-    py::last_errno() == libc::EPERM && as_owner(pid, sig)
 }
 
 /// _kill_proc: SIGTERM (SIGINT for Tor), wait up to `timeout`, then SIGKILL. Never blocks for ever.
@@ -420,7 +452,392 @@ mod tests {
     }
 
     #[test]
-    fn reads_own_caps() {
-        assert!(permitted_capabilities().is_some());
+    fn permitted_capabilities_matches_the_kernel_status_line() {
+        // capget(pid 0) is per thread, so compare with this thread's status.
+        let st = std::fs::read_to_string("/proc/thread-self/status").unwrap();
+        let hex = status_field(&st, "CapPrm:").unwrap();
+        assert_eq!(
+            permitted_capabilities(),
+            Some(u64::from_str_radix(hex, 16).unwrap())
+        );
+    }
+
+    #[test]
+    fn cap_names_and_the_post_setup_mask() {
+        for (bit, name) in [
+            (CAP_CHOWN, "CHOWN"),
+            (CAP_DAC_OVERRIDE, "DAC_OVERRIDE"),
+            (CAP_FOWNER, "FOWNER"),
+            (CAP_SETGID, "SETGID"),
+            (CAP_SETUID, "SETUID"),
+            (2, "bit 2"),
+            (63, "bit 63"),
+        ] {
+            assert_eq!(cap_name(bit), name);
+        }
+        assert_eq!(
+            [
+                CAP_CHOWN,
+                CAP_DAC_OVERRIDE,
+                CAP_FOWNER,
+                CAP_SETGID,
+                CAP_SETUID
+            ],
+            [0, 1, 3, 6, 7]
+        );
+        assert_eq!(POST_SETUP_CAPS, 0xC2);
+    }
+
+    #[test]
+    fn missing_caps_lists_requested_but_not_held_in_bit_order() {
+        let all = POST_SETUP_CAPS;
+        assert_eq!(missing_caps(all, 0), ["DAC_OVERRIDE", "SETGID", "SETUID"]);
+        assert_eq!(missing_caps(all, all), Vec::<String>::new());
+        assert_eq!(
+            missing_caps(all, 1 << CAP_SETGID),
+            ["DAC_OVERRIDE", "SETUID"]
+        );
+        // held but not requested is not missing; bits >= 32 are looked at too
+        assert_eq!(missing_caps(1 | (1 << 40), 1 << 1), ["CHOWN", "bit 40"]);
+        assert_eq!(missing_caps(0, 0), Vec::<String>::new());
+    }
+
+    #[test]
+    fn plan_drop_narrows_to_what_is_held_and_says_so() {
+        // capget failed: ask for the mask as given, no note
+        assert_eq!(plan_drop(POST_SETUP_CAPS, None), (POST_SETUP_CAPS, None));
+        // everything held: unchanged, no note
+        assert_eq!(
+            plan_drop(POST_SETUP_CAPS, Some(u64::MAX)),
+            (POST_SETUP_CAPS, None)
+        );
+        // nothing held: the entrypoint.py wording, names in bit order
+        assert_eq!(
+            plan_drop(POST_SETUP_CAPS, Some(0)),
+            (
+                0,
+                Some(
+                    "Note: this runtime did not grant DAC_OVERRIDE, SETGID, SETUID; dropping everything else regardless."
+                        .to_string()
+                )
+            )
+        );
+        // partly held: the intersection, and only the missing ones named
+        let held = (1 << CAP_DAC_OVERRIDE) | (1 << CAP_CHOWN);
+        assert_eq!(
+            plan_drop(POST_SETUP_CAPS, Some(held)),
+            (
+                1 << CAP_DAC_OVERRIDE,
+                Some(
+                    "Note: this runtime did not grant SETGID, SETUID; dropping everything else regardless."
+                        .to_string()
+                )
+            )
+        );
+    }
+
+    #[test]
+    fn retained_summary_matches_entrypoint_py() {
+        assert_eq!(
+            retained_summary(POST_SETUP_CAPS),
+            "Dropped setup capabilities; supervisor retains 0xc2 (DAC_OVERRIDE, SETGID, SETUID)."
+        );
+        assert_eq!(
+            retained_summary(0),
+            "Dropped setup capabilities; supervisor retains 0x00 (nothing)."
+        );
+        assert_eq!(
+            retained_summary(1),
+            "Dropped setup capabilities; supervisor retains 0x01 (CHOWN)."
+        );
+        assert_eq!(
+            retained_summary(1 << 40),
+            "Dropped setup capabilities; supervisor retains 0x10000000000 (bit 40)."
+        );
+    }
+
+    #[test]
+    fn dropping_capabilities_for_real_leaves_exactly_the_planned_set() {
+        if is_root() {
+            return; // a root drop is environment-specific: covered by the live e2e test
+        }
+        // capset is per thread: do it on a thread of its own.
+        let (log, ok, after, held) = std::thread::spawn(|| {
+            let held = permitted_capabilities().unwrap();
+            let mut log = Vec::new();
+            let ok = drop_setup_capabilities(POST_SETUP_CAPS, &mut log);
+            (log, ok, permitted_capabilities().unwrap(), held)
+        })
+        .join()
+        .unwrap();
+        let (want, note) = plan_drop(POST_SETUP_CAPS, Some(held));
+        assert!(ok, "{log:?}");
+        assert_eq!(after, want);
+        let mut expect: Vec<String> = note.into_iter().collect();
+        expect.push(retained_summary(want));
+        assert_eq!(log, expect);
+    }
+
+    #[test]
+    fn dropping_with_no_capabilities_held_logs_the_note_then_nothing() {
+        if is_root() || permitted_capabilities() != Some(0) {
+            return;
+        }
+        let log = std::thread::spawn(|| {
+            let mut log = Vec::new();
+            assert!(drop_setup_capabilities(POST_SETUP_CAPS, &mut log));
+            log
+        })
+        .join()
+        .unwrap();
+        assert_eq!(
+            log,
+            [
+                "Note: this runtime did not grant DAC_OVERRIDE, SETGID, SETUID; dropping everything else regardless.",
+                "Dropped setup capabilities; supervisor retains 0x00 (nothing)."
+            ]
+        );
+    }
+
+    #[test]
+    fn run_piped_returns_exit_code_and_each_stream_separately() {
+        let mut c = Command::new("sh");
+        c.args(["-c", "printf out; printf err >&2; exit 3"]);
+        let (code, out, err) = run_timeout(c, Duration::from_secs(10)).unwrap();
+        assert_eq!(
+            (code, out.as_slice(), err.as_slice()),
+            (Some(3), &b"out"[..], &b"err"[..])
+        );
+    }
+
+    #[test]
+    fn run_piped_without_input_gives_the_child_a_closed_stdin() {
+        // cat on /dev/null stdin ends at once; on an open pipe it would hang to the deadline.
+        let started = Instant::now();
+        let (code, out, _) = run_timeout(Command::new("cat"), Duration::from_secs(10)).unwrap();
+        assert_eq!((code, out.as_slice()), (Some(0), &b""[..]));
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn run_with_input_delivers_the_bytes_and_closes_stdin() {
+        let input = b"line one\nsecond \x00 line\n";
+        let (code, out, err) =
+            run_with_input(Command::new("cat"), input, Duration::from_secs(10)).unwrap();
+        assert_eq!(
+            (code, out.as_slice(), err.as_slice()),
+            (Some(0), &input[..], &b""[..])
+        );
+    }
+
+    #[test]
+    fn run_piped_keeps_partial_output_of_a_child_killed_at_the_deadline() {
+        let mut c = Command::new("sh");
+        c.args(["-c", "printf partial; exec sleep 100"]);
+        let (code, out, _) = run_timeout(c, Duration::from_millis(500)).unwrap();
+        assert_eq!((code, out.as_slice()), (None, &b"partial"[..]));
+    }
+
+    #[test]
+    fn run_piped_reports_a_spawn_failure() {
+        let e = run_timeout(
+            Command::new("/nonexistent/definitely-not-here"),
+            Duration::from_secs(1),
+        )
+        .unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn command_sets_argv0_args_and_only_sets_home_for_a_user() {
+        let c = command(
+            "sh",
+            Some("renamed"),
+            &["-c", "printf %s \"$0\""],
+            None,
+            "/h",
+        );
+        assert!(c.get_envs().next().is_none());
+        let (_, out, _) = run_timeout(c, Duration::from_secs(10)).unwrap();
+        assert_eq!(out, b"renamed");
+        // with a user, HOME is set (nothing is spawned: dropping needs root)
+        let me = AsUser { uid: 1, gid: 2 };
+        let c = command("sh", None, &["a", "b"], Some(me), "/home/x");
+        let envs: Vec<_> = c.get_envs().collect();
+        assert_eq!(envs.len(), 1);
+        assert_eq!(envs[0].0, "HOME");
+        assert_eq!(envs[0].1, Some(std::ffi::OsStr::new("/home/x")));
+        assert_eq!(c.get_args().count(), 2);
+    }
+
+    #[test]
+    fn signal_via_falls_back_to_the_owner_only_on_eperm() {
+        use std::cell::RefCell;
+        let calls = RefCell::new(Vec::new());
+        let owner = |p: u32, s: i32| {
+            calls.borrow_mut().push((p, s));
+            true
+        };
+        assert!(signal_via(|_, _| Ok(()), 7, 15, &owner));
+        assert!(calls.borrow().is_empty());
+        assert!(signal_via(|_, _| Err(libc::EPERM), 7, 15, &owner));
+        assert_eq!(*calls.borrow(), [(7, 15)]);
+        // another errno: not delivered, owner not asked
+        assert!(!signal_via(|_, _| Err(libc::ESRCH), 8, 9, &owner));
+        assert_eq!(calls.borrow().len(), 1);
+        // owner refuses too
+        assert!(!signal_via(|_, _| Err(libc::EPERM), 7, 15, &|_, _| false));
+        // the kill closure gets pid and signal in that order
+        let seen = RefCell::new(None);
+        signal_via(
+            |p, s| {
+                *seen.borrow_mut() = Some((p, s));
+                Ok(())
+            },
+            41,
+            2,
+            &owner,
+        );
+        assert_eq!(*seen.borrow(), Some((41, 2)));
+    }
+
+    #[test]
+    fn signal_reaches_a_real_child_and_reports_a_missing_pid() {
+        use std::os::unix::process::ExitStatusExt;
+        let mut c = Command::new("sleep").arg("100").spawn().unwrap();
+        assert!(signal(c.id(), libc::SIGTERM, &|_, _| false));
+        assert_eq!(c.wait().unwrap().signal(), Some(libc::SIGTERM));
+        // reaped: ESRCH, which is not EPERM, so the owner must not be consulted
+        assert!(!signal(c.id(), libc::SIGTERM, &|_, _| panic!(
+            "asked the owner"
+        )));
+    }
+
+    fn sh_child(script: &str) -> Option<Child> {
+        Some(Command::new("sh").args(["-c", script]).spawn().unwrap())
+    }
+
+    fn gone(pid: u32) -> bool {
+        !std::path::Path::new(&format!("/proc/{pid}")).exists()
+    }
+
+    #[test]
+    fn kill_proc_uses_sigterm_for_others_and_reaps() {
+        // ignores INT, dies on TERM
+        let mut child = sh_child("trap '' INT; trap 'exit 0' TERM; while :; do sleep 0.05; done");
+        let pid = child.as_ref().unwrap().id();
+        std::thread::sleep(Duration::from_millis(300));
+        let started = Instant::now();
+        kill_proc(&mut child, "Vanguards", Duration::from_secs(5), &|_, _| {
+            false
+        });
+        assert!(
+            started.elapsed() < Duration::from_secs(4),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(gone(pid), "left a zombie");
+    }
+
+    #[test]
+    fn kill_proc_uses_sigint_for_tor() {
+        // ignores TERM, dies on INT
+        let mut child = sh_child("trap '' TERM; trap 'exit 0' INT; while :; do sleep 0.05; done");
+        let pid = child.as_ref().unwrap().id();
+        std::thread::sleep(Duration::from_millis(300));
+        let started = Instant::now();
+        kill_proc(&mut child, "Tor", Duration::from_secs(5), &|_, _| false);
+        assert!(
+            started.elapsed() < Duration::from_secs(4),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(gone(pid), "left a zombie");
+    }
+
+    #[test]
+    fn kill_proc_escalates_to_sigkill_after_the_timeout() {
+        let mut child = sh_child("trap '' INT TERM; while :; do sleep 0.05; done");
+        let pid = child.as_ref().unwrap().id();
+        std::thread::sleep(Duration::from_millis(300));
+        let started = Instant::now();
+        kill_proc(&mut child, "Tor", Duration::from_millis(400), &|_, _| false);
+        let took = started.elapsed();
+        assert!(took >= Duration::from_millis(400), "{took:?}");
+        assert!(took < Duration::from_secs(4), "{took:?}");
+        assert!(gone(pid), "left a zombie");
+    }
+
+    #[test]
+    fn kill_proc_leaves_an_already_exited_or_absent_child_alone() {
+        let mut none: Option<Child> = None;
+        kill_proc(&mut none, "x", Duration::from_secs(1), &|_, _| {
+            panic!("signalled")
+        });
+        let mut done = sh_child("exit 0");
+        done.as_mut().unwrap().wait().unwrap();
+        kill_proc(&mut done, "x", Duration::from_secs(1), &|_, _| {
+            panic!("signalled")
+        });
+    }
+
+    #[test]
+    fn drop_verdict_is_false_only_for_uid_zero() {
+        assert_eq!(drop_verdict("Name:\tx\nUid:\t0\t0\t0\t0\n"), Some(false));
+        assert_eq!(drop_verdict("Uid:\t100\t100\t100\t100\n"), Some(true));
+        assert_eq!(drop_verdict("Uid:\t1\t0\t0\t0\n"), Some(true));
+        assert_eq!(drop_verdict("Name:\tx\n"), None);
+        assert_eq!(drop_verdict("Uid:\tgarbage\n"), None);
+    }
+
+    #[test]
+    fn assert_process_dropped_accepts_a_child_running_as_a_normal_user() {
+        if is_root() {
+            return;
+        }
+        let mut c = Command::new("sleep").arg("100").spawn().unwrap();
+        let mut log = Vec::new();
+        assert!(assert_process_dropped(&c, "Tor", &mut log));
+        assert!(log.is_empty(), "{log:?}");
+        c.kill().unwrap();
+        c.wait().unwrap();
+    }
+
+    #[test]
+    fn assert_process_dropped_gives_up_after_five_seconds_on_a_vanished_pid() {
+        let mut c = Command::new("true").spawn().unwrap();
+        c.wait().unwrap(); // reaped: /proc/<pid> is gone
+        let mut log = Vec::new();
+        let started = Instant::now();
+        assert!(!assert_process_dropped(&c, "Tor", &mut log));
+        let took = started.elapsed();
+        assert!(
+            took >= Duration::from_secs(5) && took < Duration::from_secs(8),
+            "{took:?}"
+        );
+        assert_eq!(
+            log,
+            ["FATAL: could not confirm Tor dropped privileges within 5s."]
+        );
+    }
+
+    #[test]
+    fn uid_from_status_reads_the_real_uid_only() {
+        assert_eq!(uid_from_status("Uid:\t5\t6\t7\t8\n"), Some(5));
+        assert_eq!(uid_from_status("Gid:\t5\nUid:\t9\t9\t9\t9\n"), Some(9));
+        assert_eq!(uid_from_status("Uid:\t\n"), None);
+    }
+
+    #[test]
+    fn is_root_matches_the_effective_uid_in_proc() {
+        let st = std::fs::read_to_string("/proc/self/status").unwrap();
+        let euid: u32 = status_field(&st, "Uid:")
+            .unwrap()
+            .split_whitespace()
+            .nth(1)
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_eq!(is_root(), euid == 0);
     }
 }
