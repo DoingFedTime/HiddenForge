@@ -172,6 +172,12 @@ def test_key_encryption_commands_require_a_name(scratch, cmd):
         f"hiddenforge {cmd}: error: the following arguments are required: --name")
 
 
+def test_restore_requires_an_input(scratch):
+    r = run("hiddenforge", ["restore"], scratch)
+    assert r.rc == 2 and r.err.splitlines()[-1] == (
+        "hiddenforge restore: error: the following arguments are required: --input")
+
+
 @pytest.mark.parametrize("cmd,extra", [("backup", ["--out", "x"]), ("restore", ["--input", "x"])])
 def test_backup_and_restore_name_the_tools_they_accept(scratch, cmd, extra):
     r = run("hiddenforge", [cmd, *extra, "--tool", "bogus"], scratch)
