@@ -648,6 +648,28 @@ mod tests {
     }
 
     #[test]
+    fn strings_are_escaped_like_json_dumps_at_the_range_boundaries() {
+        // json.dumps(ensure_ascii=True): ASCII 0x20..0x7e verbatim, everything else \uXXXX,
+        // and code points above U+FFFF as a surrogate pair. Expected values from Python.
+        for (ch, want) in [
+            ('~', "\"~\""),
+            ('\u{7f}', "\"\\u007f\""),
+            ('\u{80}', "\"\\u0080\""),
+            ('\u{ffff}', "\"\\uffff\""),
+            ('\u{fffe}', "\"\\ufffe\""),
+            ('\u{10000}', "\"\\ud800\\udc00\""),
+            ('\u{10ffff}', "\"\\udbff\\udfff\""),
+        ] {
+            assert_eq!(
+                dumps(&Json::Str(ch.to_string()), false, None),
+                want,
+                "U+{:04X}",
+                ch as u32
+            );
+        }
+    }
+
+    #[test]
     fn dumps_matches_python() {
         let v = Json::obj()
             .with("version", "2.1.6".into())
