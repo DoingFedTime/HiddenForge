@@ -73,16 +73,19 @@ pub fn cat(argv: &[String]) -> i32 {
     if argv.len() != 1 || !cat_allowed(&argv[0]) {
         return refuse("cat", argv);
     }
-    match fsops::read_small_regular_file(&argv[0], 1 << 20) {
+    cat_to(&argv[0], &mut std::io::stdout())
+}
+
+/// Print one file (already allowed) to `out`: no-follow, regular, at most 1 MiB.
+fn cat_to(path: &str, out: &mut dyn std::io::Write) -> i32 {
+    match fsops::read_small_regular_file(path, 1 << 20) {
         Ok(data) => {
-            use std::io::Write;
-            let _ = std::io::stdout().write_all(&data);
+            let _ = out.write_all(&data);
             0
         }
         Err(e) => {
             eprintln!(
-                "cat: {}: {}",
-                argv[0],
+                "cat: {path}: {}",
                 py::strerror(e.errno.unwrap_or(libc::EIO))
             );
             1
@@ -262,5 +265,206 @@ mod tests {
         assert_eq!(su_exec(&["tor".into(), "/bin/bash".into()], &d), 127);
         assert_eq!(sh(&["-c".into(), "id".into()]), 127);
         assert_eq!(sh(&["-c".into(), format!("{DOCTOR_SCRIPT} ")]), 127);
+    }
+
+    /// A scratch directory that is removed even when the test panics.
+    struct Tmp(std::path::PathBuf);
+
+    impl Tmp {
+        fn new(tag: &str) -> Tmp {
+            use std::sync::atomic::{AtomicU32, Ordering};
+            static N: AtomicU32 = AtomicU32::new(0);
+            let d = std::env::temp_dir().join(format!(
+                "hf-compat-{tag}-{}-{}",
+                std::process::id(),
+                N.fetch_add(1, Ordering::SeqCst)
+            ));
+            std::fs::create_dir_all(&d).unwrap();
+            Tmp(d)
+        }
+        fn p(&self, rel: &str) -> String {
+            self.0.join(rel).to_string_lossy().into_owned()
+        }
+        fn put(&self, rel: &str, data: &[u8]) -> String {
+            std::fs::write(self.0.join(rel), data).unwrap();
+            self.p(rel)
+        }
+    }
+
+    impl Drop for Tmp {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn cat_allows_exactly_the_torrc_the_dropped_list_and_service_hostnames() {
+        let k = "/var/lib/tor/hidden_service";
+        let host = |n: &str| format!("{k}/{n}/hostname");
+        let allowed = [
+            "/etc/tor/torrc".to_string(),
+            "/var/lib/tor/dropped-mappings".to_string(),
+            host("myapp"),
+            host("my-app-2"),
+            host("a"),
+            host("0"),
+        ];
+        let denied = [
+            host("MyApp"),
+            host("my_app"),
+            host("my app"),
+            host(""),
+            host("a/b"),
+            host("é"),
+            host("..").replace("/../", "/../x/"),
+            format!("{k}/hostname"),
+            format!("{k}/myapp/hostname/"),
+            format!("{k}/myapp/hostname2"),
+            format!("{k}/myapp/hs_ed25519_secret_key"),
+            "/etc/tor/torrc/".to_string(),
+            "/etc/tor/torrc.bak".to_string(),
+            "etc/tor/torrc".to_string(),
+            String::new(),
+        ];
+        for p in &allowed {
+            assert!(cat_allowed(p), "{p:?}");
+        }
+        for p in &denied {
+            assert!(!cat_allowed(p), "{p:?}");
+        }
+    }
+
+    #[test]
+    fn cat_prints_an_allowed_file_whole_and_only_regular_files_within_the_cap() {
+        let t = Tmp::new("cat");
+        let mut out = Vec::new();
+        assert_eq!(cat_to(&t.put("one", b"x"), &mut out), 0);
+        assert_eq!(out, b"x");
+        let body = b"HiddenServiceDir /a\nline two\n".to_vec();
+        let mut out = Vec::new();
+        assert_eq!(cat_to(&t.put("body", &body), &mut out), 0);
+        assert_eq!(out, body);
+        let mut out = Vec::new();
+        assert_eq!(cat_to(&t.put("empty", b""), &mut out), 0);
+        assert!(out.is_empty());
+        // the cap is 1 MiB: the limit itself is printed, one byte more is an error
+        let mut out = Vec::new();
+        assert_eq!(cat_to(&t.put("max", &vec![b'a'; 1 << 20]), &mut out), 0);
+        assert_eq!(out.len(), 1 << 20);
+        let mut out = Vec::new();
+        assert_eq!(
+            cat_to(&t.put("over", &vec![b'a'; (1 << 20) + 1]), &mut out),
+            1
+        );
+        assert!(out.is_empty(), "nothing partial is printed");
+        for bad in ["missing", "."] {
+            let mut out = Vec::new();
+            assert_eq!(cat_to(&t.p(bad), &mut out), 1, "{bad}");
+            assert!(out.is_empty());
+        }
+        std::os::unix::fs::symlink(t.p("one"), t.p("link")).unwrap();
+        let mut out = Vec::new();
+        assert_eq!(cat_to(&t.p("link"), &mut out), 1, "never follows a link");
+    }
+
+    #[test]
+    fn read_trimmed_drops_trailing_newlines_only() {
+        let t = Tmp::new("trim");
+        assert_eq!(read_trimmed(&t.put("a", b"max\n")), "max");
+        assert_eq!(read_trimmed(&t.put("b", b"max\n\n\n")), "max");
+        assert_eq!(read_trimmed(&t.put("c", b"a b \n")), "a b ");
+        assert_eq!(read_trimmed(&t.put("d", b" x\ny\n")), " x\ny");
+        assert_eq!(read_trimmed(&t.put("e", b"")), "");
+        assert_eq!(read_trimmed(&t.put("f", b"\n")), "");
+        assert_eq!(
+            read_trimmed(&t.p("missing")),
+            "",
+            "$(cat missing 2>/dev/null)"
+        );
+        assert_eq!(read_trimmed(&t.p(".")), "", "a directory reads as empty");
+    }
+
+    #[test]
+    fn test_s_is_true_only_for_a_socket_itself() {
+        let t = Tmp::new("tests");
+        let sock = t.p("control.sock");
+        let _listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+        let file = t.put("file", b"x");
+        std::fs::create_dir(t.p("dir")).unwrap();
+        let s = |p: &str| test(&["-S".to_string(), p.to_string()]);
+        assert_eq!(s(&sock), 0);
+        assert_eq!(s(&file), 1);
+        assert_eq!(s(&t.p("dir")), 1);
+        assert_eq!(s(&t.p("missing")), 1);
+        // Open decision (not changed): the probe uses lstat, so a link to a socket is 1.
+        std::os::unix::fs::symlink(&sock, t.p("link")).unwrap();
+        assert_eq!(s(&t.p("link")), 1);
+    }
+
+    type Calls = std::cell::RefCell<Vec<(String, Vec<String>)>>;
+
+    fn strs(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn su_exec_hands_each_allowed_program_its_basename_and_arguments() {
+        if privs::is_root() {
+            return; // su-exec would really drop this process's privileges
+        }
+        for who in ["tor", "tor:tor", "100", "100:101"] {
+            for prog in [
+                "true",
+                "test",
+                "cat",
+                "python3",
+                "python",
+                "hiddenforge",
+                "healthcheck.py",
+                "vanity.py",
+            ] {
+                for path in [prog.to_string(), format!("/usr/local/bin/{prog}")] {
+                    let calls: Calls = Default::default();
+                    let d = |p: &str, a: &[String]| {
+                        calls.borrow_mut().push((p.to_string(), a.to_vec()));
+                        42
+                    };
+                    let rc = su_exec(&strs(&[who, &path, "-S", "/x y"]), &d);
+                    assert_eq!(rc, 42, "{who} {path}: the dispatcher's code is returned");
+                    assert_eq!(
+                        *calls.borrow(),
+                        vec![(prog.to_string(), strs(&["-S", "/x y"]))],
+                        "{who} {path}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn su_exec_refuses_everything_else_without_dispatching() {
+        if privs::is_root() {
+            return;
+        }
+        let calls: Calls = Default::default();
+        let d = |p: &str, a: &[String]| {
+            calls.borrow_mut().push((p.to_string(), a.to_vec()));
+            42
+        };
+        for argv in [
+            &["root", "true"][..],
+            &["0", "true"],
+            &["tor:root", "true"],
+            &["tor", "bash"],
+            &["tor", "/bin/sh", "-c", "id"],
+            &["tor", "truex"],
+            &["tor", ""],
+            &["tor", "python3x"],
+        ] {
+            assert_eq!(su_exec(&strs(argv), &d), 127, "{argv:?}");
+        }
+        assert_eq!(su_exec(&[], &d), 1);
+        assert_eq!(su_exec(&strs(&["tor"]), &d), 1);
+        assert!(calls.borrow().is_empty());
     }
 }
