@@ -97,10 +97,13 @@ impl Ctx {
     fn confined(&self, argv0: &str, args: &[&str], rules: &[(&str, u64)]) -> Cmd {
         use std::os::unix::process::CommandExt;
         let mut cmd = privs::command(&self.exe, Some(argv0), args, self.tor, &self.home);
-        let rs = if self.landlock {
-            landlock::build(rules, true).ok()
-        } else {
-            None
+        let rs = match helper_confinement(self.landlock, || landlock::build(rules, true)) {
+            Ok(rs) => rs,
+            Err(e) => {
+                println!("Warning: cannot build the Landlock ruleset for the {argv0} helper ({e}); refusing to start it with weaker confinement.");
+                refuse_spawn(&mut cmd);
+                None
+            }
         };
         if let Some(r) = rs.as_ref() {
             let fd = r.fd();
@@ -114,6 +117,30 @@ impl Ctx {
             }
         }
         Cmd { cmd, _rules: rs }
+    }
+}
+
+/// The ruleset a helper runs under. With Landlock enforced on the supervisor, a
+/// helper whose own (narrower, no-TCP) ruleset cannot be built is an error, never
+/// a silent fallback to the supervisor's wider one.
+fn helper_confinement(
+    landlock_on: bool,
+    build: impl FnOnce() -> Result<landlock::Ruleset, String>,
+) -> Result<Option<landlock::Ruleset>, String> {
+    if landlock_on {
+        build().map(Some)
+    } else {
+        Ok(None)
+    }
+}
+
+/// Make `cmd` fail at spawn (EPERM) without running anything: every caller
+/// already handles a spawn error.
+fn refuse_spawn(cmd: &mut std::process::Command) {
+    use std::os::unix::process::CommandExt;
+    // SAFETY: the closure makes no system call and does not allocate.
+    unsafe {
+        cmd.pre_exec(|| Err(std::io::Error::from_raw_os_error(libc::EPERM)));
     }
 }
 
@@ -844,5 +871,45 @@ pub fn run() -> i32 {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_helper_ruleset_that_cannot_be_built_is_an_error_not_a_fallback() {
+        let e = helper_confinement(true, || {
+            Err("landlock_add_rule /x: Too many open files".into())
+        });
+        assert_eq!(
+            e.err().as_deref(),
+            Some("landlock_add_rule /x: Too many open files")
+        );
+        let mut called = false;
+        let off = helper_confinement(false, || {
+            called = true;
+            Err("unused".into())
+        });
+        assert!(
+            matches!(off, Ok(None)) && !called,
+            "no Landlock: no ruleset, nothing built"
+        );
+    }
+
+    #[test]
+    fn a_refused_command_never_runs() {
+        let dir = std::env::temp_dir().join(format!("hf-refuse-{}", std::process::id()));
+        let marker = dir.join("ran");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut c = std::process::Command::new("sh");
+        c.args(["-c", &format!("touch {}", marker.display())]);
+        refuse_spawn(&mut c);
+        let err = c.spawn().map(|_| ()).unwrap_err();
+        let ran = marker.exists();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(err.raw_os_error(), Some(libc::EPERM));
+        assert!(!ran, "the refused command ran");
     }
 }
