@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-sH2hZdMLIS6Mhk35mnT+FxuhKECGK5Oix+sXpZwWMDk='; style-src 'sha256-LAY216Fef1ocDljku/kTA1a6ygJANlE11o7wo6akqFw='; img-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'; object-src 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-2SOebnIpXZZWbZ2lyg24qui2os8U1kLmZ33mpYGGLQ8='; style-src 'sha256-LAY216Fef1ocDljku/kTA1a6ygJANlE11o7wo6akqFw='; img-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'; object-src 'none'">
 <meta name="referrer" content="no-referrer">
 <title>HiddenForge setup (offline)</title>
 <style>
@@ -127,7 +127,7 @@ footer { color: var(--muted); font: 11px var(--mono); margin-top: 30px; text-ali
   // ── validators (scripts/hiddenforge) ─────────────────────────────────────
   var NAME_RE = /^[a-z0-9][a-z0-9-]{0,62}$/;
   var CONTAINER_RE = /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/;
-  var IMAGE_RE = /^[a-zA-Z0-9][a-zA-Z0-9._\/:@-]{0,254}$/;
+  var IMAGE_RE = /^[a-zA-Z0-9][a-zA-Z0-9._/:@-]{0,254}$/;
   var HOST_RE = /^[a-zA-Z0-9._-]{1,253}$/;
 
   function pyRepr(s) {
@@ -189,7 +189,7 @@ footer { color: var(--muted); font: 11px var(--mono); margin-top: 30px; text-ali
   // ── quoting ───────────────────────────────────────────────────────────────
   function shlexQuote(s) {
     if (s === "") return "''";
-    if (/^[A-Za-z0-9@%+=:,.\/_-]+$/.test(s)) return s;
+    if (/^[A-Za-z0-9@%+=:,./_-]+$/.test(s)) return s;
     return "'" + s.split("'").join("'\"'\"'") + "'";
   }
   function yamlDq(v) {
@@ -228,7 +228,7 @@ footer { color: var(--muted); font: 11px var(--mono); margin-top: 30px; text-ali
   }
   function pyDumps(v, level) {
     level = level || 0;
-    var pad = function (n) { return "\n" + new Array(n * 2 + 1).join(" "); };
+    var pad = function (n) { return "\n" + " ".repeat(n * 2); };
     if (v === null) return "null";
     if (v === true) return "true";
     if (v === false) return "false";
@@ -594,7 +594,7 @@ footer { color: var(--muted); font: 11px var(--mono); margin-top: 30px; text-ali
       onionPort: 80, out: state.out.trim() || "hiddenforge-deploy", outputDir: state.out.trim() || "hiddenforge-deploy" });
   }
 
-  function download(name, text, mode) {
+  function download(name, text) {
     var blob = new Blob([text], { type: "application/octet-stream" });
     var a = el("a", { href: URL.createObjectURL(blob), download: name });
     document.body.appendChild(a); a.click(); a.remove();

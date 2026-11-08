@@ -14,7 +14,7 @@
   // ── validators (scripts/hiddenforge) ─────────────────────────────────────
   var NAME_RE = /^[a-z0-9][a-z0-9-]{0,62}$/;
   var CONTAINER_RE = /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/;
-  var IMAGE_RE = /^[a-zA-Z0-9][a-zA-Z0-9._\/:@-]{0,254}$/;
+  var IMAGE_RE = /^[a-zA-Z0-9][a-zA-Z0-9._/:@-]{0,254}$/;
   var HOST_RE = /^[a-zA-Z0-9._-]{1,253}$/;
 
   function pyRepr(s) {
@@ -76,7 +76,7 @@
   // ── quoting ───────────────────────────────────────────────────────────────
   function shlexQuote(s) {
     if (s === "") return "''";
-    if (/^[A-Za-z0-9@%+=:,.\/_-]+$/.test(s)) return s;
+    if (/^[A-Za-z0-9@%+=:,./_-]+$/.test(s)) return s;
     return "'" + s.split("'").join("'\"'\"'") + "'";
   }
   function yamlDq(v) {
@@ -115,7 +115,7 @@
   }
   function pyDumps(v, level) {
     level = level || 0;
-    var pad = function (n) { return "\n" + new Array(n * 2 + 1).join(" "); };
+    var pad = function (n) { return "\n" + " ".repeat(n * 2); };
     if (v === null) return "null";
     if (v === true) return "true";
     if (v === false) return "false";

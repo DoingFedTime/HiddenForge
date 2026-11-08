@@ -117,7 +117,7 @@
       onionPort: 80, out: state.out.trim() || "hiddenforge-deploy", outputDir: state.out.trim() || "hiddenforge-deploy" });
   }
 
-  function download(name, text, mode) {
+  function download(name, text) {
     var blob = new Blob([text], { type: "application/octet-stream" });
     var a = el("a", { href: URL.createObjectURL(blob), download: name });
     document.body.appendChild(a); a.click(); a.remove();
