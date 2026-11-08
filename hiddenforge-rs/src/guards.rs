@@ -22,7 +22,7 @@ use std::os::unix::net::UnixStream;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 // ── bandguards options (Vanguards 0.3.1 defaults) ───────────────────────────
-const CIRC_MAX_MEGABYTES: f64 = 0.0;
+// CIRC_MAX_MEGABYTES defaults to 0 (disabled), so its check is not ported.
 const CIRC_MAX_AGE_HOURS: f64 = 24.0;
 const CIRC_MAX_HSDESC_KILOBYTES: f64 = 30.0;
 const CIRC_MAX_DISCONNECTED_SECS: i64 = 30;
@@ -33,7 +33,6 @@ const RELAY_PAYLOAD_SIZE: f64 = CELL_PAYLOAD_SIZE - RELAY_HEADER_SIZE;
 const CELL_DATA_RATE: f64 = RELAY_PAYLOAD_SIZE / CELL_PAYLOAD_SIZE;
 const SECS_PER_HOUR: f64 = 3600.0;
 const BYTES_PER_KB: f64 = 1024.0;
-const BYTES_PER_MB: f64 = 1024.0 * BYTES_PER_KB;
 const MAX_CIRC_DESTROY_LAG_SECS: f64 = 2.0;
 
 // ── rendguard options ───────────────────────────────────────────────────────
@@ -181,7 +180,6 @@ pub fn parse_event(line: &str, arrived_at: f64) -> Option<Event> {
             ev.id = ev.kw("ID").unwrap_or("").to_string();
         }
         "NETWORK_LIVENESS" => ev.status = positional.first()?.to_string(),
-        "BW" => {}
         _ => {}
     }
     Some(ev)
@@ -231,10 +229,7 @@ impl CircStat {
 
 #[derive(Debug, Clone, Default)]
 struct GuardStat {
-    killed_conns: u64,
     killed_conn_at: f64,
-    conns_made: u64,
-    close_reasons: BTreeMap<String, u64>,
 }
 
 #[derive(Default)]
@@ -243,7 +238,6 @@ pub struct Bandguards {
     circ_order: Vec<String>,
     live_guard_conns: BTreeMap<String, String>, // conn id -> guard fp
     guards: BTreeMap<String, GuardStat>,
-    circs_destroyed_total: u64,
     no_conns_since: f64,
     no_circs_since: Option<f64>,
     network_down_since: Option<f64>,
@@ -299,9 +293,6 @@ impl Bandguards {
                     );
                 }
                 self.live_guard_conns.insert(id, guard_fp.clone());
-                if let Some(g) = self.guards.get_mut(&guard_fp) {
-                    g.conns_made += 1;
-                }
                 self.no_conns_since = 0.0;
                 self.disconnected_conns = false;
             }
@@ -345,12 +336,6 @@ impl Bandguards {
                         self.no_conns_since = ev.arrived_at;
                     }
                 }
-                if ev.status == "CLOSED" {
-                    let reason = ev.kw("REASON").unwrap_or("None").to_string();
-                    if let Some(g) = self.guards.get_mut(&guard_fp) {
-                        *g.close_reasons.entry(reason).or_insert(0) += 1;
-                    }
-                }
             }
             _ => {}
         }
@@ -358,12 +343,10 @@ impl Bandguards {
     }
 
     fn circuit_destroyed(&mut self, ev: &Event, sink: &mut dyn Sink) {
-        self.circs_destroyed_total += 1;
         let guardfp = ev.path.first().cloned().unwrap_or_default();
         let g = self.guards.entry(guardfp.clone()).or_default();
         if ev.arrived_at - g.killed_conn_at <= MAX_CIRC_DESTROY_LAG_SECS {
             g.killed_conn_at = 0.0;
-            g.killed_conns += 1;
             sink.log(
                 Level::Notice,
                 &format!("The connection to guard {guardfp} was closed with a live circuit."),
@@ -622,17 +605,6 @@ impl Bandguards {
                     c.states()
                 ),
             );
-        }
-        if CIRC_MAX_MEGABYTES > 0.0 && c.total_bytes() > CIRC_MAX_MEGABYTES * BYTES_PER_MB {
-            limit_exceeded(
-                sink,
-                Level::Notice,
-                "CIRC_MAX_MEGABYTES",
-                &c.circ_id,
-                &py_int_str(c.total_bytes()),
-                &py_int_str(CIRC_MAX_MEGABYTES * BYTES_PER_MB),
-            );
-            sink.close_circuit(&c.circ_id);
         }
         if CIRC_MAX_HSDESC_KILOBYTES > 0.0
             && c.is_hsdir
@@ -915,9 +887,6 @@ impl Rendguard {
             );
         }
         for (k, o) in &old {
-            if k != NOT_IN_CONSENSUS_ID && !self.use_counts.contains_key(k) {
-                continue;
-            }
             if let Some(u) = self.use_counts.get_mut(k) {
                 u.used = if scale { o.used / 2.0 } else { o.used };
             }

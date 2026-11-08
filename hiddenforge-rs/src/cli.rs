@@ -1929,10 +1929,8 @@ fn cmd_crypt(a: &Args) -> i32 {
     let r = (|| -> Result<i32, String> {
         validate_name(a.get("name").unwrap_or(""))?;
         let ni = a.get("passphrase_file").is_some() || !stdin_tty();
+        // --tool is age or gpg here: the parser refuses openssl.
         let tool = pick_tool(a.get("tool"), "", ni).ok_or_else(no_tool_error)?;
-        if tool == "openssl" {
-            return Err("openssl is refused (no authentication)".into());
-        }
         passphrase_check(a, &tool)?;
         Err(tool_missing(&tool))
     })();

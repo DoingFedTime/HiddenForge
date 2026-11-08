@@ -211,11 +211,8 @@ fn entrypoint(args: &[String]) -> i32 {
                     return 2;
                 }
             }
-            let mut rest = rest.to_vec();
-            if cmd == "doctor" && !rest.iter().any(|a| a == "--keys-only") {
-                rest.push("--keys-only".into());
-            }
-            return cli::run(cmd, &rest).unwrap_or(2);
+            // In the container doctor is always keys-only; cmd_doctor checks nothing else.
+            return cli::run(cmd, rest).unwrap_or(2);
         }
     }
     supervisor::run()
