@@ -3372,7 +3372,16 @@ mod tests {
 
     #[test]
     fn info_of_the_shipped_manifest() {
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../manifest.json");
+        // The repository's manifest.json: next to the crate in a checkout, or under
+        // HIDDENFORGE_DIFF_REPO when the crate is built from a copy (mutation runs).
+        let beside = concat!(env!("CARGO_MANIFEST_DIR"), "/../manifest.json").to_string();
+        let path = if std::path::Path::new(&beside).exists() {
+            beside
+        } else {
+            let repo = std::env::var("HIDDENFORGE_DIFF_REPO")
+                .expect("manifest.json is not beside the crate: set HIDDENFORGE_DIFF_REPO");
+            format!("{repo}/manifest.json")
+        };
         let m = py::parse(&std::fs::read_to_string(path).unwrap()).unwrap();
         let lines = info_lines(&m);
         assert_eq!(lines.len(), 6);
