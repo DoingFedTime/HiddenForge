@@ -121,7 +121,7 @@ pub fn become_tor() -> Result<(), String> {
         if libc::setuid(uid) != 0 {
             return Err(format!("setuid({uid}): {}", py::strerror(py::last_errno())));
         }
-        if libc::getuid() != uid || libc::geteuid() != uid || libc::setuid(0) == 0 {
+        if !drop_took_effect(uid, libc::getuid(), libc::geteuid(), libc::setuid(0) == 0) {
             return Err("privilege drop did not take effect".into());
         }
     }
@@ -134,6 +134,12 @@ pub fn become_tor() -> Result<(), String> {
         },
     );
     Ok(())
+}
+
+/// The drop to `want` worked only if both ids are now `want` and root can no
+/// longer be regained.
+fn drop_took_effect(want: u32, uid: u32, euid: u32, regained_root: bool) -> bool {
+    uid == want && euid == want && !regained_root
 }
 
 /// `su-exec tor <argv...>`: become tor, then answer the allowed forms.
@@ -192,6 +198,68 @@ mod tests {
 
     #[test]
     fn sh_refuses_everything_else() {
+        assert_eq!(sh(&[]), 127);
+        assert_eq!(sh(&["-c".into()]), 127);
+        assert_eq!(sh(&["-x".into(), DOCTOR_SCRIPT.into()]), 127);
+    }
+
+    #[test]
+    fn cat_refuses_the_secret_key_and_extra_arguments() {
+        // The allowlist is what keeps `cat` from printing a key; test the
+        // command, not only the predicate.
+        let secret = "/var/lib/tor/hidden_service/myapp/hs_ed25519_secret_key".to_string();
+        assert_eq!(
+            cat(std::slice::from_ref(&secret)),
+            127,
+            "the secret key is refused"
+        );
+        assert_eq!(cat(&["/etc/shadow".into()]), 127);
+        assert_eq!(cat(&[]), 127);
+        let host = "/var/lib/tor/hidden_service/nosuchservice/hostname".to_string();
+        assert_eq!(
+            cat(&[host.clone(), secret]),
+            127,
+            "two paths are refused even if one is allowed"
+        );
+        assert_eq!(
+            cat(&[host]),
+            1,
+            "an allowed path that does not exist is an error, not a refusal"
+        );
+    }
+
+    #[test]
+    fn test_answers_only_dash_s() {
+        assert_eq!(test(&["-S".into(), "/definitely/not/a/socket".into()]), 1);
+        assert_eq!(test(&["-f".into(), "/etc/passwd".into()]), 127);
+        assert_eq!(test(&["-S".into()]), 127);
+    }
+
+    #[test]
+    fn a_drop_counts_only_when_complete() {
+        assert!(drop_took_effect(100, 100, 100, false));
+        assert!(!drop_took_effect(100, 0, 100, false), "real uid still root");
+        assert!(
+            !drop_took_effect(100, 100, 0, false),
+            "effective uid still root"
+        );
+        assert!(
+            !drop_took_effect(100, 100, 100, true),
+            "root could be regained"
+        );
+        assert!(
+            !drop_took_effect(100, 101, 101, false),
+            "dropped to the wrong user"
+        );
+    }
+
+    #[test]
+    fn su_exec_only_becomes_tor() {
+        let d = |_: &str, _: &[String]| 0;
+        assert_eq!(su_exec(&["root".into(), "true".into()], &d), 127);
+        assert_eq!(su_exec(&[], &d), 1);
+        assert_eq!(su_exec(&["tor".into()], &d), 1);
+        assert_eq!(su_exec(&["tor".into(), "/bin/bash".into()], &d), 127);
         assert_eq!(sh(&["-c".into(), "id".into()]), 127);
         assert_eq!(sh(&["-c".into(), format!("{DOCTOR_SCRIPT} ")]), 127);
     }

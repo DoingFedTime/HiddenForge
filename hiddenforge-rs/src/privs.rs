@@ -56,16 +56,21 @@ pub fn permitted_capabilities() -> Option<u64> {
     (rc == 0).then(|| u64::from(d[0].permitted) | (u64::from(d[1].permitted) << 32))
 }
 
+/// The capabilities `mask` asks for that `held` does not have, by name.
+fn missing_caps(mask: u64, held: u64) -> Vec<String> {
+    (0..64)
+        .filter(|b| (mask >> b) & 1 == 1 && (held >> b) & 1 == 0)
+        .map(cap_name)
+        .collect()
+}
+
 /// _drop_setup_capabilities: narrow effective+permitted to `mask & held`, for good.
 pub fn drop_setup_capabilities(mask: u64, log: &mut Vec<String>) -> bool {
     let mut mask = mask;
     if let Some(held) = permitted_capabilities() {
         let wanted = mask & held;
         if wanted != mask {
-            let missing: Vec<String> = (0..64)
-                .filter(|b| (mask >> b) & 1 == 1 && (held >> b) & 1 == 0)
-                .map(cap_name)
-                .collect();
+            let missing = missing_caps(mask, held);
             log.push(format!(
                 "Note: this runtime did not grant {}; dropping everything else regardless.",
                 missing.join(", ")

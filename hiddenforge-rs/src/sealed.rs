@@ -201,7 +201,11 @@ pub fn settled(name: &str) -> bool {
 /// content, and only then remove the envelope. Run with the service stopped.
 /// Ok(None) when the service has no sealed key (nothing to do).
 pub fn unseal_to_volume(name: &str, pass: &[u8]) -> Result<Option<String>, String> {
-    let vol = format!("{KEYS}/{name}");
+    unseal_in(KEYS, name, pass)
+}
+
+fn unseal_in(keys: &str, name: &str, pass: &[u8]) -> Result<Option<String>, String> {
+    let vol = format!("{keys}/{name}");
     let Some(env) = read(&format!("{vol}/{SEALED}"), 8192) else {
         return Ok(None);
     };
@@ -260,5 +264,94 @@ pub fn helper(op: &str, name: &str) -> i32 {
             eprintln!("{e}");
             1
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const PASS: &[u8] = b"correct horse battery staple";
+    const KEY: &[u8] =
+        b"== ed25519v1-secret: type0 ==\0\0\0 sixty-four bytes of secret key, give or take";
+
+    fn svc(tag: &str) -> (String, String) {
+        let d = std::env::temp_dir().join(format!("hf-seal-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("myapp")).unwrap();
+        let k = d.to_string_lossy().into_owned();
+        (k.clone(), format!("{k}/myapp"))
+    }
+
+    #[test]
+    fn unseal_restores_the_key_and_removes_the_envelope() {
+        let (keys, vol) = svc("ok");
+        std::fs::write(
+            format!("{vol}/{SEALED}"),
+            keycrypt::encrypt(KEY, PASS).unwrap(),
+        )
+        .unwrap();
+        assert!(unseal_in(&keys, "myapp", PASS).unwrap().is_some());
+        assert_eq!(std::fs::read(format!("{vol}/{SECRET}")).unwrap(), KEY);
+        assert!(
+            std::fs::metadata(format!("{vol}/{SEALED}")).is_err(),
+            "the envelope is gone"
+        );
+        assert_eq!(
+            unseal_in(&keys, "myapp", PASS).unwrap(),
+            None,
+            "nothing left to do"
+        );
+        let _ = std::fs::remove_dir_all(&keys);
+    }
+
+    #[test]
+    fn unseal_refuses_a_conflicting_plaintext_and_a_wrong_passphrase() {
+        let (keys, vol) = svc("conflict");
+        std::fs::write(
+            format!("{vol}/{SEALED}"),
+            keycrypt::encrypt(KEY, PASS).unwrap(),
+        )
+        .unwrap();
+        assert!(unseal_in(&keys, "myapp", b"the wrong passphrase!").is_err());
+        assert!(
+            std::fs::metadata(format!("{vol}/{SEALED}")).is_ok(),
+            "kept after a wrong passphrase"
+        );
+        std::fs::write(format!("{vol}/{SECRET}"), b"a different key").unwrap();
+        let e = unseal_in(&keys, "myapp", PASS).unwrap_err();
+        assert!(e.contains("differs"), "{e}");
+        assert!(
+            std::fs::metadata(format!("{vol}/{SEALED}")).is_ok(),
+            "nothing removed on a conflict"
+        );
+        // The same plaintext already present is fine: the envelope goes, the key stays.
+        std::fs::write(format!("{vol}/{SECRET}"), KEY).unwrap();
+        assert!(unseal_in(&keys, "myapp", PASS).unwrap().is_some());
+        assert_eq!(std::fs::read(format!("{vol}/{SECRET}")).unwrap(), KEY);
+        let _ = std::fs::remove_dir_all(&keys);
+    }
+
+    #[test]
+    fn copies_only_when_the_content_changed() {
+        let (keys, vol) = svc("copy");
+        let ram = format!("{keys}/ram");
+        std::fs::create_dir_all(&ram).unwrap();
+        std::fs::write(format!("{vol}/{HOSTNAME}"), b"a.onion\n").unwrap();
+        copy_if_present(&vol, &ram, HOSTNAME, 0o600).unwrap();
+        assert_eq!(
+            std::fs::read(format!("{ram}/{HOSTNAME}")).unwrap(),
+            b"a.onion\n"
+        );
+        std::fs::write(format!("{vol}/{HOSTNAME}"), b"b.onion\n").unwrap();
+        copy_if_present(&vol, &ram, HOSTNAME, 0o600).unwrap();
+        assert_eq!(
+            std::fs::read(format!("{ram}/{HOSTNAME}")).unwrap(),
+            b"b.onion\n",
+            "updated"
+        );
+        copy_if_present(&vol, &ram, "absent", 0o600).unwrap();
+        assert!(std::fs::metadata(format!("{ram}/absent")).is_err());
+        let _ = std::fs::remove_dir_all(&keys);
     }
 }

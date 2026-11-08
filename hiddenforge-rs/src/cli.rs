@@ -499,7 +499,11 @@ fn torrc_service_names(keys: &str) -> Vec<String> {
     let Ok(b) = std::fs::read(TORRC_PATH) else {
         return vec![];
     };
-    let text = String::from_utf8_lossy(&b);
+    service_names_in_torrc(&String::from_utf8_lossy(&b), keys)
+}
+
+/// The services a torrc configures under `keys` (or the sealed RAM copy of it).
+fn service_names_in_torrc(text: &str, keys: &str) -> Vec<String> {
     let mut names = Vec::new();
     for line in text.lines() {
         let Some(v) = hsdir_value(line) else { continue };
@@ -2763,6 +2767,288 @@ pub fn run(cmd: &str, rest: &[String]) -> Option<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── refusal paths (mutation sample, 2026-11-08: none of these were tested) ──
+
+    #[test]
+    fn names_must_be_lowercase_alnum_and_hyphen() {
+        for good in ["myapp", "a", "9lives", "my-app-2", &"a".repeat(63)] {
+            assert!(name_ok(good), "{good:?} should be accepted");
+        }
+        for bad in [
+            "",
+            "-app",
+            "App",
+            "my_app",
+            "my app",
+            "../x",
+            "a.b",
+            &"a".repeat(64),
+            "é",
+        ] {
+            assert!(!name_ok(bad), "{bad:?} must be refused");
+        }
+    }
+
+    #[test]
+    fn container_names_cannot_inject_yaml_or_flags() {
+        for good in ["tor", "hf3e2e-tor-1", "a.b_c-d", "9"] {
+            assert!(
+                validate_container(good).is_ok() && container_ok(good),
+                "{good:?}"
+            );
+        }
+        // 2.x shipped a fragment where a crafted --container added `privileged: true`.
+        for bad in [
+            "",
+            "-privileged",
+            "_x",
+            "tor:\n    privileged: true",
+            "a b",
+            "a/b",
+            "tor;id",
+            "$(id)",
+        ] {
+            assert!(
+                validate_container(bad).is_err() && !container_ok(bad),
+                "{bad:?} must be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn image_refs_refuse_flags_spaces_and_newlines() {
+        for good in [
+            "sambent.dev/sam/hiddenforge:latest",
+            "hf3:dev",
+            "dhi.io/static@sha256:36ef09f98be60351289f3aaf36a4328e2121821dce7f8f85ba099efef43bd329",
+        ] {
+            assert!(validate_image_ref(good).is_ok(), "{good:?}");
+        }
+        for bad in [
+            "",
+            "--privileged",
+            "-x",
+            "a b",
+            "a\nb",
+            "a;b",
+            "a$b",
+            &format!("a{}", "b".repeat(255)),
+        ] {
+            assert!(validate_image_ref(bad).is_err(), "{bad:?} must be refused");
+        }
+    }
+
+    #[test]
+    fn key_dir_paths_refuse_control_characters_and_length() {
+        assert!(validate_keys_dir("./tor-keys").is_ok());
+        assert!(validate_keys_dir(&"a".repeat(4096)).is_ok());
+        assert!(validate_keys_dir(&"a".repeat(4097)).is_err());
+        assert!(validate_keys_dir("").is_err());
+        for c in ["\n", "\r", "\t", "\x00", "\x1b", "\x7f"] {
+            assert!(
+                validate_keys_dir(&format!("./k{c}x")).is_err(),
+                "{c:?} must be refused"
+            );
+        }
+    }
+
+    fn scratch(tag: &str) -> String {
+        let d = std::env::temp_dir().join(format!("hf-cli-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn read_nofollow_refuses_symlinks_dirs_and_oversize_and_reads_exactly() {
+        let d = scratch("rn");
+        let f = format!("{d}/f");
+        std::fs::write(&f, b"0123456789").unwrap();
+        assert_eq!(read_nofollow(&f, 10).unwrap(), b"0123456789");
+        assert_eq!(read_nofollow(&f, 11).unwrap(), b"0123456789");
+        assert!(read_nofollow(&f, 9).is_err(), "over the cap");
+        std::fs::write(format!("{d}/empty"), b"").unwrap();
+        assert_eq!(read_nofollow(&format!("{d}/empty"), 0).unwrap(), b"");
+        std::os::unix::fs::symlink(&f, format!("{d}/link")).unwrap();
+        assert!(
+            read_nofollow(&format!("{d}/link"), 100).is_err(),
+            "a symlink is never followed"
+        );
+        assert!(read_nofollow(&d, 100).is_err(), "a directory is not a file");
+        let big = vec![b'x'; 200_000];
+        std::fs::write(format!("{d}/big"), &big).unwrap();
+        assert_eq!(
+            read_nofollow(&format!("{d}/big"), 200_000).unwrap(),
+            big,
+            "multi-read files intact"
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    const ONION: &str = "qtwidir57ll3rbtxwql5557yp7z3eb72mgbxn7wex7yofzn5tnooqpqd.onion";
+
+    #[test]
+    fn onion_files_are_validated() {
+        let d = scratch("on");
+        let w = |n: &str, b: &[u8]| {
+            std::fs::write(format!("{d}/{n}"), b).unwrap();
+            read_onion_file(&format!("{d}/{n}"))
+        };
+        assert_eq!(
+            w("ok", format!("{ONION}\n").as_bytes()).as_deref(),
+            Some(ONION)
+        );
+        assert_eq!(w("bare", ONION.as_bytes()).as_deref(), Some(ONION));
+        assert_eq!(w("junk", b"not an onion\n"), None);
+        assert_eq!(w("upper", ONION.to_uppercase().as_bytes()), None);
+        assert_eq!(
+            w(
+                "utf8",
+                "qtwidir57ll3rbtxwql5557yp7z3eb72mgbxn7wex7yofzn5tnooqpqé.onion".as_bytes()
+            ),
+            None
+        );
+        assert_eq!(read_onion_file(&format!("{d}/missing")), None);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    fn pubkey_file(key: &[u8; 32]) -> Vec<u8> {
+        let mut v = PUBLIC_TAG.to_vec();
+        v.resize(32, 0);
+        v.extend_from_slice(key);
+        v
+    }
+
+    #[test]
+    fn public_keys_need_the_tag_and_exact_length() {
+        let d = scratch("pk");
+        let key = [7u8; 32];
+        let w = |n: &str, b: &[u8]| {
+            std::fs::write(format!("{d}/{n}"), b).unwrap();
+            read_pubkey(&format!("{d}/{n}"))
+        };
+        assert_eq!(w("tagged", &pubkey_file(&key)), Some(key.to_vec()));
+        assert_eq!(w("raw", &key), Some(key.to_vec()), "a bare 32-byte key");
+        let mut wrong = pubkey_file(&key);
+        wrong[0] = b'X';
+        assert_eq!(w("badtag", &wrong), None);
+        assert_eq!(w("short", &pubkey_file(&key)[..63]), None);
+        let mut long = pubkey_file(&key);
+        long.push(0);
+        assert_eq!(w("long", &long), None);
+        assert_eq!(w("31", &key[..31]), None);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn address_for_says_where_the_address_came_from() {
+        let keys = scratch("af");
+        let svc = format!("{keys}/myapp");
+        std::fs::create_dir_all(&svc).unwrap();
+        let key = [9u8; 32];
+        let derived = sha3::derive_onion(&key).unwrap();
+        // Only the public key: the address is derived from it.
+        std::fs::write(format!("{svc}/{PUBLIC_FILE}"), pubkey_file(&key)).unwrap();
+        let e = address_for(&keys, "myapp");
+        assert_eq!(
+            (e.onion.as_deref(), e.source.as_deref()),
+            (Some(derived.as_str()), Some("derived"))
+        );
+        // A published <name>.onion is preferred to deriving.
+        std::fs::write(format!("{keys}/myapp.onion"), format!("{derived}\n")).unwrap();
+        let e = address_for(&keys, "myapp");
+        assert_eq!(
+            (e.source.as_deref(), e.derived_matches),
+            (Some("published"), Some(true))
+        );
+        // The hostname file is preferred to both, and must agree with the key.
+        std::fs::write(format!("{svc}/{HOSTNAME_FILE}"), format!("{derived}\n")).unwrap();
+        let e = address_for(&keys, "myapp");
+        assert_eq!(
+            (e.source.as_deref(), e.derived_matches),
+            (Some("hostname"), Some(true))
+        );
+        assert!(e.json().get("hostname_onion").is_none());
+        // A hostname that disagrees with the key is reported, never trusted.
+        std::fs::write(format!("{svc}/{HOSTNAME_FILE}"), format!("{ONION}\n")).unwrap();
+        let e = address_for(&keys, "myapp");
+        assert_eq!(
+            (e.onion.as_deref(), e.source.as_deref()),
+            (None, Some("inconsistent"))
+        );
+        assert_eq!(e.derived_matches, Some(false));
+        assert_eq!(
+            (e.hostname_onion.as_deref(), e.derived_onion.as_deref()),
+            (Some(ONION), Some(derived.as_str()))
+        );
+        let j = e.json();
+        assert!(j.get("hostname_onion").is_some() && j.get("derived_onion").is_some());
+        assert_eq!(e.fields().len(), 10);
+        assert!(e.fields().iter().any(|(k, _)| *k == "derived_onion"));
+        assert_eq!(e.key_path, format!("{svc}/{SECRET_FILE}"));
+        // Nothing at all: no address, no source.
+        let e = address_for(&keys, "other");
+        assert_eq!((e.onion, e.source, e.derived_matches), (None, None, None));
+        let _ = std::fs::remove_dir_all(&keys);
+    }
+
+    #[test]
+    fn hidden_service_dir_lines_are_parsed_strictly() {
+        assert_eq!(
+            hsdir_value("HiddenServiceDir /var/lib/tor/hidden_service/a").as_deref(),
+            Some("/var/lib/tor/hidden_service/a")
+        );
+        assert_eq!(
+            hsdir_value("   HiddenServiceDir\t/x/a  ").as_deref(),
+            Some("/x/a")
+        );
+        assert_eq!(hsdir_value("HiddenServiceDir"), None);
+        assert_eq!(hsdir_value("HiddenServiceDir   "), None);
+        assert_eq!(hsdir_value("HiddenServiceDirX /x/a"), None);
+        assert_eq!(hsdir_value("HiddenServiceDir /x/a extra"), None);
+        assert_eq!(hsdir_value("# HiddenServiceDir /x/a"), None);
+        assert_eq!(hsdir_value("HiddenServicePort 80 1.2.3.4:80"), None);
+    }
+
+    #[test]
+    fn torrc_service_names_under_the_key_root_only() {
+        let t = "HiddenServiceDir     /var/lib/tor/hidden_service/blog\n\
+                 HiddenServiceDir     /var/lib/tor/hidden_service/shop\n\
+                 HiddenServiceDir     /var/lib/tor/hidden_service/blog\n\
+                 HiddenServiceDir     /elsewhere/evil\n\
+                 HiddenServiceDir     /var/lib/tor/hidden_service/Bad_Name\n\
+                 HiddenServiceDir     /var/lib/tor/hs-ram/vault\n";
+        let root = "/var/lib/tor/hidden_service";
+        // The sealed RAM copy (hs-ram/<name>) counts only for the default key root.
+        let mut want = vec!["blog", "shop"];
+        if py_path(&default_keys_env()) == root {
+            want.push("vault");
+        }
+        assert_eq!(service_names_in_torrc(t, root), want);
+        assert_eq!(service_names_in_torrc(t, "/elsewhere"), vec!["evil"]);
+        assert_eq!(
+            service_names_in_torrc(t, &default_keys_env())
+                .iter()
+                .filter(|n| *n == "vault")
+                .count(),
+            1,
+            "the default root sees its sealed RAM copy"
+        );
+        assert!(service_names_in_torrc("", root).is_empty());
+    }
+
+    #[test]
+    fn small_helpers() {
+        assert_eq!(oct(0o751), "0o751");
+        assert!(py_isdigit("0123") && !py_isdigit("12a") && !py_isdigit(""));
+        assert!(
+            which("sh") || which("bash"),
+            "a shell is on the test host's PATH"
+        );
+        assert!(!which("definitely-not-a-command-hf"));
+        assert!(!is_dir("/definitely/not/here") && is_dir("/"));
+    }
 
     #[test]
     fn pathlib_normalisation() {
