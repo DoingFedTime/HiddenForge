@@ -404,4 +404,358 @@ mod tests {
             .setconf()
             .starts_with("SETCONF NumEntryGuards=2 NumPrimaryGuards=2 HSLayer2Nodes="));
     }
+
+    /// A scratch directory that is removed even when the test panics.
+    struct Tmp(std::path::PathBuf);
+
+    impl Tmp {
+        fn new(tag: &str) -> Tmp {
+            use std::sync::atomic::{AtomicU32, Ordering};
+            static N: AtomicU32 = AtomicU32::new(0);
+            let d = std::env::temp_dir().join(format!(
+                "hf-vg-{tag}-{}-{}",
+                std::process::id(),
+                N.fetch_add(1, Ordering::SeqCst)
+            ));
+            std::fs::create_dir_all(&d).unwrap();
+            Tmp(d)
+        }
+        fn p(&self, rel: &str) -> String {
+            self.0.join(rel).to_string_lossy().into_owned()
+        }
+    }
+
+    impl Drop for Tmp {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// A deterministic stand-in for the CSPRNG that also counts its draws.
+    fn golden(draws: &std::cell::Cell<u64>) -> impl FnMut() -> f64 + '_ {
+        let mut n = 0.0f64;
+        move || {
+            draws.set(draws.get() + 1);
+            n = (n + 0.618_033_988_75) % 1.0;
+            n
+        }
+    }
+
+    fn fp(c: char) -> String {
+        c.to_string().repeat(40)
+    }
+
+    fn node(c: char, chosen: f64, expires: f64) -> GuardNode {
+        GuardNode {
+            idhex: fp(c),
+            chosen_at: chosen,
+            expires_at: expires,
+        }
+    }
+
+    #[test]
+    fn constants_are_the_vanguards_values_in_seconds() {
+        // vanguards.py: NUM_LAYER{1,2,3}_GUARDS, MIN/MAX_LAYER2_LIFETIME_HOURS = 24*1 / 24*45,
+        // MIN/MAX_LAYER3_LIFETIME_HOURS = 1 / 48.
+        assert_eq!(NUM_LAYER1_GUARDS, 2);
+        assert_eq!(NUM_LAYER2_GUARDS, 3);
+        assert_eq!(NUM_LAYER3_GUARDS, 8);
+        assert_eq!(MIN_LAYER2_LIFETIME, 86_400.0);
+        assert_eq!(MAX_LAYER2_LIFETIME, 3_888_000.0);
+        assert_eq!(MIN_LAYER3_LIFETIME, 3_600.0);
+        assert_eq!(MAX_LAYER3_LIFETIME, 172_800.0);
+        assert_eq!(WEIGHT_SCALE, 10_000.0);
+    }
+
+    #[test]
+    fn uniform_is_the_low_end_plus_the_span_times_the_draw() {
+        assert_eq!(uniform(&mut || 0.25, 10.0, 20.0), 12.5);
+        assert_eq!(uniform(&mut || 0.0, 10.0, 20.0), 10.0);
+        assert_eq!(uniform(&mut || 1.0, 10.0, 20.0), 20.0);
+        assert_eq!(uniform(&mut || 0.5, 0.0, 8.0), 4.0);
+    }
+
+    #[test]
+    fn csprng_unit_is_in_the_unit_interval_and_not_constant() {
+        let xs: Vec<f64> = (0..2000).map(|_| csprng_unit()).collect();
+        assert!(xs.iter().all(|x| (0.0..1.0).contains(x)));
+        let mean = xs.iter().sum::<f64>() / xs.len() as f64;
+        assert!((0.45..0.55).contains(&mean), "mean {mean}");
+        let mut sorted = xs.clone();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        sorted.dedup();
+        assert!(sorted.len() > 1990, "{} distinct of 2000", sorted.len());
+    }
+
+    #[test]
+    fn candidates_carry_bandwidth_times_the_middle_weight() {
+        let mut w = weights();
+        w.insert("Wmg".into(), 5000.0);
+        let rs = vec![
+            router('A', "Fast Stable Valid", 10.0),
+            router('D', "Fast Stable Valid Guard", 30.0),
+        ];
+        assert_eq!(
+            candidates(&rs, &w),
+            vec![(fp('D'), 15.0), (fp('A'), 10.0)],
+            "Guard 30 x Wmg 5000/10000 = 15, plain 10 x Wmm 1.0 = 10"
+        );
+        assert!(candidates(&[], &w).is_empty());
+    }
+
+    #[test]
+    fn a_pick_stops_at_the_first_candidate_whose_running_total_reaches_the_draw() {
+        let cands = vec![("A".to_string(), 1.0), ("B".to_string(), 1.0)];
+        let at = |r: f64, total: f64| pick(&cands, total, &mut || r).to_string();
+        assert_eq!(at(0.25, 2.0), "A");
+        assert_eq!(at(0.5, 2.0), "A", "a draw equal to A's weight is still A");
+        assert_eq!(at(0.5000001, 2.0), "B");
+        assert_eq!(at(0.999, 2.0), "B");
+        // a total larger than the weights add up to: the last candidate, not a panic
+        assert_eq!(at(0.5, 10.0), "B");
+        let three = vec![
+            ("A".to_string(), 1.0),
+            ("B".to_string(), 2.0),
+            ("C".to_string(), 3.0),
+        ];
+        let at3 = |r: f64| pick(&three, 6.0, &mut || r).to_string();
+        assert_eq!(at3(0.2), "B");
+        assert_eq!(at3(0.5), "B", "3.0 is exactly A+B");
+        assert_eq!(at3(0.51), "C");
+    }
+
+    #[test]
+    fn nothing_is_chosen_without_usable_candidates() {
+        let zero: BTreeMap<String, f64> = ["Wmm", "Wmg", "Wme", "Wmd"]
+            .iter()
+            .map(|k| (k.to_string(), 0.0))
+            .collect();
+        let mut l = Layers::default();
+        assert!(
+            !l.update(&many(), &zero, 0.0, &mut csprng_unit),
+            "all weights 0"
+        );
+        assert!(l.layer2.is_empty() && l.layer3.is_empty());
+        assert!(
+            !l.update(&[], &weights(), 0.0, &mut csprng_unit),
+            "empty consensus"
+        );
+        let no_wmm: BTreeMap<String, f64> = BTreeMap::new();
+        assert!(
+            !l.update(&many(), &no_wmm, 0.0, &mut csprng_unit),
+            "no weights at all"
+        );
+    }
+
+    #[test]
+    fn a_guard_lives_for_the_longer_of_two_uniform_draws() {
+        let one = vec![router('A', "Fast Stable Valid", 5.0)];
+        let script = [0.5, 0.2, 0.9, 0.5, 0.6, 0.1];
+        let mut i = 0;
+        let mut rng = || {
+            i += 1;
+            script[i - 1]
+        };
+        let mut l = Layers::default();
+        assert!(l.update(&one, &weights(), 1000.0, &mut rng));
+        assert_eq!(i, 6, "pick, two lifetime draws, for each layer");
+        let l2 = &l.layer2[0];
+        let l3 = &l.layer3[0];
+        assert_eq!((l2.chosen_at, l3.chosen_at), (1000.0, 1000.0));
+        // 86_400 + (3_888_000 - 86_400) * 0.9 and 3_600 + (172_800 - 3_600) * 0.6
+        assert!((l2.expires_at - (1000.0 + 86_400.0 + 3_801_600.0 * 0.9)).abs() < 1e-6);
+        assert!((l3.expires_at - (1000.0 + 3_600.0 + 169_200.0 * 0.6)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_stuck_generator_ends_after_a_bounded_number_of_draws() {
+        let draws = std::cell::Cell::new(0u64);
+        let mut stuck = || {
+            draws.set(draws.get() + 1);
+            0.5
+        };
+        let mut l = Layers::default();
+        assert!(l.update(&many(), &weights(), 0.0, &mut stuck));
+        assert_eq!(
+            (l.layer2.len(), l.layer3.len()),
+            (1, 1),
+            "only one distinct pick"
+        );
+        // per layer: 100_000 picks plus the 2 lifetime draws of the one accepted guard
+        assert_eq!(draws.get(), 2 * 100_002);
+    }
+
+    #[test]
+    fn zero_weight_relays_are_never_wanted_and_never_chosen() {
+        let mut w = weights();
+        w.insert("Wmg".into(), 0.0);
+        let mut rs = vec![
+            router('A', "Fast Stable Valid", 10.0),
+            router('B', "Fast Stable Valid", 10.0),
+        ];
+        rs.extend(
+            "CDEFG"
+                .chars()
+                .map(|c| router(c, "Fast Stable Valid Guard", 10.0)),
+        );
+        let draws = std::cell::Cell::new(0u64);
+        let mut l = Layers::default();
+        assert!(l.update(&rs, &w, 0.0, &mut golden(&draws)));
+        for layer in [&l.layer2, &l.layer3] {
+            let mut ids: Vec<&str> = layer.iter().map(|g| g.idhex.as_str()).collect();
+            ids.sort_unstable();
+            assert_eq!(ids, vec![fp('A'), fp('B')], "only the two with weight");
+        }
+        assert!(
+            draws.get() < 1000,
+            "{} draws: it kept trying for impossible picks",
+            draws.get()
+        );
+    }
+
+    #[test]
+    fn expiry_and_trimming_follow_consensus_update() {
+        let rs = many();
+        let mut l = Layers {
+            layer2: vec![
+                node('A', 0.0, 100.0),
+                node('B', 0.0, 99.0),
+                node('C', 0.0, 200.0),
+                node('D', 0.0, 300.0),
+                node('E', 0.0, 400.0),
+            ],
+            layer3: vec![],
+        };
+        assert!(l.update(&rs, &weights(), 100.0, &mut csprng_unit));
+        // B expired (99 < 100); A expires exactly now and stays (vanguards: `expires_at < now`)
+        let kept: Vec<&str> = l.layer2.iter().map(|g| g.idhex.as_str()).collect();
+        assert_eq!(kept, vec![fp('A'), fp('C'), fp('D')], "{kept:?}");
+        assert_eq!(l.layer3.len(), NUM_LAYER3_GUARDS);
+
+        // five live layer-3 guards are kept; twelve are cut to eight
+        let many3: Vec<GuardNode> = "ABCDEF012345".chars().map(|c| node(c, 0.0, 1e9)).collect();
+        let mut l = Layers {
+            layer2: vec![],
+            layer3: many3.clone(),
+        };
+        l.update(&rs, &weights(), 0.0, &mut csprng_unit);
+        assert_eq!(l.layer3, many3[..NUM_LAYER3_GUARDS].to_vec());
+    }
+
+    #[test]
+    fn the_state_text_is_exact() {
+        let l = Layers {
+            layer2: vec![node('A', 1000.0, 2000.0)],
+            layer3: vec![node('B', 3.0, 4.0), node('C', 5.0, 6.0)],
+        };
+        assert_eq!(
+            l.to_text(),
+            format!(
+                "# HiddenForge full vanguards state: layer idhex chosen_at expires_at\nL2 {} 1000 2000\nL3 {} 3 4\nL3 {} 5 6\n",
+                fp('A'),
+                fp('B'),
+                fp('C')
+            )
+        );
+        assert_eq!(Layers::from_text(&l.to_text()), l);
+        assert_eq!(
+            l.setconf(),
+            format!(
+                "SETCONF NumEntryGuards=2 NumPrimaryGuards=2 HSLayer2Nodes={} HSLayer3Nodes={},{}",
+                fp('A'),
+                fp('B'),
+                fp('C')
+            )
+        );
+    }
+
+    #[test]
+    fn unreadable_state_lines_are_dropped_and_ids_are_uppercased() {
+        let lower = "abcdef0123".repeat(4);
+        let upper = lower.to_ascii_uppercase();
+        let (short, long, nonhex) = (&lower[..39], format!("{lower}0"), "g".repeat(40));
+        let text = format!(
+            "# comment\n\
+             L2 {lower} 1 2\n\
+             L3 {upper} 3.5 4.5\n\
+             L2 {short} 1 2\n\
+             L2 {long} 1 2\n\
+             L2 {nonhex} 1 2\n\
+             L2 abcd 1 2\n\
+             L2 {upper} 1\n\
+             L2 {upper} 1 2 3\n\
+             L2 {upper} x y\n\
+             L4 {upper} 1 2\n\
+             bogus\n\n",
+        );
+        let l = Layers::from_text(&text);
+        assert_eq!(
+            l,
+            Layers {
+                layer2: vec![GuardNode {
+                    idhex: upper.clone(),
+                    chosen_at: 1.0,
+                    expires_at: 2.0
+                }],
+                layer3: vec![GuardNode {
+                    idhex: upper,
+                    chosen_at: 3.5,
+                    expires_at: 4.5
+                }],
+            }
+        );
+    }
+
+    #[test]
+    fn saved_state_loads_back_whatever_its_padding() {
+        use std::os::unix::fs::PermissionsExt;
+        let t = Tmp::new("state");
+        let path = t.p("vanguards.state");
+        let l = Layers {
+            layer2: vec![node('A', 10.0, 20.0)],
+            layer3: vec![node('B', 30.0, 40.0)],
+        };
+        l.save(&path).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), l.to_text());
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o7777,
+            0o600
+        );
+        let names: Vec<_> = std::fs::read_dir(&t.0)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, vec!["vanguards.state"], "no temp file left");
+        assert_eq!(Layers::load(&path), l);
+
+        assert_eq!(Layers::load(&t.p("missing")), Layers::default());
+
+        // The state file is read up to 64 KiB, however much padding it carries.
+        let padded = |total: usize| {
+            let mut s = l.to_text().into_bytes();
+            s.resize(total, b'\n');
+            s
+        };
+        for (total, want) in [(2000, true), (65536, true), (65537, false)] {
+            std::fs::write(t.p("padded"), padded(total)).unwrap();
+            let got = Layers::load(&t.p("padded"));
+            assert_eq!(got == l, want, "{total} bytes");
+            if !want {
+                assert_eq!(
+                    got,
+                    Layers::default(),
+                    "{total} bytes: too large, start fresh"
+                );
+            }
+        }
+        std::os::unix::fs::symlink(t.p("vanguards.state"), t.p("link")).unwrap();
+        assert_eq!(
+            Layers::load(&t.p("link")),
+            Layers::default(),
+            "never follows a link"
+        );
+
+        let err = l.save(&t.p("no-such-dir/x")).unwrap_err();
+        assert!(err.starts_with("Cannot write state to "), "{err}");
+    }
 }

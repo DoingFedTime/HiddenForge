@@ -705,4 +705,205 @@ mod tests {
     fn oserror_format() {
         assert!(oserror(2).starts_with("[Errno 2] "));
     }
+
+    #[test]
+    fn parse_accepts_what_json_loads_accepts() {
+        use Json::*;
+        for (src, want) in [
+            ("false", Bool(false)),
+            ("true", Bool(true)),
+            ("null", Null),
+            ("[false]", Arr(vec![Bool(false)])),
+            ("[]", Arr(vec![])),
+            ("[ ]", Arr(vec![])),
+            (" [ 1 , 2 ] ", Arr(vec![Int(1), Int(2)])),
+            ("{\"a\": []}", Obj(vec![("a".into(), Arr(vec![]))])),
+            ("{}", Obj(vec![])),
+            ("{ }", Obj(vec![])),
+            ("-5", Int(-5)),
+            ("12", Int(12)),
+            ("-0", Int(0)),
+            ("[12]", Arr(vec![Int(12)])),
+            ("[-3, 40]", Arr(vec![Int(-3), Int(40)])),
+            ("\"\"", Str(String::new())),
+            // a repeated key keeps its first position and takes the last value
+            (
+                "{\"a\": 1, \"b\": 2, \"a\": 3}",
+                Obj(vec![("a".into(), Int(3)), ("b".into(), Int(2))]),
+            ),
+        ] {
+            assert_eq!(parse(src), Some(want), "{src}");
+        }
+    }
+
+    #[test]
+    fn parse_rejects_malformed_documents() {
+        for bad in [
+            "",
+            "[1,]",
+            "[1 2]",
+            "[",
+            "]",
+            "{\"a\" 1}",
+            "{a: 1}",
+            "{\"a\": 1,}",
+            "{\"a\": }",
+            "tru",
+            "nul",
+            "fals",
+            "-",
+            "- 1",
+            "1 2",
+            "[1] x",
+            "\"abc",
+            "\"\\",
+            "{\"a\":",
+        ] {
+            assert_eq!(parse(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn parse_string_escapes_match_json_loads() {
+        for (src, want) in [
+            (r#""\"""#, "\""),
+            (r#""\\""#, "\\"),
+            (r#""\/""#, "/"),
+            (r#""\b""#, "\u{8}"),
+            (r#""\f""#, "\u{c}"),
+            (r#""\n""#, "\n"),
+            (r#""\r""#, "\r"),
+            (r#""\t""#, "\t"),
+            (r#""\u00e9""#, "é"),
+            (r#""é""#, "é"),
+            (r#""\ud83d\ude00""#, "\u{1F600}"),
+            ("\"😀\"", "😀"),
+            (r#""a\u0041b""#, "aAb"),
+            (r#""\u0000""#, "\0"),
+            (r#""x\ty""#, "x\ty"),
+        ] {
+            assert_eq!(parse(src), Some(Json::Str(want.into())), "{src}");
+        }
+        assert_eq!(
+            parse(r#"{"k\n": "v\"w"}"#),
+            Some(Json::Obj(vec![("k\n".into(), Json::Str("v\"w".into()))]))
+        );
+    }
+
+    #[test]
+    fn parse_string_rejects_what_json_loads_rejects() {
+        for bad in [
+            "\"a\u{1}b\"",
+            "\"a\nb\"",
+            "\"a\tb\"",
+            "\"\\q\"",
+            "\"\\u12\"",
+            "\"\\uzzzz\"",
+            "\"\\u12G4\"",
+            "\"\\x41\"",
+            "\"abc",
+            "\"\\",
+        ] {
+            assert_eq!(parse(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn nesting_is_capped_at_65_levels() {
+        let arr = |n: usize| format!("{}{}", "[".repeat(n), "]".repeat(n));
+        assert!(parse(&arr(65)).is_some());
+        assert!(parse(&arr(66)).is_none());
+        let obj = |n: usize| format!("{}{{}}{}", "{\"a\": ".repeat(n - 1), "}".repeat(n - 1));
+        assert!(parse(&obj(65)).is_some());
+        assert!(parse(&obj(66)).is_none());
+    }
+
+    #[test]
+    fn py_round_is_half_even_on_the_exact_binary_value() {
+        for (x, n, want) in [
+            (2.675, 2, 2.67),
+            (0.5, 0, 0.0),
+            (1.5, 0, 2.0),
+            (2.5, 0, 2.0),
+            (1234.5678, 1, 1234.6),
+            (0.125, 2, 0.12),
+            (7.0, 3, 7.0),
+        ] {
+            assert_eq!(py_round(x, n), want, "round({x}, {n})");
+        }
+    }
+
+    #[test]
+    fn decode_turns_each_undecodable_byte_into_a_lone_surrogate() {
+        use PyChar::{Surr, C};
+        assert_eq!(decode(b""), vec![]);
+        assert_eq!(decode(b"ok\xc3\xa9"), from_str("oké"));
+        assert_eq!(decode(b"\xe2\x82"), vec![Surr(0xe2), Surr(0x82)]);
+        assert_eq!(decode(b"a\xe2\x82"), vec![C('a'), Surr(0xe2), Surr(0x82)]);
+        assert_eq!(
+            decode(b"\xe2\x28\xa1"),
+            vec![Surr(0xe2), C('('), Surr(0xa1)]
+        );
+        assert_eq!(
+            decode(b"\xf0\x9f\x98"),
+            vec![Surr(0xf0), Surr(0x9f), Surr(0x98)]
+        );
+        assert_eq!(decode(b"\xff\xfe"), vec![Surr(0xff), Surr(0xfe)]);
+        assert_eq!(
+            decode(b"x\xffy\xe2\x82"),
+            vec![C('x'), Surr(0xff), C('y'), Surr(0xe2), Surr(0x82)]
+        );
+    }
+
+    #[test]
+    fn errno_text_is_libcs_and_oserror_adds_the_path_repr() {
+        assert_eq!(strerror(libc::ENOENT), "No such file or directory");
+        assert_eq!(strerror(libc::EACCES), "Permission denied");
+        assert_eq!(oserror(libc::EACCES), "[Errno 13] Permission denied");
+        assert_eq!(
+            oserror_path(2, "/x/y"),
+            "[Errno 2] No such file or directory: '/x/y'"
+        );
+        assert_eq!(
+            oserror_path(13, "/it's"),
+            "[Errno 13] Permission denied: \"/it's\""
+        );
+    }
+
+    #[test]
+    fn py_repr_quotes_and_escapes_like_python() {
+        for (s, want) in [
+            ("x", "'x'"),
+            ("", "''"),
+            ("it's", "\"it's\""),
+            ("a\"b", "'a\"b'"),
+            ("'\"", "'\\'\"'"),
+            ("a\\b", "'a\\\\b'"),
+            ("a\nb\rc\td", "'a\\nb\\rc\\td'"),
+            ("\x01\x7f", "'\\x01\\x7f'"),
+            ("é", "'é'"),
+        ] {
+            assert_eq!(py_repr(s), want, "{s:?}");
+        }
+    }
+
+    #[test]
+    fn non_finite_floats_print_like_json_dumps() {
+        assert_eq!(float_json(f64::NEG_INFINITY), "-Infinity");
+        assert_eq!(float_json(f64::NAN), "NaN");
+        assert_eq!(float_repr(f64::INFINITY), "inf");
+        assert_eq!(float_repr(f64::NEG_INFINITY), "-inf");
+        assert_eq!(float_repr(-0.0), "-0.0");
+        assert_eq!(float_repr(0.0), "0.0");
+        assert_eq!(float_repr(-1.5e-7), "-1.5e-07");
+        assert_eq!(float_repr(1e22), "1e+22");
+    }
+
+    #[test]
+    fn safe_escapes_the_first_non_ascii_control_and_del() {
+        assert_eq!(safe_str("\u{7f}"), "\\x7f");
+        assert_eq!(safe_str("\u{80}"), "\\x80");
+        assert_eq!(safe_str("\u{a0}"), "\\xa0");
+        assert_eq!(safe_str("\u{a1}"), "¡");
+    }
 }
