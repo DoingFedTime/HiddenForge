@@ -108,9 +108,13 @@ def snapshot(root: Path) -> dict:
                 snap[rel] = ("link", os.readlink(p))
             elif stat.S_ISDIR(st.st_mode):
                 snap[rel] = ("dir", mode)
+            elif not stat.S_ISREG(st.st_mode):
+                snap[rel] = ("special", stat.S_IFMT(st.st_mode), mode)
             else:
                 try:
                     body = p.read_bytes()[:4096]
+                    for form in {str(root), os.path.realpath(root)}:
+                        body = body.replace(form.encode(), b"<D>")
                 except OSError:
                     body = None
                 snap[rel] = ("file", mode, body)

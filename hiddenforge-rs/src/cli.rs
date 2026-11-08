@@ -508,7 +508,11 @@ fn hsdir_value(line: &str) -> Option<String> {
 }
 
 fn torrc_service_names(keys: &str) -> Vec<String> {
-    let Ok(b) = std::fs::read(TORRC_PATH) else {
+    torrc_service_names_at(TORRC_PATH, keys)
+}
+
+fn torrc_service_names_at(torrc: &str, keys: &str) -> Vec<String> {
+    let Ok(b) = std::fs::read(torrc) else {
         return vec![];
     };
     service_names_in_torrc(&String::from_utf8_lossy(&b), keys)
@@ -561,8 +565,15 @@ fn service_names(keys: &str) -> Vec<String> {
 }
 
 fn in_container() -> bool {
-    std::env::var("HIDDENFORGE_IN_CONTAINER").as_deref() == Ok("1")
-        || std::path::Path::new(TORRC_PATH).exists()
+    in_container_from(
+        std::env::var("HIDDENFORGE_IN_CONTAINER").ok().as_deref(),
+        std::path::Path::new(TORRC_PATH).exists(),
+    )
+}
+
+/// Inside the image when the marker variable is exactly "1", or a torrc exists.
+fn in_container_from(marker: Option<&str>, torrc_exists: bool) -> bool {
+    marker == Some("1") || torrc_exists
 }
 
 fn no_tool_error() -> String {
@@ -626,6 +637,14 @@ fn cmd_info(a: &Args) -> i32 {
         println!("{}", py::dumps(&m, true, Some(2)));
         return EXIT_OK;
     }
+    for line in info_lines(&m) {
+        println!("{line}");
+    }
+    EXIT_OK
+}
+
+/// The human `info` lines for a manifest (scripts/hiddenforge cmd_info).
+fn info_lines(m: &Json) -> Vec<String> {
     let s = |j: Option<&Json>| match j {
         Some(Json::Str(s)) => s.clone(),
         Some(Json::Int(i)) => i.to_string(),
@@ -635,29 +654,30 @@ fn cmd_info(a: &Args) -> i32 {
         Some(Json::Arr(v)) => v.first().cloned().unwrap_or(Json::Null),
         _ => Json::Null,
     };
-    println!(
-        "{} {} (contract {})",
-        s(m.get("name")),
-        s(m.get("version")),
-        s(m.get("contract_version"))
-    );
-    println!("  image:   {}", s(m.get("image")));
-    println!("  tor:     {}", s(m.get("tor_version")));
-    println!(
-        "  address: {}",
-        s(m.get("address").and_then(|x| x.get("command")))
-    );
-    println!(
-        "  health:  {} (field: {})",
-        s(m.get("health").and_then(|x| x.get("command"))),
-        s(m.get("health").and_then(|x| x.get("ready_field")))
-    );
-    println!(
-        "  keys:    {} -> {}",
-        s(vol.get("path")),
-        s(vol.get("host_suggestion"))
-    );
-    EXIT_OK
+    vec![
+        format!(
+            "{} {} (contract {})",
+            s(m.get("name")),
+            s(m.get("version")),
+            s(m.get("contract_version"))
+        ),
+        format!("  image:   {}", s(m.get("image"))),
+        format!("  tor:     {}", s(m.get("tor_version"))),
+        format!(
+            "  address: {}",
+            s(m.get("address").and_then(|x| x.get("command")))
+        ),
+        format!(
+            "  health:  {} (field: {})",
+            s(m.get("health").and_then(|x| x.get("command"))),
+            s(m.get("health").and_then(|x| x.get("ready_field")))
+        ),
+        format!(
+            "  keys:    {} -> {}",
+            s(vol.get("path")),
+            s(vol.get("host_suggestion"))
+        ),
+    ]
 }
 
 fn not_ready_error(keys: &str, name: &str) -> String {
@@ -2577,8 +2597,11 @@ fn cmd_client_auth(a: &Args, op: &str) -> i32 {
 /// Service names from the `<NAME>_TOR_SERVICE_HOSTS` variables, as the torrc
 /// builder derives them.
 fn env_service_names() -> Vec<String> {
-    let mut names: Vec<String> = std::env::vars_os()
-        .filter_map(|(k, _)| k.into_string().ok())
+    names_from_env_keys(std::env::vars_os().filter_map(|(k, _)| k.into_string().ok()))
+}
+
+fn names_from_env_keys(keys: impl Iterator<Item = String>) -> Vec<String> {
+    let mut names: Vec<String> = keys
         .filter_map(|k| {
             k.strip_suffix("_TOR_SERVICE_HOSTS")
                 .map(|n| n.to_lowercase().replace('_', "-"))
@@ -3134,5 +3157,516 @@ mod tests {
         let a = parse("t", &specs, &["--na=x".into(), "--js".into()]).unwrap();
         assert_eq!(a.get("name"), Some("x"));
         assert!(a.flag("json"));
+    }
+
+    // ── helpers shared by the tests below ──
+
+    /// A scratch directory that is made traversable again and removed even when a test panics.
+    struct Scratch(std::path::PathBuf);
+    impl Scratch {
+        fn new(tag: &str) -> Self {
+            let d = std::env::temp_dir().join(format!("hf-cli-{tag}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&d);
+            std::fs::create_dir_all(&d).unwrap();
+            Scratch(d)
+        }
+        fn path(&self, rel: &str) -> String {
+            format!("{}/{rel}", self.0.display())
+        }
+    }
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            fn reopen(p: &std::path::Path) {
+                use std::os::unix::fs::PermissionsExt;
+                if std::fs::symlink_metadata(p).is_ok_and(|m| m.is_dir()) {
+                    let _ = std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o700));
+                    if let Ok(rd) = std::fs::read_dir(p) {
+                        for e in rd.flatten() {
+                            reopen(&e.path());
+                        }
+                    }
+                }
+            }
+            reopen(&self.0);
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn mode_of(p: &str) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::symlink_metadata(p).unwrap().permissions().mode() & 0o7777
+    }
+
+    fn chmod(p: &str, mode: u32) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(p, std::fs::Permissions::from_mode(mode)).unwrap();
+    }
+
+    // ── human_duration, random_hex8, now_secs (vanity.py human_duration is the reference) ──
+
+    #[test]
+    fn durations_read_like_the_python_generator_prints_them() {
+        for (secs, want) in [
+            (0.0, "<1s"),
+            (0.5, "<1s"),
+            (0.999, "<1s"),
+            (1.0, "1s"),
+            (1.4, "1s"),
+            (1.5, "2s"),
+            (2.5, "2s"),
+            (59.4, "59s"),
+            (59.5, "60s"),
+            (60.0, "1.0m"),
+            (3599.0, "60.0m"),
+            (3599.9, "60.0m"),
+            (3600.0, "1.0h"),
+            (86399.0, "24.0h"),
+            (86400.0, "1.0d"),
+            (1e7, "115.7d"),
+            (31535999.0, "365.0d"),
+            (31536000.0, "1.0y"),
+            (6.3e8, "20.0y"),
+        ] {
+            assert_eq!(human_duration(secs), want, "{secs} seconds");
+        }
+    }
+
+    #[test]
+    fn random_names_are_sixteen_fresh_hex_digits() {
+        let all: Vec<String> = (0..64).map(|_| random_hex8()).collect();
+        for h in &all {
+            assert_eq!(h.len(), 16, "{h}");
+            assert!(h
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)));
+        }
+        let mut uniq = all.clone();
+        uniq.sort();
+        uniq.dedup();
+        assert_eq!(uniq.len(), all.len(), "64 draws must all differ");
+        assert!(all.iter().all(|h| h != "0000000000000000"));
+    }
+
+    #[test]
+    fn the_clock_is_unix_seconds() {
+        // SAFETY: time(2) with a null pointer.
+        let c = unsafe { libc::time(std::ptr::null_mut()) } as u64;
+        let n = now_secs();
+        assert!(n >= 1_700_000_000, "{n}");
+        assert!(n.abs_diff(c) <= 2, "{n} vs {c}");
+    }
+
+    // ── names and tool choice ──
+
+    #[test]
+    fn the_image_is_recognised_by_marker_or_torrc() {
+        for (marker, torrc, want) in [
+            (None, false, false),
+            (Some("1"), false, true),
+            (Some("0"), false, false),
+            (Some("true"), false, false),
+            (Some(""), false, false),
+            (Some("11"), false, false),
+            (None, true, true),
+            (Some("0"), true, true),
+            (Some("1"), true, true),
+        ] {
+            assert_eq!(in_container_from(marker, torrc), want, "{marker:?} {torrc}");
+        }
+    }
+
+    #[test]
+    fn service_names_come_from_variable_names() {
+        let keys = [
+            "MYAPP_TOR_SERVICE_HOSTS",
+            "WEB_2_TOR_SERVICE_HOSTS",
+            "myapp_TOR_SERVICE_HOSTS",
+            "A_B_C_TOR_SERVICE_HOSTS",
+            "TOR_SERVICE_HOSTS",
+            "_TOR_SERVICE_HOSTS",
+            "_LEAD_TOR_SERVICE_HOSTS",
+            "UP.PER_TOR_SERVICE_HOSTS",
+            "X_TOR_SERVICE_HOSTS_EXTRA",
+            "PATH",
+            "9_TOR_SERVICE_HOSTS",
+        ];
+        assert_eq!(
+            names_from_env_keys(keys.iter().map(|k| k.to_string())),
+            vec!["9", "a-b-c", "myapp", "web-2"]
+        );
+        let long = format!("{}_TOR_SERVICE_HOSTS", "A".repeat(64));
+        assert!(names_from_env_keys([long].into_iter()).is_empty());
+        assert!(names_from_env_keys(std::iter::empty()).is_empty());
+    }
+
+    #[test]
+    fn the_torrc_is_read_from_the_path_it_is_given() {
+        let s = Scratch::new("torrc");
+        let t = s.path("torrc");
+        std::fs::write(
+            &t,
+            b"HiddenServiceDir /k/b\nHiddenServiceDir /k/a\nHiddenServiceDir /other/c\n\xff\n",
+        )
+        .unwrap();
+        assert_eq!(torrc_service_names_at(&t, "/k"), vec!["b", "a"]);
+        assert!(torrc_service_names_at(&t, "/nope").is_empty());
+        assert!(torrc_service_names_at(&s.path("absent"), "/k").is_empty());
+    }
+
+    // ── info ──
+
+    #[test]
+    fn info_lines_put_each_manifest_field_in_its_slot() {
+        let m = py::parse(
+            r#"{"name": "nm", "version": "9.8.7", "contract_version": 4, "image": "img:tag",
+                "tor_version": "0.1.2", "address": {"command": "addr cmd"},
+                "health": {"command": "hc cmd", "ready_field": "rdy"},
+                "volumes": [{"path": "/v/p", "host_suggestion": "./h"}, {"path": "/second"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            info_lines(&m),
+            vec![
+                "nm 9.8.7 (contract 4)",
+                "  image:   img:tag",
+                "  tor:     0.1.2",
+                "  address: addr cmd",
+                "  health:  hc cmd (field: rdy)",
+                "  keys:    /v/p -> ./h",
+            ]
+        );
+        let s = py::parse(r#"{"contract_version": "5", "volumes": []}"#).unwrap();
+        let lines = info_lines(&s);
+        assert_eq!(lines[0], "  (contract 5)");
+        assert_eq!(lines[5], "  keys:     -> ");
+    }
+
+    #[test]
+    fn info_of_the_shipped_manifest() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../manifest.json");
+        let m = py::parse(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let lines = info_lines(&m);
+        assert_eq!(lines.len(), 6);
+        assert_eq!(
+            lines[0],
+            format!("hiddenforge {VERSION} (contract {CONTRACT_VERSION})")
+        );
+        assert_eq!(lines[1], "  image:   sambent.dev/sam/hiddenforge:latest");
+        assert_eq!(
+            lines[3],
+            "  address: hiddenforge show --json [--name <service>] [--container <name>]"
+        );
+        assert_eq!(
+            lines[4],
+            "  health:  hiddenforge status --json (field: ready)"
+        );
+        assert_eq!(
+            lines[5],
+            "  keys:    /var/lib/tor/hidden_service -> ./tor-keys"
+        );
+        assert!(lines[2].starts_with("  tor:     0.") && lines[2].len() > 12);
+    }
+
+    // ── mounts, rotation, hardening, atomic writes ──
+
+    #[test]
+    fn mount_points_are_found_by_device_and_symlinks_never_count() {
+        let s = Scratch::new("mount");
+        assert!(ismount("/"), "the root is its own parent");
+        if std::path::Path::new("/proc/self").exists() {
+            assert!(ismount("/proc"), "a different device from /");
+        }
+        std::fs::create_dir(s.path("sub")).unwrap();
+        assert!(!ismount(&s.path("sub")));
+        assert!(!ismount(&s.path("missing")));
+        std::os::unix::fs::symlink("/", s.path("link")).unwrap();
+        assert!(
+            !ismount(&s.path("link")),
+            "a symlink to / is not a mount point"
+        );
+        assert!(!ismount(&s.path("sub/../sub/missing")));
+    }
+
+    fn populate_volume(s: &Scratch) {
+        std::fs::create_dir_all(s.path("keys/a")).unwrap();
+        std::fs::write(s.path("keys/a/hostname"), b"a.onion\n").unwrap();
+        std::fs::write(s.path("keys/b.onion"), b"b\n").unwrap();
+        std::fs::create_dir_all(s.path("keys/.rotated-1")).unwrap();
+    }
+
+    #[test]
+    fn rotating_inside_moves_every_entry_into_a_fresh_private_archive() {
+        let s = Scratch::new("rot");
+        populate_volume(&s);
+        let keys = s.path("keys");
+        let (archive, moved) = rotate_inside(&keys).unwrap();
+        assert_eq!(
+            moved,
+            vec!["a", "b.onion"],
+            "sorted, earlier archives left alone"
+        );
+        let name = archive.rsplit('/').next().unwrap();
+        assert!(
+            name.strip_prefix(".rotated-")
+                .is_some_and(|t| t.len() == 10 && t.bytes().all(|b| b.is_ascii_digit())),
+            "{name}"
+        );
+        assert!(archive.starts_with(&format!("{keys}/")));
+        assert_eq!(mode_of(&archive), 0o700);
+        assert_eq!(
+            std::fs::read(format!("{archive}/a/hostname")).unwrap(),
+            b"a.onion\n"
+        );
+        assert!(std::path::Path::new(&format!("{archive}/b.onion")).exists());
+        assert!(!std::path::Path::new(&s.path("keys/a")).exists());
+        assert!(!std::path::Path::new(&s.path("keys/b.onion")).exists());
+        assert!(std::path::Path::new(&s.path("keys/.rotated-1")).is_dir());
+        let mut left: Vec<String> = std::fs::read_dir(&keys)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().into_string().unwrap())
+            .collect();
+        left.sort();
+        assert_eq!(left, vec![".rotated-1".to_string(), name.to_string()]);
+    }
+
+    #[test]
+    fn rotating_an_empty_volume_is_a_usage_error() {
+        let s = Scratch::new("rotempty");
+        std::fs::create_dir_all(s.path("keys/.rotated-5")).unwrap();
+        let keys = s.path("keys");
+        assert_eq!(
+            rotate_inside(&keys),
+            Err((EXIT_USAGE, format!("{keys} holds no identity to rotate")))
+        );
+        assert!(!std::path::Path::new(&s.path("keys/.rotated-5/.rotated-5")).exists());
+    }
+
+    #[test]
+    fn rotating_refuses_whole_when_one_directory_cannot_be_moved() {
+        if crate::privs::is_root() {
+            return; // root can move anything
+        }
+        let s = Scratch::new("rotstuck");
+        populate_volume(&s);
+        std::fs::create_dir_all(s.path("keys/z")).unwrap();
+        chmod(&s.path("keys/z"), 0o500);
+        chmod(&s.path("keys/a"), 0o500);
+        let keys = s.path("keys");
+        assert_eq!(
+            rotate_inside(&keys),
+            Err((
+                EXIT_FAIL,
+                "[Errno 13] cannot move a, z (not writable by this user); nothing was rotated. Run rotate where the service directories are writable, e.g. inside the container".to_string()
+            ))
+        );
+        assert!(
+            std::path::Path::new(&s.path("keys/a/hostname")).exists(),
+            "nothing moved"
+        );
+        assert!(std::path::Path::new(&s.path("keys/b.onion")).exists());
+        let archives = std::fs::read_dir(&keys)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().starts_with(".rotated-"))
+            .count();
+        assert_eq!(archives, 1, "no archive was created");
+    }
+
+    #[test]
+    fn only_unwritable_directories_block_a_rotation() {
+        if crate::privs::is_root() {
+            return;
+        }
+        let s = Scratch::new("rotfiles");
+        std::fs::create_dir_all(s.path("keys")).unwrap();
+        std::fs::write(s.path("keys/readonly.onion"), b"x").unwrap();
+        chmod(&s.path("keys/readonly.onion"), 0o000);
+        std::os::unix::fs::symlink("/proc", s.path("keys/link")).unwrap();
+        let (archive, moved) = rotate_inside(&s.path("keys")).unwrap();
+        assert_eq!(moved, vec!["link", "readonly.onion"]);
+        assert!(std::fs::symlink_metadata(format!("{archive}/link")).is_ok());
+    }
+
+    #[test]
+    fn rotation_numbers_archives_when_the_name_is_taken() {
+        let s = Scratch::new("rotnum");
+        std::fs::create_dir_all(s.path("keys/a")).unwrap();
+        let now = now_secs();
+        for t in now - 1..now + 4 {
+            std::fs::create_dir(s.path(&format!("keys/.rotated-{t}"))).unwrap();
+        }
+        let (archive, _) = rotate_inside(&s.path("keys")).unwrap();
+        let name = archive.rsplit('/').next().unwrap();
+        assert!(
+            name.strip_prefix(".rotated-")
+                .and_then(|r| r.split_once('-'))
+                .is_some_and(|(t, n)| t.len() == 10 && n == "1"),
+            "{name}"
+        );
+        // a second rotation, with -1 taken as well, goes to -2
+        std::fs::create_dir_all(s.path("keys/b")).unwrap();
+        for t in now - 1..now + 4 {
+            let _ = std::fs::create_dir(s.path(&format!("keys/.rotated-{t}-1")));
+        }
+        let (archive, _) = rotate_inside(&s.path("keys")).unwrap();
+        assert!(archive.ends_with("-2"), "{archive}");
+    }
+
+    #[test]
+    fn rotating_does_not_follow_a_symlinked_volume() {
+        let s = Scratch::new("rotlink");
+        std::fs::create_dir_all(s.path("real/a")).unwrap();
+        std::os::unix::fs::symlink("real", s.path("keys")).unwrap();
+        let err = rotate_inside(&s.path("keys")).unwrap_err();
+        assert_eq!(err.0, EXIT_FAIL);
+        assert!(err.1.starts_with("[Errno 20] Not a directory"), "{}", err.1);
+        assert!(std::path::Path::new(&s.path("real/a")).is_dir());
+    }
+
+    #[test]
+    fn hardening_sets_modes_on_descriptors_and_leaves_symlinks_alone() {
+        let s = Scratch::new("harden");
+        let dir = s.path("svc");
+        std::fs::create_dir(&dir).unwrap();
+        for (n, m) in [
+            ("hs_ed25519_secret_key", 0o644),
+            ("hs_ed25519_public_key", 0o666),
+            ("hostname", 0o600),
+            ("zzz-extra", 0o640),
+        ] {
+            std::fs::write(format!("{dir}/{n}"), b"x").unwrap();
+            chmod(&format!("{dir}/{n}"), m);
+        }
+        std::fs::write(s.path("victim"), b"v").unwrap();
+        chmod(&s.path("victim"), 0o644);
+        std::os::unix::fs::symlink(s.path("victim"), format!("{dir}/evil")).unwrap();
+        chmod(&dir, 0o777);
+        harden(&dir, None, None).unwrap();
+        assert_eq!(mode_of(&dir), 0o700);
+        assert_eq!(mode_of(&format!("{dir}/hostname")), 0o644);
+        for n in [
+            "hs_ed25519_secret_key",
+            "hs_ed25519_public_key",
+            "zzz-extra",
+        ] {
+            assert_eq!(mode_of(&format!("{dir}/{n}")), 0o600, "{n}");
+        }
+        assert_eq!(
+            mode_of(&s.path("victim")),
+            0o644,
+            "the link's target is untouched"
+        );
+        assert!(std::fs::symlink_metadata(format!("{dir}/evil"))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+    }
+
+    #[test]
+    fn hardening_applies_the_requested_owner() {
+        use std::os::unix::fs::MetadataExt;
+        let s = Scratch::new("hardenown");
+        let dir = s.path("svc");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(format!("{dir}/hostname"), b"x").unwrap();
+        // SAFETY: plain getters.
+        let (uid, gid) = unsafe { (libc::geteuid(), libc::getegid()) };
+        harden(&dir, Some(uid), Some(gid)).unwrap();
+        // Another group the caller belongs to: the group id must really be applied.
+        let mut groups = [0 as libc::gid_t; 64];
+        // SAFETY: getgroups into a 64-entry buffer.
+        let n = unsafe { libc::getgroups(64, groups.as_mut_ptr()) };
+        if let Some(other) = groups[..n.max(0) as usize].iter().find(|g| **g != gid) {
+            harden(&dir, None, Some(*other)).unwrap();
+            for p in [dir.clone(), format!("{dir}/hostname")] {
+                let md = std::fs::metadata(&p).unwrap();
+                assert_eq!((md.uid(), md.gid()), (uid, *other), "{p}");
+            }
+        }
+    }
+
+    #[test]
+    fn hardening_refuses_a_symlinked_or_missing_directory() {
+        let s = Scratch::new("hardenlink");
+        std::fs::create_dir(s.path("real")).unwrap();
+        std::os::unix::fs::symlink("real", s.path("link")).unwrap();
+        assert!(harden(&s.path("link"), None, None).is_err());
+        assert!(harden(&s.path("absent"), None, None).is_err());
+    }
+
+    #[test]
+    fn atomic_writes_set_the_exact_mode_and_replace_regular_files() {
+        use std::os::unix::fs::MetadataExt;
+        let s = Scratch::new("atomic");
+        let f = s.path("out.txt");
+        std::fs::write(&f, b"old").unwrap();
+        chmod(&f, 0o600);
+        let before = std::fs::metadata(&f).unwrap().ino();
+        write_bytes_nofollow(&f, b"new contents", 0o755).unwrap();
+        assert_eq!(std::fs::read(&f).unwrap(), b"new contents");
+        assert_eq!(
+            mode_of(&f),
+            0o755,
+            "the requested mode, whatever the old file or umask had"
+        );
+        assert_ne!(
+            std::fs::metadata(&f).unwrap().ino(),
+            before,
+            "renamed into place"
+        );
+        write_bytes_nofollow(&f, b"", 0o644).unwrap();
+        assert_eq!((std::fs::read(&f).unwrap(), mode_of(&f)), (vec![], 0o644));
+        let big = vec![0xA5u8; 3 << 20];
+        write_bytes_nofollow(&f, &big, 0o644).unwrap();
+        assert_eq!(
+            std::fs::read(&f).unwrap(),
+            big,
+            "a long write is finished in full"
+        );
+        let names: Vec<String> = std::fs::read_dir(&s.0)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().into_string().unwrap())
+            .collect();
+        assert_eq!(names, vec!["out.txt"], "no temporary file is left");
+    }
+
+    #[test]
+    fn atomic_writes_never_replace_a_link_a_directory_or_a_fifo() {
+        let s = Scratch::new("atomicno");
+        std::fs::write(s.path("victim"), b"precious").unwrap();
+        std::os::unix::fs::symlink("victim", s.path("link")).unwrap();
+        std::fs::create_dir(s.path("dir")).unwrap();
+        let fifo = std::ffi::CString::new(s.path("fifo")).unwrap();
+        // SAFETY: valid path.
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+        for n in ["link", "dir", "fifo"] {
+            let p = s.path(n);
+            assert_eq!(
+                write_bytes_nofollow(&p, b"x", 0o644),
+                Err(format!(
+                    "[Errno 17] refusing to replace {p}: it is not a regular file"
+                )),
+                "{n}"
+            );
+        }
+        assert_eq!(std::fs::read(s.path("victim")).unwrap(), b"precious");
+        assert!(std::fs::symlink_metadata(s.path("link"))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            std::fs::read_dir(&s.0).unwrap().count(),
+            4,
+            "nothing was added"
+        );
+    }
+
+    #[test]
+    fn atomic_writes_report_a_missing_directory() {
+        let s = Scratch::new("atomicmiss");
+        let e = write_bytes_nofollow(&s.path("nodir/f"), b"x", 0o644).unwrap_err();
+        assert!(e.starts_with("[Errno 2] No such file or directory"), "{e}");
     }
 }

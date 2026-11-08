@@ -313,3 +313,72 @@ def test_no_process_of_ours_can_dump_core_or_be_read(scratch):
     finally:
         child.stdin.close()
         assert child.wait(timeout=10) == 2
+
+
+# ───────────────────────── option tables, info, write failures ───────────────
+
+def python_options():
+    """Option strings and arity per subcommand, read from the Python host CLI's parser."""
+    import argparse
+    import importlib.machinery
+    import importlib.util
+
+    loader = importlib.machinery.SourceFileLoader("hf_host_cli", str(REPO / "scripts" / "hiddenforge"))
+    spec = importlib.util.spec_from_loader("hf_host_cli", loader)
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    top = mod.build_parser()
+    sub = next(a for a in top._actions if isinstance(a, argparse._SubParsersAction))
+    table = {}
+    for cmd, sp in sub.choices.items():
+        for a in sp._actions:
+            if a.option_strings and a.option_strings != ["-h", "--help"]:
+                first_choice = list(a.choices)[0] if a.choices else "x"
+                table.setdefault(cmd, []).append((a.option_strings[-1], a.nargs == 0, first_choice))
+    return table
+
+
+IN_IMAGE = ["setup", "show", "doctor", "version", "info", "rotate", "backup", "restore",
+            "encrypt-key", "decrypt-key"]
+OPTIONS = python_options()
+
+
+@pytest.mark.parametrize("cmd", IN_IMAGE)
+def test_every_option_of_the_host_cli_is_accepted_in_the_image(scratch, cmd):
+    """The image CLI accepts what the host CLI accepts for the same command (argparse forms)."""
+    required = {"restore": ["--input", "in.age"], "backup": ["--out", "o.age"],
+                "encrypt-key": ["--name", "svc"], "decrypt-key": ["--name", "svc"]}.get(cmd, [])
+    for opt, is_flag, value in OPTIONS[cmd]:
+        if opt in required[::2]:
+            continue
+        args = [cmd, *required, opt] + ([] if is_flag else [value])
+        # The scratch directory is empty: each of these stops before it writes anything.
+        r = rust(args, scratch, argv0="hiddenforge")
+        for bad in ("unrecognized arguments", "expected one argument", "invalid choice",
+                    "ambiguous"):
+            assert bad not in r.err, (args, r.err)
+
+
+@pytest.mark.skipif(Path("/opt/hiddenforge/manifest.json").exists(), reason="manifest installed")
+def test_info_without_the_image_manifest(scratch):
+    for flags in ([], ["--json"]):
+        r = run("hiddenforge", ["info", *flags], scratch)
+        assert r.rc == 1 and json.loads(r.out) == {
+            "ok": False, "exit_code": 1, "error": "cannot read /opt/hiddenforge/manifest.json"}
+
+
+def test_a_write_that_fails_part_way_leaves_nothing_behind(scratch):
+    """RLIMIT_FSIZE makes write(2) fail with EFBIG: the error is reported and no temp file stays."""
+    import resource
+
+    def limit():
+        signal.signal(signal.SIGXFSZ, signal.SIG_IGN)
+        resource.setrlimit(resource.RLIMIT_FSIZE, (100, 100))
+
+    p = subprocess.run([str(RUST), "setup", "-o", "out", "--backend", "web:80", "--non-interactive"],
+                       cwd=scratch, env=env_for(), capture_output=True, text=True,
+                       stdin=subprocess.DEVNULL, preexec_fn=limit, timeout=30)
+    assert p.returncode == 1
+    assert json.loads(p.stdout) == {"ok": False, "exit_code": 1,
+                                    "error": "[Errno 27] File too large"}
+    assert list((scratch / "out").iterdir()) == [], "no half-written file and no .tmp"

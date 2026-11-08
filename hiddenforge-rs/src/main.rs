@@ -106,12 +106,7 @@ fn hiddenforge(args: &[String]) -> i32 {
         ("__is-socket", [p]) => compat::test(&["-S".into(), (*p).to_string()]),
         // Run as the tor user by the supervisor: the public hostname file only.
         ("__keys", [op, name]) => sealed::helper(op, name),
-        ("__read-hostname", [p])
-            if (p.starts_with("/var/lib/tor/hidden_service/")
-                || p.starts_with("/var/lib/tor/hs-ram/"))
-                && p.ends_with("/hostname")
-                && !p.contains("/../") =>
-        {
+        ("__read-hostname", [p]) if hostname_path_ok(p) => {
             match fsops::read_small_regular_file(p, fsops::ADDRESS_FILE_MAX) {
                 Ok(d) => {
                     use std::io::Write;
@@ -121,14 +116,10 @@ fn hiddenforge(args: &[String]) -> i32 {
             }
         }
         // Run as the tor user by the supervisor, which holds no CAP_KILL.
-        ("__kill", [pid, sig]) => match (pid.parse::<i32>(), sig.parse::<i32>()) {
-            (Ok(p), Ok(s))
-                if p > 1 && (s == libc::SIGTERM || s == libc::SIGINT || s == libc::SIGKILL) =>
-            {
-                // SAFETY: kill(2); the kernel enforces that we only reach our own processes.
-                i32::from(unsafe { libc::kill(p, s) } != 0)
-            }
-            _ => 2,
+        ("__kill", [pid, sig]) => match kill_request(pid, sig) {
+            // SAFETY: kill(2); the kernel enforces that we only reach our own processes.
+            Some((p, s)) => i32::from(unsafe { libc::kill(p, s) } != 0),
+            None => 2,
         },
         ("torrc-preview", []) => torrc_preview(),
         ("healthcheck", _) => healthcheck(rest),
@@ -149,14 +140,35 @@ fn hiddenforge(args: &[String]) -> i32 {
     }
 }
 
+/// The only files `__read-hostname` serves: a hostname file inside the tor
+/// volumes, with no way out of them.
+fn hostname_path_ok(p: &str) -> bool {
+    (p.starts_with("/var/lib/tor/hidden_service/") || p.starts_with("/var/lib/tor/hs-ram/"))
+        && p.ends_with("/hostname")
+        && !p.contains("/../")
+}
+
+/// `__kill <pid> <signal>`: only a real process (never 0, 1 or a group) and only
+/// TERM, INT or KILL. Nothing here signals anything; the caller does.
+fn kill_request(pid: &str, sig: &str) -> Option<(i32, i32)> {
+    let (p, s) = (pid.parse::<i32>().ok()?, sig.parse::<i32>().ok()?);
+    (p > 1 && (s == libc::SIGTERM || s == libc::SIGINT || s == libc::SIGKILL)).then_some((p, s))
+}
+
+/// The key directory the CLI will use: the variable when set and not empty.
+fn keys_dir_from(var: Option<String>) -> String {
+    var.filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "/var/lib/tor/hidden_service".into())
+}
+
 /// True when root is refused entry to the key directory (EACCES), which is
 /// what a container without DAC_OVERRIDE sees.
 fn root_cannot_reach_keys() -> bool {
-    let keys = std::env::var("HIDDENFORGE_KEYS_DIR")
-        .ok()
-        .filter(|v| !v.is_empty())
-        .unwrap_or_else(|| "/var/lib/tor/hidden_service".into());
-    matches!(fsops::lstat(&keys), Err(e) if e.errno == Some(libc::EACCES))
+    keys_unreachable(&keys_dir_from(std::env::var("HIDDENFORGE_KEYS_DIR").ok()))
+}
+
+fn keys_unreachable(keys: &str) -> bool {
+    matches!(fsops::lstat(keys), Err(e) if e.errno == Some(libc::EACCES))
 }
 
 fn python(args: &[String]) -> i32 {
@@ -246,4 +258,125 @@ fn main() {
         by_name(&argv0, rest)
     };
     std::process::exit(code);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A scratch directory that is made traversable again and removed even when a test panics.
+    struct Scratch(std::path::PathBuf);
+    impl Scratch {
+        fn new(tag: &str) -> Self {
+            let d = std::env::temp_dir().join(format!("hf-main-{tag}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&d);
+            std::fs::create_dir_all(&d).unwrap();
+            Scratch(d)
+        }
+    }
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            use std::os::unix::fs::PermissionsExt;
+            if let Ok(rd) = std::fs::read_dir(&self.0) {
+                for e in rd.flatten() {
+                    let _ =
+                        std::fs::set_permissions(e.path(), std::fs::Permissions::from_mode(0o700));
+                }
+            }
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn hostname_files_are_served_only_from_the_tor_volumes() {
+        for ok in [
+            "/var/lib/tor/hidden_service/a/hostname",
+            "/var/lib/tor/hs-ram/a/hostname",
+            "/var/lib/tor/hidden_service/a/b/hostname",
+            "/var/lib/tor/hs-ram/hostname",
+        ] {
+            assert!(hostname_path_ok(ok), "{ok}");
+        }
+        for bad in [
+            "/etc/hostname",
+            "/var/lib/tor/hidden_service/a/hostnam",
+            "/var/lib/tor/hidden_service/a/hostname2",
+            "/var/lib/tor/hidden_service/a/xhostname",
+            "/var/lib/tor/other/a/hostname",
+            "/var/lib/tor/hidden_servic/a/hostname",
+            "/var/lib/tor/hidden_service",
+            "/var/lib/tor/hidden_service/hostname.d/x",
+            "/var/lib/tor/hs-ram",
+            "var/lib/tor/hidden_service/a/hostname",
+            "hostname",
+            "",
+            "/var/lib/tor/hidden_service/../../../etc/hostname",
+            "/var/lib/tor/hidden_service/a/../../../../etc/hostname",
+            "/var/lib/tor/hs-ram/a/../b/hostname",
+        ] {
+            assert!(!hostname_path_ok(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn kill_requests_name_a_real_process_and_one_of_three_signals() {
+        let (term, int, kill) = (libc::SIGTERM, libc::SIGINT, libc::SIGKILL);
+        for s in [term, int, kill] {
+            assert_eq!(kill_request("2", &s.to_string()), Some((2, s)));
+            assert_eq!(kill_request("4194304", &s.to_string()), Some((4194304, s)));
+        }
+        // pid 0 is the caller's process group, -1 is everything, 1 is init, below that are groups.
+        for pid in [
+            "0",
+            "1",
+            "-1",
+            "-2",
+            "-15",
+            "",
+            "x",
+            "1.5",
+            "2 ",
+            " 2",
+            "99999999999999",
+        ] {
+            assert_eq!(kill_request(pid, "15"), None, "pid {pid:?}");
+        }
+        for sig in [
+            "0", "1", "3", "9 ", "10", "12", "17", "18", "19", "-9", "", "TERM", "15.0",
+        ] {
+            assert_eq!(kill_request("2", sig), None, "signal {sig:?}");
+        }
+    }
+
+    #[test]
+    fn the_key_directory_default_and_override() {
+        assert_eq!(keys_dir_from(None), "/var/lib/tor/hidden_service");
+        assert_eq!(
+            keys_dir_from(Some(String::new())),
+            "/var/lib/tor/hidden_service"
+        );
+        assert_eq!(keys_dir_from(Some("/srv/k".into())), "/srv/k");
+    }
+
+    #[test]
+    fn only_a_refused_entry_counts_as_unreachable() {
+        use std::os::unix::fs::PermissionsExt;
+        let s = Scratch::new("reach");
+        let root = s.0.to_string_lossy().into_owned();
+        assert!(!keys_unreachable(&root), "an ordinary directory");
+        assert!(
+            !keys_unreachable(&format!("{root}/missing")),
+            "ENOENT is not EACCES"
+        );
+        let closed = s.0.join("closed");
+        std::fs::create_dir_all(closed.join("keys")).unwrap();
+        std::fs::set_permissions(&closed, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let denied = keys_unreachable(&format!("{}/keys", closed.display()));
+        std::fs::set_permissions(&closed, std::fs::Permissions::from_mode(0o700)).unwrap();
+        if privs::is_root() {
+            assert!(!denied, "root passes through a 0000 directory");
+        } else {
+            assert!(denied, "EACCES on the way in");
+        }
+    }
 }
