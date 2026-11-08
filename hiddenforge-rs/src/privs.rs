@@ -829,6 +829,15 @@ mod tests {
     }
 
     #[test]
+    fn self_exe_is_the_running_binary() {
+        let me = std::env::current_exe().unwrap();
+        assert_eq!(self_exe(), me.to_string_lossy());
+        assert!(std::path::Path::new(&self_exe()).is_absolute());
+        // the fallback path is only for a /proc that cannot be read
+        assert_ne!(self_exe(), "/usr/local/bin/hiddenforge");
+    }
+
+    #[test]
     fn is_root_matches_the_effective_uid_in_proc() {
         let st = std::fs::read_to_string("/proc/self/status").unwrap();
         let euid: u32 = status_field(&st, "Uid:")
