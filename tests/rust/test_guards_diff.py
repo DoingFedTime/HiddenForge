@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -26,8 +27,9 @@ BIN = Path(os.environ.get("HIDDENFORGE_RUST_BIN")
            or REPO / "hiddenforge-rs" / "target" / "release" / "hiddenforge")
 
 
-def _run_guards(extra: list[str], d: str) -> dict:
-    """Run the Rust monitor against the scripted control port; return its record."""
+def _run_guards(extra: list[str], d: str, loglevel: str = "WARN") -> dict:
+    """Run the Rust monitor against the scripted control port; return its record
+    (plus its standard output under "stdout")."""
     os.mkdir(f"{d}/data")
     guards = Path(d) / "hiddenforge-guards"
     guards.symlink_to(BIN)
@@ -41,15 +43,18 @@ def _run_guards(extra: list[str], d: str) -> dict:
             assert ctl.poll() is None, "the fake control port exited early"
             assert time.monotonic() < deadline, "the fake control port never listened"
             time.sleep(0.05)
-        mon = subprocess.Popen([str(guards), "--control_socket", sock, "--loglevel", "WARN",
-                                *extra], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        ctl.wait(timeout=90)
+        with open(f"{d}/stdout.txt", "wb") as so:
+            mon = subprocess.Popen([str(guards), "--control_socket", sock, "--loglevel", loglevel,
+                                    *extra], stdout=so, stderr=subprocess.DEVNULL)
+            ctl.wait(timeout=90)
     finally:
         for p in (mon, ctl):
             if p is not None and p.poll() is None:
                 p.kill()
                 p.wait()
-    return json.loads(Path(out).read_text())
+    rec = json.loads(Path(out).read_text())
+    rec["stdout"] = Path(f"{d}/stdout.txt").read_text()
+    return rec
 
 
 @pytest.mark.skipif(not BIN.exists(), reason="build hiddenforge-rs first (cargo build --release)")
@@ -104,3 +109,54 @@ def test_rust_guards_close_exactly_what_vanguards_closed():
                     p.wait()
         got = json.loads(Path(out).read_text())["closes"]
     assert got == want
+
+
+# logger.py: "%(levelname)s[%(asctime)s]: %(message)s" with "%a %b %d %H:%M:%S %Y".
+LOG_LINE = re.compile(
+    r"^(DEBUG|INFO|NOTICE|WARN|ERROR)"
+    r"\[(Mon|Tue|Wed|Thu|Fri|Sat|Sun) (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) "
+    r"[0-3][0-9] [0-2][0-9]:[0-5][0-9]:[0-6][0-9] [0-9]{4}\]: (.+)$"
+)
+
+
+def _parse_log(text: str) -> list[tuple[str, str]]:
+    out = []
+    for line in text.splitlines():
+        m = LOG_LINE.match(line)
+        assert m, f"not a Vanguards log line: {line!r}"
+        out.append((m.group(1), m.group(4)))
+    return out
+
+
+@pytest.mark.skipif(not BIN.exists(), reason="build hiddenforge-rs first (cargo build --release)")
+def test_guards_log_what_vanguards_logs_in_its_format():
+    """Standard output at DEBUG for the scripted session: every line has the
+    addon's format, the force-closes appear in the order Vanguards made them,
+    and the full-vanguards pin message appears once."""
+    want = json.loads((HERE / "golden_guards_closes.json").read_text())["closes"]
+    with tempfile.TemporaryDirectory(dir="/tmp", prefix="hfg") as d:
+        rec = _run_guards(["--state", f"{d}/vanguards-full.state"], d, loglevel="DEBUG")
+    log = _parse_log(rec["stdout"])
+    assert rec["closes"] == want
+    notices = [m for lv, m in log if lv == "NOTICE"]
+    assert notices[0].startswith("Full vanguards enabled: 0 layer-2 and 0 layer-3 guards restored from ")
+    assert re.fullmatch(r"Vanguards \(HiddenForge guards \S+\) connected to Tor 0\.4\.9\.16", notices[1])
+    assert notices.count("Full vanguards: 3 layer-2 and 3 layer-3 guards pinned.") == 1
+    assert [m.removeprefix("We force-closed circuit ") for m in notices
+            if m.startswith("We force-closed circuit ")] == want
+    # Bandguards' own decisions, with Vanguards' wording.
+    assert ("NOTICE", "Tor bug #29699: Got 2 dropped cell on circ 10 "
+            "(in state HS_SERVICE_INTRO HSSI_ESTABLISHED; old state None None).") in log
+    assert ("WARN", "Possible Tor bug, or possible attack if very frequent: Got 3 dropped cell on circ 13 "
+            "(in state GENERAL None; old state None None)") in log
+    assert ("WARN", "Circ 12 exceeded CIRC_MAX_HSDESC_KILOBYTES: 31745 > 30720. ".strip()) in log
+    assert ("INFO", "Tor bug #29927: Got a dropped cell on circ 14 "
+            "(in state GENERAL None; old state None None).") in log
+    assert ("INFO", "Tor bug #29786: Got a dropped cell on circ 15 "
+            "(in state PATH_BIAS_TESTING None; old state HS_CLIENT_REND HSCR_CONNECTING).") in log
+    assert any(lv == "DEBUG" and m.startswith("Added circ for 650 CIRC 10 BUILT ") for lv, m in log)
+    assert any(lv == "DEBUG" and m.startswith("Closed hs circ for 650 CIRC 17 CLOSED ") for lv, m in log)
+    # Rendguard: the unknown rend point and the overused one.
+    assert ("INFO", f"Relay {'E' * 40} is not in our consensus.") in log
+    assert any(lv == "NOTICE" and m.startswith(f"Relay {'B' * 40} used ")
+               and "This is above its consensus weight of 0.066667%" in m for lv, m in log)
