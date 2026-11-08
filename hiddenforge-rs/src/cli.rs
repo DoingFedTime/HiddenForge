@@ -2025,6 +2025,12 @@ fn benchmark(seconds: i64, threads: i64) -> Result<f64, String> {
     }
     // SAFETY: signalling our own child.
     unsafe { libc::kill(child.id() as i32, libc::SIGTERM) };
+    // A generator that ignores SIGTERM gets 5 s, then SIGKILL (Python: wait(5), kill()).
+    let grace = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while matches!(child.try_wait(), Ok(None)) && std::time::Instant::now() < grace {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let _ = child.kill();
     let _ = child.wait();
     let _ = std::fs::remove_dir_all(&tmp);
     if best <= 0.0 {

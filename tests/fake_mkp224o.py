@@ -32,7 +32,9 @@ Behaviour is steered by HF_FAKE_MKP224O:
     fail_silent   exit 2 with nothing on stderr at all
     noise         write a valid key directory plus an unrelated directory beside it
     deaf          emit statistics and IGNORE SIGTERM, the way a wedged generator
-                  would; only SIGKILL stops it
+                  would; only SIGKILL stops it. A closed stderr does not stop it
+                  either: a caller that drops its end of the pipe is still waiting
+                  on a live process
 
 `-n <count>` is honoured: `-n 2` writes two key directories, so a caller that
 asked for the wrong number gets the wrong number back.
@@ -112,10 +114,14 @@ def main():
         elapsed = 0.0
         while True:
             elapsed += 1.0
-            sys.stderr.write(
-                f">calc/sec:{rate:.6f}, succ/sec:0.000000, rest/sec:19.904261, "
-                f"elapsed:{elapsed:.6f}sec\n")
-            sys.stderr.flush()
+            try:
+                sys.stderr.write(
+                    f">calc/sec:{rate:.6f}, succ/sec:0.000000, rest/sec:19.904261, "
+                    f"elapsed:{elapsed:.6f}sec\n")
+                sys.stderr.flush()
+            except BrokenPipeError:
+                if mode != "deaf":
+                    raise
             time.sleep(0.05)
             # Bounded, unlike the real binary. A caller that asks for statistics
             # forever and then waits for an exit is a defect; letting this hang
