@@ -81,8 +81,11 @@ select = ["E", "F", "W", "B", "S", "UP", "RUF", "PLW", "SIM", "PERF"]
 # mutmut 3.5.0 (the pinned dev venv) reads `paths_to_mutate`. A newer mutmut
 # deprecates it in favour of `source_paths`; when the dev dependency is bumped,
 # switch and re-verify, or this silently stops finding the code to mutate.
-# Every Python source that ships INSIDE the image. scripts/hiddenforge is the
-# fourth and is deliberately absent: mutmut only mutates files ending in .py
+# The Python reference implementation of the in-image runtime. Since 3.0 these
+# no longer ship (the image runs the Rust port, hiddenforge-rs, and the Rust
+# differential tests check it against them), so this is not a release gate.
+# scripts/hiddenforge, the host CLI, does ship and is deliberately absent:
+# mutmut only mutates files ending in .py
 # (mutmut/__main__.py: walk_source_files, should_ignore_for_mutation), and the
 # CLI is an extensionless script. Its coverage is tests/test_cli.py plus the
 # curated kill-check in scripts/mutation_spotcheck.py.
