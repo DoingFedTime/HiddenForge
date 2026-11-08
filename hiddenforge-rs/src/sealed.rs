@@ -390,6 +390,7 @@ mod tests {
     /// A migration interrupted after the envelope was written (crash, failed wipe) must not
     /// leave the plaintext key on the volume for good: the next start finishes the job.
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn unseal_finishes_an_interrupted_migration() {
         let l = layout("interrupted");
         std::fs::write(format!("{}/{SEALED}", l.vol), envelope()).unwrap();
@@ -410,6 +411,7 @@ mod tests {
     /// A plaintext key that DIFFERS from the sealed one is a second identity: refuse,
     /// change nothing, and say why.
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn unseal_refuses_a_different_leftover_plaintext() {
         let l = layout("twokeys");
         std::fs::write(format!("{}/{SEALED}", l.vol), envelope()).unwrap();
@@ -427,6 +429,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn unseal_puts_the_key_and_public_files_in_ram_and_leaves_the_volume_alone() {
         let l = layout("unseal");
         std::fs::write(format!("{}/{SEALED}", l.vol), envelope()).unwrap();
@@ -460,6 +463,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn unseal_with_the_wrong_passphrase_fails_and_writes_nothing() {
         let l = layout("wrongpass");
         std::fs::write(format!("{}/{SEALED}", l.vol), envelope()).unwrap();
@@ -476,6 +480,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn unseal_for_a_new_service_only_mirrors_public_files() {
         let l = layout("newsvc");
         std::fs::write(format!("{}/{HOSTNAME}", l.vol), b"h.onion\n").unwrap();
@@ -492,6 +497,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn unseal_migrates_a_plaintext_key_and_removes_it() {
         let l = layout("migrate");
         std::fs::write(format!("{}/{SECRET}", l.vol), KEY).unwrap();
@@ -515,6 +521,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn migration_with_a_short_passphrase_leaves_the_plaintext_alone() {
         let l = layout("migshort");
         std::fs::write(format!("{}/{SECRET}", l.vol), KEY).unwrap();
@@ -526,6 +533,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn unseal_in_restores_the_key_and_removes_the_envelope() {
         let l = layout("ok");
         let (keys, vol) = (&*l.keys, &l.vol);
@@ -550,6 +558,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn unseal_in_refuses_a_conflicting_plaintext_and_a_wrong_passphrase() {
         let l = layout("conflict");
         let (keys, vol) = (&*l.keys, &l.vol);
@@ -586,6 +595,7 @@ mod tests {
     // ---- seal_new / settled -----------------------------------------------
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn seal_new_seals_a_generated_key_once_and_mirrors_public_files() {
         let l = layout("sealnew");
         std::fs::write(format!("{}/{SECRET}", l.rdir), KEY).unwrap();
@@ -625,6 +635,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn seal_new_without_a_key_in_ram_seals_nothing() {
         let l = layout("sealnone");
         std::fs::write(format!("{}/{HOSTNAME}", l.rdir), b"h.onion\n").unwrap();
@@ -637,6 +648,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn seal_new_with_a_short_passphrase_fails_and_seals_nothing() {
         let l = layout("sealshort");
         std::fs::write(format!("{}/{SECRET}", l.rdir), KEY).unwrap();
@@ -649,6 +661,7 @@ mod tests {
     type SettledCase = (bool, Option<&'static [u8]>, Option<&'static [u8]>, bool);
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn settled_needs_an_envelope_and_a_matching_hostname_in_both_places() {
         // (envelope on volume, hostname in ram, hostname on volume)
         let cases: [SettledCase; 9] = [
@@ -689,6 +702,7 @@ mod tests {
     // ---- client authorization mirror ---------------------------------------
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn sync_authorized_clients_mirrors_the_volume_exactly() {
         let l = layout("sync");
         let (from, to) = (
@@ -751,6 +765,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn sync_authorized_clients_creates_nothing_when_there_is_nothing_to_mirror() {
         let l = layout("syncnone");
         sync_authorized_clients(&l.vol, &l.rdir).unwrap();
@@ -762,6 +777,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn sync_authorized_clients_reports_what_it_cannot_do() {
         let l = layout("syncerr");
         let from = format!("{}/{AUTH_DIR}", l.vol);
@@ -844,6 +860,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "error text differs under miri (no strerror)")]
     fn write_atomic_names_the_target_when_it_fails() {
         let d = Tmp::new("wafail");
         let dir = format!("{d}/nodir");
@@ -887,6 +904,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn wipe_refuses_links_directories_and_missing_files() {
         let d = Tmp::new("wiperef");
         let refuse =
@@ -920,6 +938,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn copy_if_present_copies_with_the_mode_only_when_the_content_changed() {
         let l = layout("copy");
         let (vol, ram) = (&l.vol, &l.rdir);
@@ -977,6 +996,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn helper_rejects_bad_names_before_reading_anything() {
         let l = layout("hname");
         for bad in ["", "Upper", "a_b", "a.b", "../x", "a b", "a/b", "é", "a\n"] {
@@ -995,6 +1015,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn helper_caps_the_passphrase_on_stdin_at_4096_bytes() {
         let l = layout("hcap");
         assert_eq!(run_helper(&l, "unseal", "myapp", &vec![b'a'; 4096]).0, 0);
@@ -1023,6 +1044,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn helper_routes_ops_and_maps_results_to_exit_codes() {
         let l = layout("hroute");
         // unknown op: refused

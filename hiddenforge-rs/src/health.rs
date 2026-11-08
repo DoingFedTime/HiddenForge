@@ -630,6 +630,7 @@ mod tests {
     // ----------------------------------------------------------- sock_err
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn sock_err_prints_what_str_of_the_oserror_printed() {
         let os = |n: i32| sock_err(&std::io::Error::from_raw_os_error(n));
         assert_eq!(os(libc::ENOENT), "[Errno 2] No such file or directory");
@@ -747,6 +748,7 @@ mod tests {
     // ------------------------------------------------------------- query
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn query_sends_the_five_line_request_and_stops_at_the_quit_reply() {
         let t = Tmp::new("q1");
         let sock = t.p("c.sock");
@@ -770,6 +772,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn query_reads_a_fragmented_reply_to_its_end() {
         let t = Tmp::new("q2");
         let sock = t.p("c.sock");
@@ -790,6 +793,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn query_returns_what_arrived_when_the_peer_closes_early() {
         let t = Tmp::new("q3");
         let sock = t.p("c.sock");
@@ -802,6 +806,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn query_reports_a_reset_connection_like_python() {
         let t = Tmp::new("q4");
         let sock = t.p("c.sock");
@@ -818,6 +823,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn query_keeps_a_partial_reply_when_the_peer_goes_silent() {
         let t = Tmp::new("q5");
         let sock = t.p("c.sock");
@@ -840,6 +846,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn query_names_a_missing_or_dead_socket() {
         assert_eq!(
             query("/nonexistent-dir/c.sock"),
@@ -936,6 +943,7 @@ mod tests {
     // ------------------------------------- address files and uploads list
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn address_files_are_small_regular_ascii_files() {
         let t = Tmp::new("addr");
         let ok = t.put("ok", b"abc  \n\t");
@@ -968,6 +976,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn uploaded_addresses_are_the_sorted_distinct_valid_labels() {
         let t = Tmp::new("uploaded");
         let (a, b) = (label('a'), label('b'));
@@ -1238,6 +1247,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn a_healthy_container_is_ready() {
         let (rc, doc) = Sc::new(circuit_reply(&three(ONION)))
             .onion("app", ONION)
@@ -1252,6 +1262,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn a_truncated_reply_cannot_be_evaluated() {
         let mut reply = circuit_reply(&three(ONION));
         reply.truncate(reply.len() - "250 closing connection\r\n".len());
@@ -1269,6 +1280,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn a_missing_control_socket_cannot_be_evaluated() {
         let mut sc = Sc::new(vec![]).onion("app", ONION);
         sc.reply = None;
@@ -1284,6 +1296,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn an_unreadable_torrc_cannot_be_evaluated() {
         let mut sc = Sc::new(circuit_reply(&three(ONION))).onion("app", ONION);
         sc.torrc = false;
@@ -1297,6 +1310,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn no_configured_service_is_never_ready() {
         let (rc, doc) = Sc::new(circuit_reply(&three(ONION))).run();
         assert_eq!(rc, 1);
@@ -1311,6 +1325,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn an_unfinished_bootstrap_is_reported_first_then_a_missing_circuit() {
         let boot = |progress: &str, circ: &str| {
             format!(
@@ -1333,6 +1348,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn an_unpublished_service_names_itself() {
         let (rc, doc) = Sc::new(circuit_reply(&three(ONION)))
             .onion("good", ONION)
@@ -1352,6 +1368,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn a_hostname_that_is_not_an_address_is_not_published() {
         for content in [
             "not-an-onion\n".to_string(),
@@ -1367,6 +1384,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn a_published_address_with_no_intro_points_is_not_reachable() {
         let (rc, doc) = Sc::new(circuit_reply(&[])).onion("app", ONION).run();
         assert_eq!(rc, 1);
@@ -1379,6 +1397,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn intro_points_are_attributed_per_service() {
         let b = label('b');
         let mut lines = vec![intro("1", ONION), intro("2", ONION)];
@@ -1403,6 +1422,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn a_service_without_an_uploaded_descriptor_is_not_reachable_yet() {
         let b = label('b');
         let reply = circuit_reply(&[intro("1", ONION), intro("2", &b)]);
@@ -1436,6 +1456,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn no_intro_points_outranks_a_missing_upload() {
         let b = label('b');
         // a: circuits but no upload; b: no circuits and no upload
@@ -1453,6 +1474,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn a_serving_container_without_the_guards_is_not_ready() {
         let mut sc = Sc::new(circuit_reply(&three(ONION))).onion("app", ONION);
         sc.guards = false;
@@ -1468,6 +1490,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn circuits_in_another_multiline_reply_are_not_counted() {
         let mut reply = b"250+other=\r\n".to_vec();
         reply.extend_from_slice(intro("1", ONION).as_bytes());
@@ -1539,6 +1562,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn main_check_exits_2_when_there_is_no_control_socket() {
         if std::path::Path::new(CONTROL_SOCKET).exists() {
             return; // a real Tor is here; the verdict would depend on it
@@ -1582,6 +1606,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn the_watcher_subscribes_and_records_only_real_upload_events() {
         let (a, b, c) = (label('a'), label('b'), label('c'));
         let (b2, c2) = (b.clone(), c.clone());
@@ -1626,6 +1651,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn events_in_one_chunk_or_split_across_chunks_are_all_seen() {
         let (a, b, c) = (label('a'), label('b'), label('c'));
         let bundle = format!("{}250 OK\r\n{}{}", ev(&a), ev(&b), ev(&c));
@@ -1652,6 +1678,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn a_restarted_watcher_keeps_what_the_earlier_one_recorded() {
         let (a, b, c) = (label('a'), label('b'), label('c'));
         let (a2, b2, c2) = (a.clone(), b.clone(), c.clone());
@@ -1671,6 +1698,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn event_fields_split_like_pythons_ascii_replace_then_split() {
         // line.decode("ascii", "replace").split(): a non-ASCII byte becomes U+FFFD
         // (not a separator), while \x1c..\x1f separate fields.
@@ -1689,6 +1717,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn a_failed_record_does_not_stop_the_watcher() {
         let t = Tmp::new("watch-nodir");
         let sock = t.p("c.sock");
@@ -1703,6 +1732,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn a_line_over_a_mebibyte_with_no_crlf_is_dropped_but_not_one_at_the_limit() {
         let (a, b) = (label('a'), label('b'));
         // Exactly 1 MiB of filler is kept, so the event glues onto it and is lost;
@@ -1728,6 +1758,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn a_socket_that_appears_late_is_connected_to() {
         let t = Tmp::new("watch-late");
         let (sock, up) = (t.p("c.sock"), t.p("up"));
@@ -1751,6 +1782,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn a_socket_that_never_appears_is_exit_2_after_the_timeout() {
         let t = Tmp::new("watch-never");
         let t0 = Instant::now();
@@ -1765,6 +1797,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn a_reset_connection_is_exit_1() {
         let t = Tmp::new("watch-rst");
         let (sock, up) = (t.p("c.sock"), t.p("up"));

@@ -402,6 +402,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn run_piped_survives_a_child_that_writes_before_it_reads() {
         // 1 MB in, 1 MB out before reading any of it: writing all the input
         // before starting the readers deadlocks both sides on full pipes.
@@ -419,6 +420,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn run_piped_does_not_wait_for_a_grandchild_holding_the_pipe() {
         let mut c = Command::new("sh");
         c.args(["-c", "sleep 8 & echo hi"]);
@@ -433,6 +435,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn run_piped_kills_at_the_deadline() {
         let mut c = Command::new("sleep");
         c.arg("30");
@@ -452,6 +455,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn permitted_capabilities_matches_the_kernel_status_line() {
         // capget(pid 0) is per thread, so compare with this thread's status.
         let st = std::fs::read_to_string("/proc/thread-self/status").unwrap();
@@ -557,6 +561,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn dropping_capabilities_for_real_leaves_exactly_the_planned_set() {
         if is_root() {
             return; // a root drop is environment-specific: covered by the live e2e test
@@ -579,6 +584,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn dropping_with_no_capabilities_held_logs_the_note_then_nothing() {
         if is_root() || permitted_capabilities() != Some(0) {
             return;
@@ -600,6 +606,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn run_piped_returns_exit_code_and_each_stream_separately() {
         let mut c = Command::new("sh");
         c.args(["-c", "printf out; printf err >&2; exit 3"]);
@@ -611,6 +618,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn run_piped_without_input_gives_the_child_a_closed_stdin() {
         // cat on /dev/null stdin ends at once; on an open pipe it would hang to the deadline.
         let started = Instant::now();
@@ -620,6 +628,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn run_with_input_delivers_the_bytes_and_closes_stdin() {
         let input = b"line one\nsecond \x00 line\n";
         let (code, out, err) =
@@ -631,6 +640,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn run_piped_keeps_partial_output_of_a_child_killed_at_the_deadline() {
         let mut c = Command::new("sh");
         c.args(["-c", "printf partial; exec sleep 100"]);
@@ -639,6 +649,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn run_piped_reports_a_spawn_failure() {
         let e = run_timeout(
             Command::new("/nonexistent/definitely-not-here"),
@@ -649,6 +660,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn command_sets_argv0_args_and_only_sets_home_for_a_user() {
         let c = command(
             "sh",
@@ -702,6 +714,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn signal_reaches_a_real_child_and_reports_a_missing_pid() {
         use std::os::unix::process::ExitStatusExt;
         let mut c = Command::new("sleep").arg("100").spawn().unwrap();
@@ -722,6 +735,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn kill_proc_uses_sigterm_for_others_and_reaps() {
         // ignores INT, dies on TERM
         let mut child = sh_child("trap '' INT; trap 'exit 0' TERM; while :; do sleep 0.05; done");
@@ -740,6 +754,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn kill_proc_uses_sigint_for_tor() {
         // ignores TERM, dies on INT
         let mut child = sh_child("trap '' TERM; trap 'exit 0' INT; while :; do sleep 0.05; done");
@@ -756,6 +771,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn kill_proc_escalates_to_sigkill_after_the_timeout() {
         let mut child = sh_child("trap '' INT TERM; while :; do sleep 0.05; done");
         let pid = child.as_ref().unwrap().id();
@@ -769,6 +785,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn kill_proc_leaves_an_already_exited_or_absent_child_alone() {
         let mut none: Option<Child> = None;
         kill_proc(&mut none, "x", Duration::from_secs(1), &|_, _| {
@@ -791,6 +808,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn assert_process_dropped_accepts_a_child_running_as_a_normal_user() {
         if is_root() {
             return;
@@ -804,6 +822,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn assert_process_dropped_gives_up_after_five_seconds_on_a_vanished_pid() {
         let mut c = Command::new("true").spawn().unwrap();
         c.wait().unwrap(); // reaped: /proc/<pid> is gone

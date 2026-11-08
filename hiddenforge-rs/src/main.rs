@@ -359,6 +359,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn only_a_refused_entry_counts_as_unreachable() {
         use std::os::unix::fs::PermissionsExt;
         let s = Scratch::new("reach");

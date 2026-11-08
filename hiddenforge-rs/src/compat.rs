@@ -207,6 +207,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn cat_refuses_the_secret_key_and_extra_arguments() {
         // The allowlist is what keeps `cat` from printing a key; test the
         // command, not only the predicate.
@@ -232,6 +233,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn test_answers_only_dash_s() {
         assert_eq!(test(&["-S".into(), "/definitely/not/a/socket".into()]), 1);
         assert_eq!(test(&["-f".into(), "/etc/passwd".into()]), 127);
@@ -335,6 +337,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn cat_prints_an_allowed_file_whole_and_only_regular_files_within_the_cap() {
         let t = Tmp::new("cat");
         let mut out = Vec::new();
@@ -385,6 +388,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn test_s_is_true_only_for_a_socket_itself() {
         let t = Tmp::new("tests");
         let sock = t.p("control.sock");

@@ -1490,6 +1490,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn read_line_stops_at_the_cap_without_waiting_for_a_newline() {
         // 1 MiB + 1 bytes and no newline: the cap must trip on what has arrived,
         // not after buffering an unbounded line.
@@ -1499,6 +1500,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn read_line_accepts_a_line_exactly_at_the_cap() {
         let mut line = vec![b'a'; (1 << 20) - 2];
         line.extend_from_slice(b"\r\n");
@@ -1578,6 +1580,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "too slow under miri")]
     fn rendguard_closes_overused_rend_point() {
         let mut s = Rec::default();
         let mut rg = Rendguard::default();
@@ -1763,6 +1766,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn asctime_is_the_addons_log_stamp() {
         // %a %b %d %H:%M:%S %Y, as logger.py formats it; %d is zero padded.
         // 1_700_000_000 is Tue 2023-11-14 22:13:20 UTC, so any local zone
@@ -3549,6 +3553,7 @@ mod tests {
     // ── G8: the control link ────────────────────────────────────────────────
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn read_line_strips_the_line_ending_and_reports_a_closed_peer() {
         let (mut link, mut peer) = link_pair();
         peer.write_all(b"250 OK\r\nplain\n\r\n").unwrap();
@@ -3561,6 +3566,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn read_line_refuses_a_line_one_byte_over_the_cap() {
         // 1 MiB of text plus the newline is one over: the cap is on the line,
         // and a line exactly at the cap (tested above) is fine.
@@ -3572,6 +3578,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn read_message_reads_single_and_multi_line_replies() {
         let (mut link, mut peer) = link_pair();
         peer.write_all(b"250 \r\n250-version=0.4.9\r\n250-more=1\r\n250 OK\r\n")
@@ -3586,6 +3593,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn read_message_rejects_lines_without_a_status_and_separator() {
         for bad in [&b"250\r\n"[..], b"\r\n", b"25\r\n"] {
             let (mut link, mut peer) = link_pair();
@@ -3596,6 +3604,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn read_message_collects_data_blocks_and_unstuffs_dots() {
         let (mut link, mut peer) = link_pair();
         peer.write_all(b"250+ns/all=\r\nr first\r\n..hidden\r\nplain\r\n.\r\n250 OK\r\n")
@@ -3609,6 +3618,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn command_sends_one_line_and_queues_events_that_arrive_first() {
         let (mut link, mut peer) = link_pair();
         let ev_line = format!("650 CIRC 5 BUILT {G},{R} PURPOSE=GENERAL");
@@ -3625,6 +3635,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn getinfo_returns_the_value_or_the_data_block() {
         let (mut link, mut peer) = link_pair();
         peer.write_all(b"250-version=0.4.9.16\r\n250 OK\r\n")
@@ -3640,6 +3651,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn flush_closes_reports_what_tor_answered() {
         let (mut link, mut peer) = link_pair();
         peer.write_all(b"250 OK\r\n552 Unknown circuit \"6\"\r\n")

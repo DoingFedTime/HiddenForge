@@ -280,6 +280,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn denies_outside_and_allows_inside() {
         if abi() < 1 {
             return; // not available on this host

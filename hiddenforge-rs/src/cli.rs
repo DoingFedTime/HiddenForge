@@ -2962,6 +2962,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn read_nofollow_refuses_symlinks_dirs_and_oversize_and_reads_exactly() {
         let d = scratch("rn");
         let f = format!("{d}/f");
@@ -2990,6 +2991,7 @@ mod tests {
     const ONION: &str = "qtwidir57ll3rbtxwql5557yp7z3eb72mgbxn7wex7yofzn5tnooqpqd.onion";
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn onion_files_are_validated() {
         let d = scratch("on");
         let w = |n: &str, b: &[u8]| {
@@ -3022,6 +3024,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn public_keys_need_the_tag_and_exact_length() {
         let d = scratch("pk");
         let key = [7u8; 32];
@@ -3043,6 +3046,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn address_for_says_where_the_address_came_from() {
         let keys = scratch("af");
         let svc = format!("{keys}/myapp");
@@ -3140,6 +3144,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn small_helpers() {
         assert_eq!(oct(0o751), "0o751");
         assert!(py_isdigit("0123") && !py_isdigit("12a") && !py_isdigit(""));
@@ -3271,6 +3276,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn the_clock_is_unix_seconds() {
         // SAFETY: time(2) with a null pointer.
         let c = unsafe { libc::time(std::ptr::null_mut()) } as u64;
@@ -3393,6 +3399,7 @@ mod tests {
     // ── mounts, rotation, hardening, atomic writes ──
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn mount_points_are_found_by_device_and_symlinks_never_count() {
         let s = Scratch::new("mount");
         assert!(ismount("/"), "the root is its own parent");
@@ -3418,6 +3425,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn rotating_inside_moves_every_entry_into_a_fresh_private_archive() {
         let s = Scratch::new("rot");
         populate_volume(&s);
@@ -3454,6 +3462,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn rotating_an_empty_volume_is_a_usage_error() {
         let s = Scratch::new("rotempty");
         std::fs::create_dir_all(s.path("keys/.rotated-5")).unwrap();
@@ -3466,6 +3475,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn rotating_refuses_whole_when_one_directory_cannot_be_moved() {
         if crate::privs::is_root() {
             return; // root can move anything
@@ -3497,6 +3507,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn only_unwritable_directories_block_a_rotation() {
         if crate::privs::is_root() {
             return;
@@ -3512,6 +3523,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn rotation_numbers_archives_when_the_name_is_taken() {
         let s = Scratch::new("rotnum");
         std::fs::create_dir_all(s.path("keys/a")).unwrap();
@@ -3537,6 +3549,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn rotating_does_not_follow_a_symlinked_volume() {
         let s = Scratch::new("rotlink");
         std::fs::create_dir_all(s.path("real/a")).unwrap();
@@ -3548,6 +3561,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn hardening_sets_modes_on_descriptors_and_leaves_symlinks_alone() {
         let s = Scratch::new("harden");
         let dir = s.path("svc");
@@ -3587,6 +3601,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn hardening_applies_the_requested_owner() {
         use std::os::unix::fs::MetadataExt;
         let s = Scratch::new("hardenown");
@@ -3610,6 +3625,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn hardening_refuses_a_symlinked_or_missing_directory() {
         let s = Scratch::new("hardenlink");
         std::fs::create_dir(s.path("real")).unwrap();
@@ -3656,6 +3672,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn atomic_writes_never_replace_a_link_a_directory_or_a_fifo() {
         let s = Scratch::new("atomicno");
         std::fs::write(s.path("victim"), b"precious").unwrap();
@@ -3687,6 +3704,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn atomic_writes_report_a_missing_directory() {
         let s = Scratch::new("atomicmiss");
         let e = write_bytes_nofollow(&s.path("nodir/f"), b"x", 0o644).unwrap_err();

@@ -899,6 +899,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn a_refused_command_never_runs() {
         let dir = std::env::temp_dir().join(format!("hf-refuse-{}", std::process::id()));
         let marker = dir.join("ran");

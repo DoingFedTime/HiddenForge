@@ -225,6 +225,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn keypair_is_fresh_and_consistent() {
         let (p1, s1) = x25519_keypair().unwrap();
         let (p2, s2) = x25519_keypair().unwrap();
@@ -300,6 +301,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn add_writes_the_public_key_only_and_returns_the_client_line() {
         let d = Tmp::new("caadd");
         std::fs::create_dir(format!("{d}/svc")).unwrap();
@@ -331,6 +333,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn add_a_second_client_gets_its_own_key_and_keeps_the_first() {
         let d = Tmp::new("caadd2");
         std::fs::create_dir(format!("{d}/svc")).unwrap();
@@ -346,6 +349,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn add_refuses_an_existing_client_a_dangling_link_and_a_bad_directory() {
         let d = Tmp::new("caaddref");
         std::fs::create_dir(format!("{d}/svc")).unwrap();
@@ -395,6 +399,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn add_returns_the_onion_label_without_whitespace_or_suffix() {
         let d = Tmp::new("caonion");
         std::fs::create_dir(format!("{d}/svc")).unwrap();
@@ -448,6 +453,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "error text differs under miri (no strerror)")]
     fn list_reports_an_unreadable_directory() {
         let d = Tmp::new("calisterr");
         std::fs::create_dir(format!("{d}/svc")).unwrap();
@@ -462,6 +468,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn remove_deletes_regular_files_and_refuses_anything_else() {
         let d = Tmp::new("caremove");
         std::fs::create_dir(format!("{d}/svc")).unwrap();
@@ -487,6 +494,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn remove_reports_a_file_it_cannot_delete() {
         if crate::privs::is_root() {
             return;

@@ -418,6 +418,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn roundtrip_and_tamper() {
         let env = encrypt(KEY, PASS).unwrap();
         assert!(is_envelope(&env));
@@ -431,6 +432,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn encrypt_matches_an_independent_implementation() {
         assert_eq!(
             seal_with(KAT_PLAIN, PASS, (12, 1, 1), &SALT, &NONCE).unwrap(),
@@ -447,6 +449,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn decrypt_opens_an_independently_made_envelope() {
         assert_eq!(decrypt(&unhex(KAT_12_1_1), PASS).unwrap().0, KAT_PLAIN);
         assert_eq!(decrypt(&unhex(KAT_12_8_2), PASS).unwrap().0, KAT_PLAIN);
@@ -468,6 +471,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn encrypt_writes_the_documented_layout_with_fresh_salt_and_nonce() {
         let a = encrypt(KEY, PASS).unwrap();
         let b = encrypt(KEY, PASS).unwrap();
@@ -495,6 +499,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn every_byte_of_an_envelope_is_authenticated() {
         let env = fast_env();
         for i in 0..env.len() {
@@ -616,6 +621,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn decrypt_range_checks_each_scrypt_parameter_at_its_edges() {
         let env = fast_env();
         let range = "refusing out-of-range scrypt parameters";
@@ -688,6 +694,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn finish_passphrase_trims_only_trailing_line_endings() {
         let twelve = "abcdefghijkl";
         for (input, want) in [
@@ -735,6 +742,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn stdin_passphrase_is_capped_at_4096_bytes_before_trimming() {
         let cap_msg = "cannot read the passphrase from stdin (at most 4096 bytes)";
         let p = |b: Vec<u8>| read_passphrase_from(std::io::Cursor::new(b));
@@ -763,6 +771,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn passphrase_file_is_read_capped_and_trimmed() {
         let d = Tmp::new("kcpass");
         let f = format!("{d}/pass");
@@ -839,6 +848,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn secret_is_zeroed_before_its_memory_is_freed() {
         // control: an ordinary Vec still holds its bytes when freed, so the spy sees them
         assert_eq!(zero_at_free(vec![0xAB; 64], drop), 2);
@@ -846,6 +856,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn decrypted_keys_are_zeroed_when_dropped() {
         let s = decrypt(&fast_env(), PASS).unwrap();
         assert_eq!(s.0, KAT_PLAIN);

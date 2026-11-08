@@ -732,6 +732,7 @@ mod tests {
     use std::os::unix::fs::{symlink, PermissionsExt};
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn write_all_via_retries_eintr_finishes_short_writes_and_refuses_zero() {
         let mut got = Vec::new();
         let mut calls = 0;
@@ -765,6 +766,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn create_new_at_refuses_an_existing_file_or_link_and_writes_nothing_through_it() {
         let d = tmpdir("cna");
         let kfd = open_dir_nofollow(&d).unwrap();
@@ -811,6 +813,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn service_dir_becomes_0700() {
         let d = tmpdir("mode");
         let svc = format!("{d}/svc");
@@ -826,6 +829,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn hardlink_is_not_chowned_and_is_named() {
         let d = tmpdir("hl");
         let svc = format!("{d}/svc");
@@ -844,6 +848,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn fifo_hostname_does_not_block_and_publish_is_atomic() {
         let d = tmpdir("pub");
         let svc = format!("{d}/a");
@@ -937,6 +942,7 @@ mod tests {
     // ---- G3: opens and I/O -------------------------------------------------
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn open_and_openat_report_python_style_errors_and_set_cloexec() {
         let d = tmpdir("open");
         std::fs::write(format!("{d}/f"), b"x").unwrap();
@@ -1001,6 +1007,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn open_dir_nofollow_refuses_files_and_links() {
         let d = tmpdir("odn");
         std::fs::create_dir(format!("{d}/real")).unwrap();
@@ -1030,6 +1037,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn lstat_fstat_and_imode_report_what_the_inode_says() {
         let d = tmpdir("stat");
         let f = format!("{d}/f");
@@ -1059,6 +1067,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn read_small_regular_file_enforces_the_cap_exactly() {
         let d = tmpdir("cap");
         let p = format!("{d}/f");
@@ -1086,6 +1095,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn read_small_regular_file_refuses_links_fifos_and_directories() {
         let d = tmpdir("kinds");
         std::fs::write(format!("{d}/real"), b"secret").unwrap();
@@ -1123,6 +1133,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn read_small_at_matches_the_path_reader_and_names_the_shown_path() {
         let d = tmpdir("at");
         let dirfd = open_dir_nofollow(&d).unwrap();
@@ -1160,6 +1171,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn write_nofollow_sets_the_mode_despite_umask_truncates_and_refuses_links() {
         let d = tmpdir("wnf");
         let (u, g) = me();
@@ -1200,6 +1212,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn fchown_and_chown_errors_are_python_style() {
         if !not_root() {
             return;
@@ -1227,6 +1240,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn pyerr_is_permission_is_exactly_eacces_and_eperm() {
         for (errno, want) in [
             (libc::EACCES, true),
@@ -1245,6 +1259,7 @@ mod tests {
     // ---- G4: directories and metadata --------------------------------------
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn mkdir_p_creates_every_level_and_accepts_existing_directories() {
         let d = tmpdir("mkp");
         let deep = format!("{d}/a/b/c");
@@ -1276,6 +1291,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn mkdir_p_reports_other_errors_at_the_failing_level() {
         if !not_root() {
             return;
@@ -1295,6 +1311,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn mkdir_owned_creates_0700_and_fixes_an_existing_mode() {
         let d = tmpdir("mko");
         let (u, g) = me();
@@ -1312,6 +1329,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn mkdir_owned_refuses_anything_that_is_not_a_real_directory() {
         let d = tmpdir("mkor");
         let (u, g) = me();
@@ -1348,6 +1366,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn prepare_hs_dir_creates_missing_directories_and_secures_them() {
         let d = tmpdir("phd");
         let (u, g) = me();
@@ -1361,6 +1380,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn prepare_hs_dir_refuses_links_and_non_directories_with_the_exact_text() {
         let d = tmpdir("phdr");
         let (u, g) = me();
@@ -1388,6 +1408,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn prepare_hs_dir_accepts_a_directory_the_tor_user_already_owns() {
         if !not_root() {
             return;
@@ -1434,6 +1455,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn secure_service_dir_makes_0700_and_explains_what_it_cannot_do() {
         let d = tmpdir("ssd");
         let svc = format!("{d}/svc");
@@ -1472,6 +1494,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn chmod_dir_nofollow_honours_only_if_root_owned() {
         let d = tmpdir("cdn");
         let p = format!("{d}/dir");
@@ -1499,6 +1522,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn chown_one_chowns_files_dirs_and_links_without_noise() {
         let d = tmpdir("co");
         let (u, g) = me();
@@ -1525,6 +1549,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn chown_one_names_hard_links_devices_and_sockets_and_does_not_touch_them() {
         let d = tmpdir("cow");
         let (u, g) = me();
@@ -1559,6 +1584,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn chown_one_does_not_block_on_a_fifo() {
         let d = tmpdir("cof");
         let (u, g) = me();
@@ -1611,6 +1637,7 @@ mod tests {
     // ---- G5: dropped mappings, publish, passwd, names -----------------------
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn write_dropped_mappings_writes_one_reason_per_line_with_mode_0600() {
         let d = tmpdir("wdm");
         let (u, g) = me();
@@ -1634,6 +1661,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn write_dropped_mappings_reports_failures_in_the_log() {
         let d = tmpdir("wdmf");
         let (u, g) = me();
@@ -1697,6 +1725,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn publish_addresses_writes_0644_logs_and_leaves_no_temp_file() {
         let (d, kfd) = pub_setup("pub1");
         let on = onion_of('a');
@@ -1711,6 +1740,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn publish_addresses_is_idempotent_and_replaces_a_stale_copy() {
         let (d, kfd) = pub_setup("pub2");
         let (on1, on2) = (onion_of('a'), onion_of('b'));
@@ -1796,6 +1826,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn publish_addresses_replaces_a_planted_link_instead_of_following_it() {
         let (d, kfd) = pub_setup("pub3");
         let svc = mk_service(&d, "a", Some(format!("{}\n", onion_of('a')).as_bytes()));
@@ -1815,6 +1846,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn publish_addresses_skips_invalid_hostnames_without_a_word() {
         let (d, kfd) = pub_setup("pub4");
         let mut services = vec![];
@@ -1869,6 +1901,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn publish_addresses_asks_the_owner_only_after_a_permission_error() {
         if !not_root() {
             return;
@@ -1913,6 +1946,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn publish_addresses_warns_once_when_even_the_owner_cannot_read() {
         if !not_root() {
             return;
@@ -1946,6 +1980,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn publish_addresses_cleans_up_and_warns_once_when_the_rename_fails() {
         let (d, kfd) = pub_setup("pub7");
         let svc = mk_service(&d, "a", Some(format!("{}\n", onion_of('a')).as_bytes()));
@@ -1977,6 +2012,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn warn_once_is_per_service_action_and_errno_and_ignores_enoent() {
         let mut st = PublishState::default();
         let mut log = vec![];

@@ -568,6 +568,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "too slow under miri")]
     fn a_stuck_generator_ends_after_a_bounded_number_of_draws() {
         let draws = std::cell::Cell::new(0u64);
         let mut stuck = || {
@@ -707,6 +708,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn saved_state_loads_back_whatever_its_padding() {
         use std::os::unix::fs::PermissionsExt;
         let t = Tmp::new("state");

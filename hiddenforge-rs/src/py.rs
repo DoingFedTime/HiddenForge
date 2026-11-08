@@ -702,6 +702,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn oserror_format() {
         assert!(oserror(2).starts_with("[Errno 2] "));
     }
@@ -856,6 +857,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn errno_text_is_libcs_and_oserror_adds_the_path_repr() {
         assert_eq!(strerror(libc::ENOENT), "No such file or directory");
         assert_eq!(strerror(libc::EACCES), "Permission denied");
