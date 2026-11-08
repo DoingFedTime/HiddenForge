@@ -571,6 +571,18 @@ impl PublishState {
 /// The file read is the same no-follow, regular-file, size-capped read, done
 /// by a process running as the directory's owner; only the public address
 /// comes back, and it is validated here exactly as a direct read is.
+/// Create a file that must not exist yet, in a held directory: never reuses or
+/// follows anything already at that name (a planted file or link is an error).
+fn create_new_at(dir: &Fd, name: &str, shown: &str) -> R<Fd> {
+    openat(
+        dir,
+        name,
+        libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW,
+        0o644,
+        shown,
+    )
+}
+
 pub fn publish_addresses(
     hs_dirs: &[String],
     keys_root: &str,
@@ -626,13 +638,7 @@ pub fn publish_addresses(
         let target_name = format!("{name}.onion");
         let mut created = false;
         let r = (|| -> R<()> {
-            let fd = openat(
-                keys_fd,
-                &tmp_name,
-                libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW,
-                0o644,
-                &tmp,
-            )?;
+            let fd = create_new_at(keys_fd, &tmp_name, &tmp)?;
             created = true;
             write_all(&fd, format!("{onion}\n").as_bytes())?;
             fchmod(&fd, 0o644)?;
@@ -712,6 +718,29 @@ mod tests {
         let e = write_all_via(b"x", |_| Err(libc::ENOSPC)).unwrap_err();
         assert_eq!(e.msg, "[Errno 28] No space left on device");
         write_all_via(b"", |_| panic!("no write for empty data")).unwrap();
+    }
+
+    #[test]
+    fn create_new_at_refuses_an_existing_file_or_link_and_writes_nothing_through_it() {
+        let d = tmpdir("cna");
+        let kfd = open_dir_nofollow(&d).unwrap();
+        let victim = format!("{d}/victim");
+        std::fs::write(&victim, b"keep").unwrap();
+        symlink(&victim, format!("{d}/link")).unwrap();
+        std::fs::write(format!("{d}/file"), b"keep").unwrap();
+        for name in ["link", "file"] {
+            let Err(e) = create_new_at(&kfd, name, name) else {
+                panic!("{name}: opened an existing entry");
+            };
+            assert_eq!(e.errno, Some(libc::EEXIST), "{name}: {}", e.msg);
+        }
+        assert_eq!(std::fs::read(&victim).unwrap(), b"keep");
+        assert_eq!(std::fs::read(format!("{d}/file")).unwrap(), b"keep");
+        let Ok(fd) = create_new_at(&kfd, "new", "new") else {
+            panic!("could not create a new file");
+        };
+        write_all(&fd, b"x").unwrap();
+        assert_eq!(std::fs::read(format!("{d}/new")).unwrap(), b"x");
     }
 
     #[test]
