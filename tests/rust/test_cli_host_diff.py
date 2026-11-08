@@ -15,7 +15,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from test_cli_common import (
-    ONION, OTHER_ONION, OTHER_PUB, PUB, Pair, derive, env_for, needs_rust, norm, rust,
+    ONION, OTHER_ONION, OTHER_PUB, PUB, Pair, derive, env_for, needs_rust, norm, py, rust,
     same, scratch, service, snapshot, write,  # noqa: F401  (scratch is a fixture)
 )
 
@@ -122,6 +122,30 @@ def test_show_refuses_bad_names_and_containers_like_the_host_cli(scratch, args):
     p = Pair(scratch, fx_ready)
     r = p.check(["show", *K, *args, "--json"])
     assert r.rc == 2
+
+
+@pytest.mark.parametrize("value", ["-5", "-1x", "-.5", "-1.5", "-1.", "-.", "-1e5", "-a b", "-",
+                                   "--", "-x", "--json", "--na", "-0", "5-", "- 5", "-5 "])
+def test_option_values_that_start_with_a_dash_follow_argparse(scratch, value):
+    """argparse takes `-5`, `-.5` and anything with a space as a value; `-1x` and `-x` are options."""
+    p = Pair(scratch, fx_ready)
+    r, q = p.run(["show", *K, "--name", value, "--json"])
+    assert (r.rc, r.out) == (q.rc, q.out), value
+    # argparse wraps the usage line to the terminal width; the error line is what counts
+    assert r.err.strip().splitlines()[-1:] == q.err.strip().splitlines()[-1:], value
+
+
+@pytest.mark.parametrize("args", [["setup", "-o"], ["setup", "--out"], ["setup", "-o", "--force"],
+                                  ["setup", "--runtime", "lxc"], ["setup", "--onion-port", "x"],
+                                  ["setup", "-o=a", "--force=1"], ["setup", "--force=1"]])
+def test_argument_errors_name_the_option_like_argparse(scratch, args):
+    d = scratch / "w"
+    d.mkdir()
+    r = rust(args, d)
+    q = py(args, d)
+    assert r.rc == q.rc == 2
+    assert r.err.strip().splitlines()[-1] == \
+        q.err.strip().splitlines()[-1]
 
 
 def test_show_json_documents_have_the_contract_fields(scratch):

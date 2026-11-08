@@ -88,6 +88,33 @@ impl Args {
     }
 }
 
+/// How argparse names an option in an error: every spelling, `-o/--out`.
+fn arg_label(s: &Opt) -> String {
+    match s.short {
+        Some(short) => format!("{short}/{}", s.long),
+        None => s.long.to_string(),
+    }
+}
+
+/// argparse's `^-\d+$|^-\d*\.\d+$`: a negative number, which is a value and not an option.
+fn is_negative_number(v: &str) -> bool {
+    let Some(rest) = v.strip_prefix('-') else {
+        return false;
+    };
+    let digits = |s: &str| s.bytes().all(|b| b.is_ascii_digit());
+    match rest.split_once('.') {
+        None => !rest.is_empty() && digits(rest),
+        Some((int, frac)) => digits(int) && !frac.is_empty() && digits(frac),
+    }
+}
+
+/// argparse's `_parse_optional`: an argument that starts with `-` is taken for an option
+/// (and so cannot be the value of the one before it) unless it is just `-`, a negative
+/// number, or contains a space.
+fn looks_like_option(v: &str) -> bool {
+    v.starts_with('-') && v.len() > 1 && !is_negative_number(v) && !v.contains(' ')
+}
+
 fn dest(long: &str) -> String {
     long.trim_start_matches('-').replace('-', "_")
 }
@@ -169,12 +196,12 @@ fn parse(prog: &str, specs: &[Opt], argv: &[String]) -> Result<Args, i32> {
             }
         };
         let d = dest(spec.long);
+        let shown = arg_label(spec);
         match spec.kind {
             Kind::Flag => {
                 if inline.is_some() {
                     return Err(fail(format!(
-                        "argument {}: ignored explicit argument '{}'",
-                        spec.long,
+                        "argument {shown}: ignored explicit argument '{}'",
                         inline.unwrap_or_default()
                     )));
                 }
@@ -186,17 +213,10 @@ fn parse(prog: &str, specs: &[Opt], argv: &[String]) -> Result<Args, i32> {
                     None => {
                         i += 1;
                         match argv.get(i) {
-                            Some(v)
-                                if !(v.starts_with('-')
-                                    && v.len() > 1
-                                    && !v[1..].starts_with(|c: char| c.is_ascii_digit())) =>
-                            {
-                                v.clone()
-                            }
+                            Some(v) if !looks_like_option(v) => v.clone(),
                             _ => {
                                 return Err(fail(format!(
-                                    "argument {}: expected one argument",
-                                    spec.long
+                                    "argument {shown}: expected one argument"
                                 )))
                             }
                         }
@@ -205,16 +225,12 @@ fn parse(prog: &str, specs: &[Opt], argv: &[String]) -> Result<Args, i32> {
                 if !spec.choices.is_empty() && !spec.choices.contains(&v.as_str()) {
                     let ch: Vec<String> = spec.choices.iter().map(|c| format!("'{c}'")).collect();
                     return Err(fail(format!(
-                        "argument {}: invalid choice: '{v}' (choose from {})",
-                        spec.long,
+                        "argument {shown}: invalid choice: '{v}' (choose from {})",
                         ch.join(", ")
                     )));
                 }
                 if spec.int && v.trim().parse::<i64>().is_err() {
-                    return Err(fail(format!(
-                        "argument {}: invalid int value: '{v}'",
-                        spec.long
-                    )));
+                    return Err(fail(format!("argument {shown}: invalid int value: '{v}'")));
                 }
                 if spec.kind == Kind::Append {
                     match a.appends.iter_mut().find(|(n, _)| *n == d) {
@@ -3668,5 +3684,67 @@ mod tests {
         let s = Scratch::new("atomicmiss");
         let e = write_bytes_nofollow(&s.path("nodir/f"), b"x", 0o644).unwrap_err();
         assert!(e.starts_with("[Errno 2] No such file or directory"), "{e}");
+    }
+
+    // ── argparse's option/value rules (python3 argparse is the reference) ──
+
+    #[test]
+    fn negative_numbers_are_values_and_other_dashed_words_are_options() {
+        for number in ["-5", "-0", "-123", "-.5", "-1.5", "-0.25", "-10.0"] {
+            assert!(is_negative_number(number), "{number}");
+            assert!(!looks_like_option(number), "{number}");
+        }
+        for not_number in [
+            "-", "-1x", "-1.", "-.", "-1e5", "-x", "--5", "5", "", "-1.2.3", "-.5x",
+        ] {
+            assert!(!is_negative_number(not_number), "{not_number}");
+        }
+        for option in [
+            "-x", "--json", "--", "-1x", "-1.", "-.", "-1e5", "--na", "-oDIR", "--a=b",
+        ] {
+            assert!(looks_like_option(option), "{option}");
+        }
+        for value in [
+            "-", "", "a", "5-", "-a b", "- 5", "-5 ", "--x y", "/tmp/x", "a-b",
+        ] {
+            assert!(!looks_like_option(value), "{value:?}");
+        }
+    }
+
+    #[test]
+    fn errors_name_every_spelling_of_the_option() {
+        let specs = [
+            Opt {
+                short: Some("-o"),
+                ..o("--out", Kind::Value)
+            },
+            o("--runtime", Kind::Value),
+            Opt {
+                int: true,
+                ..o("--port", Kind::Value)
+            },
+            o("--force", Kind::Flag),
+        ];
+        assert_eq!(arg_label(&specs[0]), "-o/--out");
+        assert_eq!(arg_label(&specs[1]), "--runtime");
+        let argv = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        // a refusal is exit 2; the value after an option may be a negative number
+        assert!(parse("t", &specs, &argv(&["-o"])).is_err());
+        assert!(parse("t", &specs, &argv(&["-o", "--force"])).is_err());
+        assert!(parse("t", &specs, &argv(&["--port", "-1x"])).is_err());
+        assert_eq!(
+            parse("t", &specs, &argv(&["--port", "-5"]))
+                .unwrap()
+                .get("port"),
+            Some("-5")
+        );
+        assert_eq!(
+            parse("t", &specs, &argv(&["-o", "-a b"]))
+                .unwrap()
+                .get("out"),
+            Some("-a b")
+        );
+        assert!(parse("t", &specs, &argv(&["--port", "x"])).is_err());
+        assert!(parse("t", &specs, &argv(&["--force=1"])).is_err());
     }
 }

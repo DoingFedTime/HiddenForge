@@ -123,6 +123,15 @@ def test_benchmark_text_is_grouped_by_thousands(lab):
     assert len(lines) == 12 and lines[11] == ""
 
 
+@pytest.mark.parametrize("seconds", ["0", "-3"])
+def test_the_benchmark_runs_for_at_least_one_second(lab, seconds):
+    """vanity.py: seconds = max(1, seconds); the document still reports what was asked for."""
+    r, _ = lab.check(["--prefix", "ab", "--bench", "--seconds=" + seconds, "--threads", "1",
+                      "--json"], "bench", HF_FAKE_MKP224O_MAX=3, rc=0)
+    assert doc(r)["seconds"] == int(seconds)
+    assert doc(r)["keys_per_sec"] == 1000000.0
+
+
 def test_benchmark_without_statistics_is_an_error(lab):
     for flags in (["--json"], []):
         r, _ = lab.check([*GEN, *flags], "silent", rc=2)

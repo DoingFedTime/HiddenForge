@@ -96,6 +96,11 @@ def test_healthcheck_json_and_plain_forms_differ(scratch):
     assert plain.out != a.out, "the plain form is not the JSON document"
 
 
+def test_the_upload_watcher_name_is_the_cli(scratch):
+    r = run("hiddenforge-upload-watch", ["version"], scratch)
+    assert (r.rc, r.out) == (0, f"hiddenforge {VERSION} (contract 1)\n")
+
+
 def test_unknown_names_do_nothing(scratch):
     for name in ("frobnicate", "hiddenforge2", "su_exec", "Hiddenforge"):
         r = run(name, ["version"], scratch)
