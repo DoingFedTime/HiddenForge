@@ -100,6 +100,8 @@ def snapshot(root: Path) -> dict:
     snap = {}
     for dirpath, dirnames, filenames in os.walk(root):
         for n in [*dirnames, *filenames]:
+            if n.endswith(".profraw"):
+                continue   # a coverage-instrumented binary writes its profile into its cwd
             p = Path(dirpath) / n
             st = p.lstat()
             rel = norm(str(p.relative_to(root)))
