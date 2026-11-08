@@ -227,11 +227,23 @@ pub fn secure_service_dir(path: &str) -> R<()> {
     }
 }
 
-fn mkdir_p(path: &str) -> R<()> {
-    let mut cur = String::new();
+/// Each ancestor of `path` and then `path`, the order Path.mkdir(parents=True)
+/// creates them. A relative path stays relative to the working directory.
+fn mkdir_p_steps(path: &str) -> Vec<String> {
+    let mut cur = String::from(if path.starts_with('/') { "/" } else { "" });
+    let mut out = Vec::new();
     for part in path.split('/').filter(|p| !p.is_empty()) {
-        cur.push('/');
+        if !cur.is_empty() && !cur.ends_with('/') {
+            cur.push('/');
+        }
         cur.push_str(part);
+        out.push(cur.clone());
+    }
+    out
+}
+
+fn mkdir_p(path: &str) -> R<()> {
+    for cur in mkdir_p_steps(path) {
         let c = cpath(&cur);
         // SAFETY: valid C string.
         if unsafe { libc::mkdir(c.as_ptr(), 0o777) } != 0 {
@@ -317,18 +329,24 @@ pub fn prepare_hs_dir(hs_dir: &str, uid: u32, gid: u32, log: &mut Vec<String>) -
 }
 
 fn write_all(fd: &Fd, data: &[u8]) -> R<()> {
+    write_all_via(data, |chunk| {
+        // SAFETY: writing from a live slice to an open descriptor.
+        let n = unsafe { libc::write(fd.0, chunk.as_ptr().cast(), chunk.len()) };
+        usize::try_from(n).map_err(|_| py::last_errno())
+    })
+}
+
+/// The write(2) loop: retries EINTR, and treats a write of 0 bytes as an I/O error
+/// rather than looping for ever on it.
+fn write_all_via(data: &[u8], mut write: impl FnMut(&[u8]) -> Result<usize, i32>) -> R<()> {
     let mut off = 0;
     while off < data.len() {
-        // SAFETY: writing from a live slice to an open descriptor.
-        let n = unsafe { libc::write(fd.0, data[off..].as_ptr().cast(), data.len() - off) };
-        if n < 0 {
-            let e = py::last_errno();
-            if e == libc::EINTR {
-                continue;
-            }
-            return Err(PyErr::os(e));
+        match write(&data[off..]) {
+            Ok(0) => return Err(PyErr::os(libc::EIO)),
+            Ok(n) => off += n,
+            Err(libc::EINTR) => {}
+            Err(e) => return Err(PyErr::os(e)),
         }
-        off += n as usize;
     }
     Ok(())
 }
@@ -662,6 +680,46 @@ pub fn getpwnam(name: &str) -> Option<(u32, u32, String)> {
 mod tests {
     use super::*;
     use std::os::unix::fs::{symlink, PermissionsExt};
+
+    #[test]
+    fn write_all_via_retries_eintr_finishes_short_writes_and_refuses_zero() {
+        let mut got = Vec::new();
+        let mut calls = 0;
+        write_all_via(b"abcdef", |c| {
+            calls += 1;
+            match calls {
+                1 => Err(libc::EINTR),
+                2 => {
+                    got.extend_from_slice(&c[..2]);
+                    Ok(2)
+                }
+                _ => {
+                    got.extend_from_slice(c);
+                    Ok(c.len())
+                }
+            }
+        })
+        .unwrap();
+        assert_eq!((got.as_slice(), calls), (&b"abcdef"[..], 3));
+        let mut zero_calls = 0;
+        let e = write_all_via(b"x", |_| {
+            zero_calls += 1;
+            assert!(zero_calls < 3, "looped on a zero-byte write");
+            Ok(0)
+        })
+        .unwrap_err();
+        assert_eq!(e.msg, "[Errno 5] Input/output error");
+        let e = write_all_via(b"x", |_| Err(libc::ENOSPC)).unwrap_err();
+        assert_eq!(e.msg, "[Errno 28] No space left on device");
+        write_all_via(b"", |_| panic!("no write for empty data")).unwrap();
+    }
+
+    #[test]
+    fn mkdir_p_steps_keep_relative_paths_relative() {
+        assert_eq!(mkdir_p_steps("/a//b/"), ["/a", "/a/b"]);
+        assert_eq!(mkdir_p_steps("a/b"), ["a", "a/b"]);
+        assert_eq!(mkdir_p_steps("/"), Vec::<String>::new());
+    }
 
     fn tmpdir(tag: &str) -> String {
         let d = std::env::temp_dir().join(format!("hf-fsops-{tag}-{}", random_hex8()));

@@ -110,7 +110,8 @@ fn query(sock: &str) -> Result<Vec<u8>, String> {
 }
 
 pub fn contains(hay: &[u8], needle: &[u8]) -> bool {
-    hay.windows(needle.len()).any(|w| w == needle)
+    // Python: b"" in anything is True (and windows(0) would panic).
+    needle.is_empty() || hay.windows(needle.len()).any(|w| w == needle)
 }
 
 /// CPython str.splitlines().
@@ -500,6 +501,15 @@ pub fn watch_uploads(path: &str, sock_path: &str, connect_timeout: Duration) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn contains_matches_python_in() {
+        assert!(contains(b"abc", b""));
+        assert!(contains(b"", b""));
+        assert!(contains(b"abc", b"bc"));
+        assert!(!contains(b"abc", b"abcd"));
+        assert!(!contains(b"", b"a"));
+    }
 
     #[test]
     fn intro_counting_is_scoped_and_deduplicated() {
