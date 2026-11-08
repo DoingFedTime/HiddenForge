@@ -20,7 +20,10 @@ import pytest
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
-BIN = REPO / "hiddenforge-rs" / "target" / "release" / "hiddenforge"
+# HIDDENFORGE_RUST_BIN points the tests at another build: mutation testing
+# runs them against each mutated binary (hiddenforge-rs/tests/differential.rs).
+BIN = Path(os.environ.get("HIDDENFORGE_RUST_BIN")
+           or REPO / "hiddenforge-rs" / "target" / "release" / "hiddenforge")
 
 
 def _run_guards(extra: list[str], d: str) -> dict:

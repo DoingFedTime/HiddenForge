@@ -17,7 +17,10 @@ import pytest
 from hypothesis import HealthCheck, given, settings, strategies as st
 
 REPO = Path(__file__).resolve().parents[2]
-BIN = REPO / "hiddenforge-rs" / "target" / "release" / "hiddenforge"
+# HIDDENFORGE_RUST_BIN points the tests at another build: mutation testing
+# runs them against each mutated binary (hiddenforge-rs/tests/differential.rs).
+BIN = Path(os.environ.get("HIDDENFORGE_RUST_BIN")
+           or REPO / "hiddenforge-rs" / "target" / "release" / "hiddenforge")
 sys.path.insert(0, str(REPO))
 import entrypoint
 

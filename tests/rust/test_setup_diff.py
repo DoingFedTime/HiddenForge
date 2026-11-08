@@ -15,7 +15,10 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).resolve().parents[2]
-RUST = REPO / "hiddenforge-rs" / "target" / "release" / "hiddenforge"
+# HIDDENFORGE_RUST_BIN points the tests at another build: mutation testing
+# runs them against each mutated binary (hiddenforge-rs/tests/differential.rs).
+RUST = Path(os.environ.get("HIDDENFORGE_RUST_BIN")
+           or REPO / "hiddenforge-rs" / "target" / "release" / "hiddenforge")
 PY = REPO / "scripts" / "hiddenforge"
 pytestmark = pytest.mark.skipif(
     not RUST.exists(), reason="build hiddenforge-rs first (cargo build --release)"
