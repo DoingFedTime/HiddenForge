@@ -144,9 +144,15 @@ def test_threads_option(lab):
     for given, want in (("3", 3), ("1000", 256), ("1", 1), ("256", 256), ("257", 256), ("-4", None),
                         ("0", None)):
         args = ["--prefix", "ab", "--bench", "--seconds", "1", "--threads", given, "--json"]
-        r, _ = lab.check(args, "bench", HF_FAKE_MKP224O_MAX=3)
         if want is None:
-            want = max(1, min(len(os.sched_getaffinity(0)), 256))
+            # Automatic: Python takes os.cpu_count(), Rust the CPUs this process may
+            # use (affinity and any cgroup quota), so the two differ under a CPU limit.
+            # Only Rust's own rule is checked: at least one, at most the machine, at most 256.
+            r, _, _, _ = lab.both(args, "bench", HF_FAKE_MKP224O_MAX=3)
+            assert r.rc == 0, given
+            assert 1 <= doc(r)["threads"] <= min(os.cpu_count(), 256), given
+            continue
+        r, _ = lab.check(args, "bench", HF_FAKE_MKP224O_MAX=3)
         assert doc(r)["threads"] == want, given
 
 
