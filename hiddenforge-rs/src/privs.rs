@@ -65,6 +65,17 @@ fn missing_caps(mask: u64, held: u64) -> Vec<String> {
 }
 
 /// _drop_setup_capabilities: narrow effective+permitted to `mask & held`, for good.
+/// The two 32-bit halves capset(2) v3 takes: capabilities 0-31, then 32-63.
+/// Both are set, so the "retains" line logged afterwards is exactly what was kept.
+fn cap_data(mask: u64) -> [CapData; 2] {
+    let half = |bits: u64| CapData {
+        effective: bits as u32,
+        permitted: bits as u32,
+        inheritable: 0,
+    };
+    [half(mask & 0xFFFF_FFFF), half(mask >> 32)]
+}
+
 pub fn drop_setup_capabilities(mask: u64, log: &mut Vec<String>) -> bool {
     let mut mask = mask;
     if let Some(held) = permitted_capabilities() {
@@ -82,15 +93,7 @@ pub fn drop_setup_capabilities(mask: u64, log: &mut Vec<String>) -> bool {
         version: LINUX_CAPABILITY_VERSION_3,
         pid: 0,
     };
-    let low = (mask & 0xFFFF_FFFF) as u32;
-    let d = [
-        CapData {
-            effective: low,
-            permitted: low,
-            inheritable: 0,
-        },
-        CapData::default(),
-    ];
+    let d = cap_data(mask);
     // SAFETY: capset with a v3 header and two data structs.
     let rc = unsafe { libc::syscall(libc::SYS_capset, &mut h as *mut CapHeader, d.as_ptr()) };
     if rc != 0 {
@@ -350,6 +353,21 @@ pub fn kill_proc(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cap_data_splits_the_mask_into_both_halves() {
+        let d = cap_data((1 << 40) | (1 << CAP_SETUID));
+        assert_eq!(
+            (d[0].effective, d[0].permitted, d[0].inheritable),
+            (1 << 7, 1 << 7, 0)
+        );
+        assert_eq!(
+            (d[1].effective, d[1].permitted, d[1].inheritable),
+            (1 << 8, 1 << 8, 0)
+        );
+        let z = cap_data(0);
+        assert_eq!((z[0].permitted, z[1].permitted), (0, 0));
+    }
 
     #[test]
     fn run_piped_survives_a_child_that_writes_before_it_reads() {
