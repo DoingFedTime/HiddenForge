@@ -1,0 +1,7 @@
+# yamllint's 80-column default does not fit this repository: CI steps and the
+# compose files carry digest-pinned image references (name@sha256:<64 hex>),
+# which alone run to about 100 characters and cannot be broken.
+extends: default
+rules:
+  line-length:
+    max: 160
