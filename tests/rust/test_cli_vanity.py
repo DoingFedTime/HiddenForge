@@ -141,6 +141,7 @@ def test_benchmark_without_statistics_is_an_error(lab):
 
 
 def test_threads_option(lab):
+    auto = []
     for given, want in (("3", 3), ("1000", 256), ("1", 1), ("256", 256), ("257", 256), ("-4", None),
                         ("0", None)):
         args = ["--prefix", "ab", "--bench", "--seconds", "1", "--threads", given, "--json"]
@@ -150,10 +151,16 @@ def test_threads_option(lab):
             # Only Rust's own rule is checked: at least one, at most the machine, at most 256.
             r, _, _, _ = lab.both(args, "bench", HF_FAKE_MKP224O_MAX=3)
             assert r.rc == 0, given
-            assert 1 <= doc(r)["threads"] <= min(os.cpu_count(), 256), given
+            auto.append(doc(r)["threads"])
             continue
         r, _ = lab.check(args, "bench", HF_FAKE_MKP224O_MAX=3)
         assert doc(r)["threads"] == want, given
+    # 0 and negatives both mean "automatic", and so does leaving the option out: all three agree,
+    # and the automatic value is within the machine (Python's os.cpu_count() differs under a quota).
+    r, _, _, _ = lab.both(["--prefix", "ab", "--bench", "--seconds", "1", "--json"], "bench",
+                          HF_FAKE_MKP224O_MAX=3)
+    auto.append(doc(r)["threads"])
+    assert len(set(auto)) == 1 and 1 <= auto[0] <= min(os.cpu_count(), 256), auto
 
 
 def test_a_slow_prefix_warns_on_stderr_except_in_json(lab):

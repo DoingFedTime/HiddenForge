@@ -42,6 +42,9 @@ Behaviour is steered by HF_FAKE_MKP224O:
     race          a valid key directory, and another key set appears at the path in
                   HF_FAKE_MKP224O_RACE (with a file inside, so it cannot be renamed
                   over) before the generator exits: the caller lost the race
+    slowdie       emit statistics; on SIGTERM wait 1.5 s, write the file named by
+                  HF_FAKE_MKP224O_MARK, then exit 0. A caller that does not give
+                  a terminated generator its grace period never sees the file
     deaf          emit statistics and IGNORE SIGTERM, the way a wedged generator
                   would; only SIGKILL stops it. A closed stderr does not stop it
                   either: a caller that drops its end of the pipe is still waiting
@@ -123,6 +126,13 @@ def main():
     # same mode does its search, so one configuration can benchmark and then
     # generate, exactly as the real binary does.
     if args.count == 0 and mode not in ("silent", "fail"):
+        if mode == "slowdie":
+            def _term(*_):
+                time.sleep(1.5)
+                with open(os.environ["HF_FAKE_MKP224O_MARK"], "w", encoding="ascii") as fh:
+                    fh.write("cleaned up\n")
+                os._exit(0)
+            signal.signal(signal.SIGTERM, _term)
         if mode == "deaf":
             # A generator that has stopped responding to a polite request to
             # stop. vanity.benchmark must escalate rather than wait for ever.

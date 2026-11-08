@@ -165,6 +165,34 @@ def test_the_parser_rejects_what_argparse_rejects(scratch):
     assert r.rc == 2 and "invalid choice: 'openssl' (choose from 'age', 'gpg')" in r.err
 
 
+@pytest.mark.parametrize("cmd", ["encrypt-key", "decrypt-key"])
+def test_key_encryption_commands_require_a_name(scratch, cmd):
+    r = run("hiddenforge", [cmd], scratch)
+    assert r.rc == 2 and r.err.splitlines()[-1] == (
+        f"hiddenforge {cmd}: error: the following arguments are required: --name")
+
+
+@pytest.mark.parametrize("cmd,extra", [("backup", ["--out", "x"]), ("restore", ["--input", "x"])])
+def test_backup_and_restore_name_the_tools_they_accept(scratch, cmd, extra):
+    r = run("hiddenforge", [cmd, *extra, "--tool", "bogus"], scratch)
+    assert r.rc == 2 and r.err.splitlines()[-1] == (
+        f"hiddenforge {cmd}: error: argument --tool: invalid choice: 'bogus' "
+        "(choose from 'age', 'gpg', 'openssl')")
+
+
+@pytest.mark.parametrize("flag", ["--uid", "--gid", "--threads"])
+def test_vanity_integer_options_are_validated(scratch, flag):
+    r = run("vanity.py", ["--prefix", "a", flag, "x"], scratch)
+    assert r.rc == 2 and r.err.splitlines()[-1] == (
+        f"vanity.py: error: argument {flag}: invalid int value: 'x'")
+
+
+def test_usage_shows_flags_bare_and_value_options_with_their_name(scratch):
+    r = run("hiddenforge", ["rotate", "-h"], scratch)
+    assert r.rc == 0 and r.out.splitlines()[0] == (
+        "usage: hiddenforge rotate [-h] [--keys KEYS] [--confirm CONFIRM] [--json]")
+
+
 def test_client_auth_needs_an_operation(scratch):
     for args in ([], ["frob"], ["--json"]):
         r = run("hiddenforge", ["client-auth", *args], scratch)

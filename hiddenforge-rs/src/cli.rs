@@ -1416,6 +1416,17 @@ fn random_hex8() -> String {
 }
 
 /// _write_bytes_nofollow: new O_EXCL temp beside the target, fchmod, fsync, rename.
+/// Create a file that must not exist yet: never reuses or follows anything already at
+/// that name (a planted file or link is an error, and nothing is written through it).
+fn create_new(path: &str, mode: u32) -> Result<fsops::Fd, String> {
+    fsops::open(
+        path,
+        libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW,
+        mode,
+    )
+    .map_err(|e| e.msg)
+}
+
 fn write_bytes_nofollow(path: &str, data: &[u8], mode: u32) -> Result<(), String> {
     match fsops::lstat(path) {
         Ok(st) if !fsops::is_type(&st, libc::S_IFREG) => {
@@ -1428,12 +1439,7 @@ fn write_bytes_nofollow(path: &str, data: &[u8], mode: u32) -> Result<(), String
     let (dir, base) = path.rsplit_once('/').unwrap_or((".", path));
     let tmp = format!("{dir}/.{base}.{}.tmp", random_hex8());
     let r = (|| -> Result<(), String> {
-        let fd = fsops::open(
-            &tmp,
-            libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW,
-            mode,
-        )
-        .map_err(|e| e.msg)?;
+        let fd = create_new(&tmp, mode)?;
         let mut off = 0;
         while off < data.len() {
             // SAFETY: writing from a live slice.
@@ -2839,6 +2845,23 @@ pub fn run(cmd: &str, rest: &[String]) -> Option<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn create_new_refuses_an_existing_file_or_link_and_writes_nothing_through_it() {
+        let d = scratch("cnew");
+        let victim = format!("{d}/victim");
+        std::fs::write(&victim, b"keep").unwrap();
+        std::os::unix::fs::symlink(&victim, format!("{d}/link")).unwrap();
+        std::fs::write(format!("{d}/file"), b"keep").unwrap();
+        for name in ["link", "file"] {
+            let Err(e) = create_new(&format!("{d}/{name}"), 0o600) else {
+                panic!("{name}: opened an existing entry");
+            };
+            assert!(e.contains("File exists"), "{name}: {e}");
+        }
+        assert_eq!(std::fs::read(&victim).unwrap(), b"keep");
+        assert!(create_new(&format!("{d}/new"), 0o600).is_ok());
+    }
 
     #[test]
     fn parse_takes_short_option_values_the_argparse_ways() {

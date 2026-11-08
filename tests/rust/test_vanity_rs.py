@@ -100,3 +100,13 @@ def test_a_benchmark_that_cannot_start_leaves_no_temp_dir(tmp_path, generator):
                        capture_output=True, text=True, timeout=30)
     assert r.returncode != 0, r.stdout + r.stderr
     assert _bench_dirs() - before == set()
+
+
+def test_benchmark_gives_a_terminated_generator_its_grace_period(vanity, tmp_path):
+    """SIGTERM, then up to 5 s to exit by itself, then SIGKILL (Python: wait(5), kill()).
+    A generator that cleans up for 1.5 s after SIGTERM must be allowed to finish."""
+    mark = tmp_path / "mark"
+    r = vanity(["--prefix", "a", "--bench", "--seconds", "1", "--threads", "1"],
+               "slowdie", timeout=30, HF_FAKE_MKP224O_MAX=10_000, HF_FAKE_MKP224O_MARK=mark)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert mark.read_text() == "cleaned up\n", "the generator was killed before it could exit"
