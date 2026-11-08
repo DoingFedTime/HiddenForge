@@ -328,7 +328,7 @@ pub fn prepare_hs_dir(hs_dir: &str, uid: u32, gid: u32, log: &mut Vec<String>) -
     }
 }
 
-fn write_all(fd: &Fd, data: &[u8]) -> R<()> {
+pub fn write_all(fd: &Fd, data: &[u8]) -> R<()> {
     write_all_via(data, |chunk| {
         // SAFETY: writing from a live slice to an open descriptor.
         let n = unsafe { libc::write(fd.0, chunk.as_ptr().cast(), chunk.len()) };

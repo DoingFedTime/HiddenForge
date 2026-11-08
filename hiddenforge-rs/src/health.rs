@@ -787,9 +787,14 @@ mod tests {
                 }
             }
         });
-        let got = query(&sock);
+        let got = query(&sock).unwrap();
         h.join().unwrap();
-        assert_eq!(got, Ok(reply));
+        // healthcheck.py stops reading as soon as "250 closing connection" has arrived, so
+        // the trailing CRLF may or may not be part of the answer (it depends on where a
+        // 7-byte piece ends). Everything up to and including the marker must be there.
+        let through_marker = reply.strip_suffix(b"\r\n").unwrap();
+        assert!(got.starts_with(through_marker), "got {} bytes", got.len());
+        assert!(reply.starts_with(&got), "nothing beyond the reply");
     }
 
     #[test]

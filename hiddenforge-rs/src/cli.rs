@@ -1440,15 +1440,7 @@ fn write_bytes_nofollow(path: &str, data: &[u8], mode: u32) -> Result<(), String
     let tmp = format!("{dir}/.{base}.{}.tmp", random_hex8());
     let r = (|| -> Result<(), String> {
         let fd = create_new(&tmp, mode)?;
-        let mut off = 0;
-        while off < data.len() {
-            // SAFETY: writing from a live slice.
-            let n = unsafe { libc::write(fd.0, data[off..].as_ptr().cast(), data.len() - off) };
-            if n < 0 {
-                return Err(py::oserror(py::last_errno()));
-            }
-            off += n as usize;
-        }
+        fsops::write_all(&fd, data).map_err(|e| e.msg)?;
         fsops::fchmod(&fd, mode).map_err(|e| e.msg)?;
         // SAFETY: fd is open.
         unsafe { libc::fsync(fd.0) };
