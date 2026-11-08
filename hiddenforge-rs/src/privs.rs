@@ -156,83 +156,83 @@ pub fn command(
 
 /// Run a command with a deadline; returns (exit code or None on timeout/kill, stdout, stderr).
 pub fn run_timeout(
-    mut c: Command,
+    c: Command,
     timeout: Duration,
 ) -> std::io::Result<(Option<i32>, Vec<u8>, Vec<u8>)> {
-    use std::io::Read;
-    use std::process::Stdio;
-    c.stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .stdin(Stdio::null());
-    let mut child = c.spawn()?;
-    let mut out = child.stdout.take();
-    let mut err = child.stderr.take();
-    let t_out = std::thread::spawn(move || {
-        let mut v = Vec::new();
-        if let Some(o) = out.as_mut() {
-            let _ = o.read_to_end(&mut v);
-        }
-        v
-    });
-    let t_err = std::thread::spawn(move || {
-        let mut v = Vec::new();
-        if let Some(e) = err.as_mut() {
-            let _ = e.read_to_end(&mut v);
-        }
-        v
-    });
-    let deadline = Instant::now() + timeout;
-    let code = loop {
-        if let Some(st) = child.try_wait()? {
-            break st.code();
-        }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            break None;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    };
-    Ok((
-        code,
-        t_out.join().unwrap_or_default(),
-        t_err.join().unwrap_or_default(),
-    ))
+    run_piped(c, None, timeout)
 }
 
 /// Run a command with `input` on its stdin (a pipe, never argv or the
 /// environment) and a deadline; returns (exit code, stdout, stderr).
 pub fn run_with_input(
-    mut c: Command,
+    c: Command,
     input: &[u8],
+    timeout: Duration,
+) -> std::io::Result<(Option<i32>, Vec<u8>, Vec<u8>)> {
+    run_piped(c, Some(input), timeout)
+}
+
+/// How long the output readers may outlive the child: a grandchild that inherited
+/// stdout or stderr keeps the pipe open after the child itself has gone.
+const PIPE_GRACE: Duration = Duration::from_secs(2);
+
+fn run_piped(
+    mut c: Command,
+    input: Option<&[u8]>,
     timeout: Duration,
 ) -> std::io::Result<(Option<i32>, Vec<u8>, Vec<u8>)> {
     use std::io::{Read, Write};
     use std::process::Stdio;
+    use std::sync::{mpsc, Arc, Mutex};
     c.stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .stdin(Stdio::piped());
+        .stdin(if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        });
     let mut child = c.spawn()?;
-    if let Some(mut si) = child.stdin.take() {
-        let _ = si.write_all(input);
-    }
-    let mut out = child.stdout.take();
-    let mut err = child.stderr.take();
-    let t_out = std::thread::spawn(move || {
-        let mut v = Vec::new();
-        if let Some(o) = out.as_mut() {
-            let _ = o.read_to_end(&mut v);
-        }
-        v
-    });
-    let t_err = std::thread::spawn(move || {
-        let mut v = Vec::new();
-        if let Some(e) = err.as_mut() {
-            let _ = e.read_to_end(&mut v);
-        }
-        v
-    });
     let deadline = Instant::now() + timeout;
+    let (done_tx, done_rx) = mpsc::channel::<()>();
+    // Readers first, then the writer, each on its own thread: a child that writes
+    // before it reads can never deadlock against us, and the deadline covers the
+    // write as well. Readers fill shared buffers so a reader still blocked on a
+    // grandchild's pipe can be abandoned with what it has read so far.
+    let reader = |pipe: Option<Box<dyn Read + Send>>| {
+        let buf = Arc::new(Mutex::new(Vec::new()));
+        let (b, tx) = (Arc::clone(&buf), done_tx.clone());
+        std::thread::spawn(move || {
+            if let Some(mut p) = pipe {
+                let mut chunk = [0u8; 8192];
+                while let Ok(n @ 1..) = p.read(&mut chunk) {
+                    b.lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .extend_from_slice(&chunk[..n]);
+                }
+            }
+            let _ = tx.send(());
+        });
+        buf
+    };
+    let out = reader(
+        child
+            .stdout
+            .take()
+            .map(|p| Box::new(p) as Box<dyn Read + Send>),
+    );
+    let err = reader(
+        child
+            .stderr
+            .take()
+            .map(|p| Box::new(p) as Box<dyn Read + Send>),
+    );
+    drop(done_tx);
+    if let (Some(mut si), Some(data)) = (child.stdin.take(), input) {
+        let data = data.to_vec();
+        std::thread::spawn(move || {
+            let _ = si.write_all(&data);
+        });
+    }
     let code = loop {
         if let Some(st) = child.try_wait()? {
             break st.code();
@@ -244,11 +244,16 @@ pub fn run_with_input(
         }
         std::thread::sleep(Duration::from_millis(20));
     };
-    Ok((
-        code,
-        t_out.join().unwrap_or_default(),
-        t_err.join().unwrap_or_default(),
-    ))
+    let grace = Instant::now() + PIPE_GRACE;
+    for _ in 0..2 {
+        let left = grace.saturating_duration_since(Instant::now());
+        if done_rx.recv_timeout(left).is_err() {
+            break;
+        }
+    }
+    let take =
+        |b: Arc<Mutex<Vec<u8>>>| std::mem::take(&mut *b.lock().unwrap_or_else(|e| e.into_inner()));
+    Ok((code, take(out), take(err)))
 }
 
 fn status_field<'a>(status: &'a str, key: &str) -> Option<&'a str> {
@@ -345,6 +350,47 @@ pub fn kill_proc(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn run_piped_survives_a_child_that_writes_before_it_reads() {
+        // 1 MB in, 1 MB out before reading any of it: writing all the input
+        // before starting the readers deadlocks both sides on full pipes.
+        let mut c = Command::new("sh");
+        c.args([
+            "-c",
+            "head -c 1000000 /dev/zero; cat >/dev/null; echo done >&2",
+        ]);
+        let (code, out, err) =
+            run_with_input(c, &vec![0u8; 1_000_000], Duration::from_secs(20)).unwrap();
+        assert_eq!(
+            (code, out.len(), err.as_slice()),
+            (Some(0), 1_000_000, &b"done\n"[..])
+        );
+    }
+
+    #[test]
+    fn run_piped_does_not_wait_for_a_grandchild_holding_the_pipe() {
+        let mut c = Command::new("sh");
+        c.args(["-c", "sleep 8 & echo hi"]);
+        let started = Instant::now();
+        let (code, out, _) = run_timeout(c, Duration::from_secs(20)).unwrap();
+        assert!(
+            started.elapsed() < Duration::from_secs(6),
+            "{:?}",
+            started.elapsed()
+        );
+        assert_eq!((code, out.as_slice()), (Some(0), &b"hi\n"[..]));
+    }
+
+    #[test]
+    fn run_piped_kills_at_the_deadline() {
+        let mut c = Command::new("sleep");
+        c.arg("30");
+        let started = Instant::now();
+        let (code, _, _) = run_timeout(c, Duration::from_millis(300)).unwrap();
+        assert_eq!(code, None);
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
 
     #[test]
     fn parses_uid() {
