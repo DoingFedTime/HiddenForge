@@ -407,36 +407,37 @@ pub fn read_small_regular_file(path: &str, max_bytes: usize) -> R<Vec<u8>> {
         libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK,
         0,
     )?;
-    if !is_type(&fstat(&fd)?, libc::S_IFREG) {
+    read_capped(&fd, path, max_bytes)
+}
+
+/// The read half of _read_small_regular_file on an open descriptor: refuse
+/// anything but a regular file, then one read of at most `max_bytes + 1`, so a
+/// longer file is noticed without reading it all. `shown` names it in errors.
+fn read_capped(fd: &Fd, shown: &str, max_bytes: usize) -> R<Vec<u8>> {
+    if !is_type(&fstat(fd)?, libc::S_IFREG) {
         return Err(PyErr {
             errno: Some(libc::EINVAL),
-            msg: format!("[Errno 22] {path} is not a regular file"),
+            msg: format!("[Errno 22] {shown} is not a regular file"),
         });
     }
     let mut buf = vec![0u8; max_bytes + 1];
-    let mut got = 0;
-    while got < buf.len() {
-        // SAFETY: reading into the unfilled tail of a live buffer.
-        let n = unsafe { libc::read(fd.0, buf[got..].as_mut_ptr().cast(), buf.len() - got) };
-        if n < 0 {
-            let e = py::last_errno();
-            if e == libc::EINTR {
-                continue;
-            }
+    // os.read() returns after ONE read; a regular file returns all it has.
+    let n = loop {
+        // SAFETY: reading into a live buffer.
+        let n = unsafe { libc::read(fd.0, buf.as_mut_ptr().cast(), buf.len()) };
+        if n >= 0 {
+            break n as usize;
+        }
+        let e = py::last_errno();
+        if e != libc::EINTR {
             return Err(PyErr::os(e));
         }
-        if n == 0 {
-            break;
-        }
-        got += n as usize;
-        // os.read() returns after ONE read; a regular file returns all it has.
-        break;
-    }
-    buf.truncate(got);
+    };
+    buf.truncate(n);
     if buf.len() > max_bytes {
         return Err(PyErr {
             errno: Some(libc::EFBIG),
-            msg: format!("[Errno 27] {path} is larger than {max_bytes} bytes"),
+            msg: format!("[Errno 27] {shown} is larger than {max_bytes} bytes"),
         });
     }
     Ok(buf)
@@ -471,9 +472,17 @@ fn random_hex8() -> String {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
-        return format!("{:016x}", (t as u64) ^ u64::from(std::process::id()));
+        return fallback_hex8(t, std::process::id());
     }
+    hex8(b)
+}
+
+fn hex8(b: [u8; 8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+fn fallback_hex8(nanos: u128, pid: u32) -> String {
+    format!("{:016x}", (nanos as u64) ^ u64::from(pid))
 }
 
 fn openat(dirfd: &Fd, name: &str, flags: i32, mode: u32, shown: &str) -> R<Fd> {
@@ -503,26 +512,7 @@ fn read_small_at(dirfd: &Fd, name: &str, shown: &str, max_bytes: usize) -> R<Vec
         0,
         shown,
     )?;
-    if !is_type(&fstat(&fd)?, libc::S_IFREG) {
-        return Err(PyErr {
-            errno: Some(libc::EINVAL),
-            msg: format!("[Errno 22] {shown} is not a regular file"),
-        });
-    }
-    let mut buf = vec![0u8; max_bytes + 1];
-    // SAFETY: reading into a live buffer.
-    let n = unsafe { libc::read(fd.0, buf.as_mut_ptr().cast(), buf.len()) };
-    if n < 0 {
-        return Err(PyErr::os(py::last_errno()));
-    }
-    buf.truncate(n as usize);
-    if buf.len() > max_bytes {
-        return Err(PyErr {
-            errno: Some(libc::EFBIG),
-            msg: format!("[Errno 27] {shown} is larger than {max_bytes} bytes"),
-        });
-    }
-    Ok(buf)
+    read_capped(&fd, shown, max_bytes)
 }
 
 /// Remembers which publication failures were already reported.
@@ -674,12 +664,66 @@ pub fn publish_addresses(
 
 /// uid/gid of a user from /etc/passwd (pwd.getpwnam without NSS).
 pub fn getpwnam(name: &str) -> Option<(u32, u32, String)> {
-    let text = std::fs::read_to_string("/etc/passwd").ok()?;
+    parse_passwd(&std::fs::read_to_string("/etc/passwd").ok()?, name)
+}
+
+/// (uid, gid, home) of `name` in passwd-format `text`: the first line whose
+/// first field is `name`, with the seven fields a passwd line has.
+fn parse_passwd(text: &str, name: &str) -> Option<(u32, u32, String)> {
     text.lines().find_map(|l| {
         let f: Vec<&str> = l.split(':').collect();
         (f.len() >= 7 && f[0] == name)
             .then(|| Some((f[2].parse().ok()?, f[3].parse().ok()?, f[5].to_string())))?
     })
+}
+
+/// A scratch directory for tests that is removed when dropped, also when the
+/// test panics. Directories a test made unreadable are opened up first.
+#[cfg(test)]
+pub(crate) mod testtmp {
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
+
+    pub struct Tmp(String);
+
+    impl Tmp {
+        pub fn new(tag: &str) -> Tmp {
+            let d = std::env::temp_dir().join(format!("hf-{tag}-{}", super::random_hex8()));
+            std::fs::create_dir_all(&d).unwrap();
+            Tmp(d.to_string_lossy().into_owned())
+        }
+    }
+
+    impl std::ops::Deref for Tmp {
+        type Target = str;
+        fn deref(&self) -> &str {
+            &self.0
+        }
+    }
+
+    impl std::fmt::Display for Tmp {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(&self.0)
+        }
+    }
+
+    fn unlock(p: &Path) {
+        if std::fs::symlink_metadata(p).is_ok_and(|m| m.is_dir()) {
+            let _ = std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o700));
+            if let Ok(rd) = std::fs::read_dir(p) {
+                for e in rd.flatten() {
+                    unlock(&e.path());
+                }
+            }
+        }
+    }
+
+    impl Drop for Tmp {
+        fn drop(&mut self) {
+            unlock(Path::new(&self.0));
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -750,10 +794,10 @@ mod tests {
         assert_eq!(mkdir_p_steps("/"), Vec::<String>::new());
     }
 
-    fn tmpdir(tag: &str) -> String {
-        let d = std::env::temp_dir().join(format!("hf-fsops-{tag}-{}", random_hex8()));
-        std::fs::create_dir_all(&d).unwrap();
-        d.to_string_lossy().into_owned()
+    use super::testtmp::Tmp;
+
+    fn tmpdir(tag: &str) -> Tmp {
+        Tmp::new(tag)
     }
 
     #[test]
@@ -850,6 +894,1216 @@ mod tests {
                 & 0o777,
             0o644
         );
+    }
+
+    fn me() -> (u32, u32) {
+        // SAFETY: getuid/getgid have no preconditions.
+        unsafe { (libc::getuid(), libc::getgid()) }
+    }
+
+    fn mode_of(p: &str) -> u32 {
+        std::fs::metadata(p).unwrap().permissions().mode() & 0o7777
+    }
+
+    fn chmod(p: &str, mode: u32) {
+        std::fs::set_permissions(p, std::fs::Permissions::from_mode(mode)).unwrap();
+    }
+
+    fn mkfifo(p: &str) {
+        let c = cpath(p);
+        // SAFETY: valid C string.
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+    }
+
+    fn not_root() -> bool {
+        !crate::privs::is_root()
+    }
+
+    /// Run `f` on its own thread and fail (instead of hanging the run) if it blocks.
+    fn within<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(f());
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the call blocked")
+    }
+
+    fn cloexec(fd: &Fd) -> bool {
+        // SAFETY: fcntl on an open descriptor.
+        unsafe { libc::fcntl(fd.0, libc::F_GETFD) & libc::FD_CLOEXEC != 0 }
+    }
+
+    // ---- G3: opens and I/O -------------------------------------------------
+
+    #[test]
+    fn open_and_openat_report_python_style_errors_and_set_cloexec() {
+        let d = tmpdir("open");
+        std::fs::write(format!("{d}/f"), b"x").unwrap();
+        let p = format!("{d}/nope");
+        let Err(e) = open(&p, libc::O_RDONLY, 0) else {
+            panic!("opened a missing file")
+        };
+        assert_eq!(e.errno, Some(libc::ENOENT));
+        assert_eq!(e.msg, format!("[Errno 2] No such file or directory: '{p}'"));
+        let fd = open(&format!("{d}/f"), libc::O_RDONLY, 0).unwrap();
+        assert!(cloexec(&fd));
+        // O_CREAT takes the mode argument
+        let created = open(
+            &format!("{d}/made"),
+            libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL,
+            0o600,
+        )
+        .unwrap();
+        assert_eq!(mode_of(&format!("{d}/made")), 0o600);
+        drop(created);
+
+        let dirfd = open_dir_nofollow(&d).unwrap();
+        let Err(e) = openat(&dirfd, "missing", libc::O_RDONLY, 0, "shown/path") else {
+            panic!("opened a missing file")
+        };
+        assert_eq!(
+            e.msg, "[Errno 2] No such file or directory: 'shown/path'",
+            "the error names the shown path, not the relative name"
+        );
+        let fd = openat(&dirfd, "f", libc::O_RDONLY, 0, "f").unwrap();
+        assert!(cloexec(&fd));
+        let made = openat(
+            &dirfd,
+            "made2",
+            libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL,
+            0o640,
+            "made2",
+        )
+        .unwrap();
+        drop(made);
+        assert_eq!(mode_of(&format!("{d}/made2")), 0o640);
+    }
+
+    #[test]
+    fn fd_closes_its_descriptor_on_drop() {
+        let mut p = [0i32; 2];
+        // SAFETY: pipe2 fills two descriptors.
+        assert_eq!(unsafe { libc::pipe2(p.as_mut_ptr(), libc::O_NONBLOCK) }, 0);
+        let (r, w) = (Fd(p[0]), Fd(p[1]));
+        let mut b = [0u8; 1];
+        // SAFETY: reading one byte into a live buffer.
+        let n = unsafe { libc::read(r.0, b.as_mut_ptr().cast(), 1) };
+        assert_eq!(
+            (n, py::last_errno()),
+            (-1, libc::EAGAIN),
+            "a writer is open"
+        );
+        drop(w);
+        // SAFETY: as above.
+        let n = unsafe { libc::read(r.0, b.as_mut_ptr().cast(), 1) };
+        assert_eq!(n, 0, "closing the last writer gives EOF");
+    }
+
+    #[test]
+    fn open_dir_nofollow_refuses_files_and_links() {
+        let d = tmpdir("odn");
+        std::fs::create_dir(format!("{d}/real")).unwrap();
+        std::fs::write(format!("{d}/file"), b"x").unwrap();
+        symlink(format!("{d}/real"), format!("{d}/link")).unwrap();
+        let fd = open_dir_nofollow(&format!("{d}/real")).unwrap();
+        assert!(is_type(&fstat(&fd).unwrap(), libc::S_IFDIR));
+        assert!(cloexec(&fd));
+        for name in ["file", "link"] {
+            let p = format!("{d}/{name}");
+            let Err(e) = open_dir_nofollow(&p) else {
+                panic!("{name}: opened as a directory")
+            };
+            assert_eq!(
+                (e.errno, e.msg),
+                (
+                    Some(libc::ENOTDIR),
+                    format!("[Errno 20] Not a directory: '{p}'")
+                )
+            );
+        }
+        // a missing directory is its own error
+        let Err(e) = open_dir_nofollow(&format!("{d}/none")) else {
+            panic!()
+        };
+        assert_eq!(e.errno, Some(libc::ENOENT));
+    }
+
+    #[test]
+    fn lstat_fstat_and_imode_report_what_the_inode_says() {
+        let d = tmpdir("stat");
+        let f = format!("{d}/f");
+        std::fs::write(&f, b"abc").unwrap();
+        chmod(&f, 0o4755);
+        symlink(&f, format!("{d}/l")).unwrap();
+        let st = lstat(&f).unwrap();
+        assert!(is_type(&st, libc::S_IFREG) && !is_type(&st, libc::S_IFDIR));
+        assert_eq!((imode(&st), st.st_size), (0o4755, 3));
+        // lstat does not follow; fstat of an opened file agrees with lstat of it
+        assert!(is_type(&lstat(&format!("{d}/l")).unwrap(), libc::S_IFLNK));
+        let fd = open(&f, libc::O_RDONLY, 0).unwrap();
+        assert_eq!(imode(&fstat(&fd).unwrap()), 0o4755);
+        let Err(e) = lstat(&format!("{d}/none")) else {
+            panic!()
+        };
+        assert_eq!(
+            e.msg,
+            format!("[Errno 2] No such file or directory: '{d}/none'")
+        );
+        // imode keeps setuid/setgid/sticky and drops the file type
+        let mut fake: libc::stat = unsafe { std::mem::zeroed() };
+        fake.st_mode = libc::S_IFDIR | 0o3777;
+        assert_eq!(imode(&fake), 0o3777);
+        fake.st_mode = libc::S_IFREG | 0o600;
+        assert_eq!(imode(&fake), 0o600);
+    }
+
+    #[test]
+    fn read_small_regular_file_enforces_the_cap_exactly() {
+        let d = tmpdir("cap");
+        let p = format!("{d}/f");
+        std::fs::write(&p, vec![b'a'; 256]).unwrap();
+        assert_eq!(read_small_regular_file(&p, 256).unwrap(), vec![b'a'; 256]);
+        std::fs::write(&p, vec![b'a'; 257]).unwrap();
+        let e = read_small_regular_file(&p, 256).unwrap_err();
+        assert_eq!(
+            (e.errno, e.msg),
+            (
+                Some(libc::EFBIG),
+                format!("[Errno 27] {p} is larger than 256 bytes")
+            )
+        );
+        std::fs::write(&p, b"").unwrap();
+        assert_eq!(read_small_regular_file(&p, 256).unwrap(), b"");
+        assert_eq!(read_small_regular_file(&p, 0).unwrap(), b"");
+        std::fs::write(&p, b"x").unwrap();
+        assert_eq!(
+            read_small_regular_file(&p, 0).unwrap_err().errno,
+            Some(libc::EFBIG)
+        );
+        assert_eq!(read_small_regular_file(&p, 1).unwrap(), b"x");
+        assert_eq!(ADDRESS_FILE_MAX, 256);
+    }
+
+    #[test]
+    fn read_small_regular_file_refuses_links_fifos_and_directories() {
+        let d = tmpdir("kinds");
+        std::fs::write(format!("{d}/real"), b"secret").unwrap();
+        symlink(format!("{d}/real"), format!("{d}/link")).unwrap();
+        let link = format!("{d}/link");
+        let e = read_small_regular_file(&link, 64).unwrap_err();
+        assert_eq!(
+            (e.errno, e.msg),
+            (
+                Some(libc::ELOOP),
+                format!("[Errno 40] Too many levels of symbolic links: '{link}'")
+            )
+        );
+        let fifo = format!("{d}/fifo");
+        mkfifo(&fifo);
+        let f2 = fifo.clone();
+        let e = within(move || read_small_regular_file(&f2, 64)).unwrap_err();
+        assert_eq!(
+            (e.errno, e.msg),
+            (
+                Some(libc::EINVAL),
+                format!("[Errno 22] {fifo} is not a regular file")
+            )
+        );
+        let e = read_small_regular_file(&d, 64).unwrap_err();
+        assert_eq!(
+            (e.errno, e.msg),
+            (
+                Some(libc::EINVAL),
+                format!("[Errno 22] {d} is not a regular file")
+            )
+        );
+        let e = read_small_regular_file(&format!("{d}/none"), 64).unwrap_err();
+        assert_eq!(e.errno, Some(libc::ENOENT));
+    }
+
+    #[test]
+    fn read_small_at_matches_the_path_reader_and_names_the_shown_path() {
+        let d = tmpdir("at");
+        let dirfd = open_dir_nofollow(&d).unwrap();
+        std::fs::write(format!("{d}/f"), vec![b'z'; 10]).unwrap();
+        assert_eq!(
+            read_small_at(&dirfd, "f", "S/f", 10).unwrap(),
+            vec![b'z'; 10]
+        );
+        let e = read_small_at(&dirfd, "f", "S/f", 9).unwrap_err();
+        assert_eq!(
+            (e.errno, e.msg),
+            (
+                Some(libc::EFBIG),
+                "[Errno 27] S/f is larger than 9 bytes".to_string()
+            )
+        );
+        std::fs::write(format!("{d}/e"), b"").unwrap();
+        assert_eq!(read_small_at(&dirfd, "e", "S/e", 9).unwrap(), b"");
+        symlink(format!("{d}/f"), format!("{d}/l")).unwrap();
+        let e = read_small_at(&dirfd, "l", "S/l", 99).unwrap_err();
+        assert_eq!(e.errno, Some(libc::ELOOP));
+        assert!(e.msg.ends_with(": 'S/l'"), "{}", e.msg);
+        std::fs::create_dir(format!("{d}/sub")).unwrap();
+        let e = read_small_at(&dirfd, "sub", "S/sub", 99).unwrap_err();
+        assert_eq!(
+            (e.errno, e.msg),
+            (
+                Some(libc::EINVAL),
+                "[Errno 22] S/sub is not a regular file".to_string()
+            )
+        );
+        mkfifo(&format!("{d}/fifo"));
+        let e = within(move || read_small_at(&dirfd, "fifo", "S/fifo", 99)).unwrap_err();
+        assert_eq!(e.errno, Some(libc::EINVAL));
+    }
+
+    #[test]
+    fn write_nofollow_sets_the_mode_despite_umask_truncates_and_refuses_links() {
+        let d = tmpdir("wnf");
+        let (u, g) = me();
+        // new file: the requested mode, even one the default umask would trim
+        let p = format!("{d}/new");
+        write_nofollow(&p, b"hello", 0o666, None).unwrap();
+        assert_eq!(
+            (std::fs::read(&p).unwrap(), mode_of(&p)),
+            (b"hello".to_vec(), 0o666)
+        );
+        // existing file: truncated, not appended to, and its old mode replaced
+        let q = format!("{d}/old");
+        std::fs::write(&q, b"a much longer old content").unwrap();
+        chmod(&q, 0o644);
+        write_nofollow(&q, b"short", 0o640, Some((u, g))).unwrap();
+        assert_eq!(
+            (std::fs::read(&q).unwrap(), mode_of(&q)),
+            (b"short".to_vec(), 0o640)
+        );
+        write_nofollow(&q, b"", 0o600, None).unwrap();
+        assert_eq!(
+            (std::fs::read(&q).unwrap(), mode_of(&q)),
+            (Vec::new(), 0o600)
+        );
+        // a symlink is refused and its target left alone
+        let target = format!("{d}/target");
+        std::fs::write(&target, b"keep").unwrap();
+        let l = format!("{d}/lnk");
+        symlink(&target, &l).unwrap();
+        let e = write_nofollow(&l, b"overwritten", 0o600, None).unwrap_err();
+        assert_eq!(e.errno, Some(libc::ELOOP));
+        assert_eq!(std::fs::read(&target).unwrap(), b"keep");
+        // a directory cannot be written
+        assert_eq!(
+            write_nofollow(&d, b"x", 0o600, None).unwrap_err().errno,
+            Some(libc::EISDIR)
+        );
+    }
+
+    #[test]
+    fn fchown_and_chown_errors_are_python_style() {
+        if !not_root() {
+            return;
+        }
+        let d = tmpdir("fchown");
+        let (u, g) = me();
+        let p = format!("{d}/f");
+        let e = write_nofollow(&p, b"x", 0o600, Some((u.wrapping_add(1), g))).unwrap_err();
+        assert_eq!(
+            (e.errno, e.msg.as_str()),
+            (Some(libc::EPERM), "[Errno 1] Operation not permitted")
+        );
+        let fd = open(&p, libc::O_RDONLY, 0).unwrap();
+        fchown(&fd, u, g).unwrap();
+        assert_eq!(
+            fchown(&fd, u.wrapping_add(1), g).unwrap_err().errno,
+            Some(1)
+        );
+        // chown to the owner we already are is accepted through a path too
+        lchown(&p, u, g).unwrap();
+        let e = lchown(&p, u.wrapping_add(1), g).unwrap_err();
+        assert_eq!(e.msg, format!("[Errno 1] Operation not permitted: '{p}'"));
+        fchmod(&fd, 0o640).unwrap();
+        assert_eq!(mode_of(&p), 0o640);
+    }
+
+    #[test]
+    fn pyerr_is_permission_is_exactly_eacces_and_eperm() {
+        for (errno, want) in [
+            (libc::EACCES, true),
+            (libc::EPERM, true),
+            (libc::ENOENT, false),
+            (libc::EEXIST, false),
+            (libc::EINVAL, false),
+            (libc::EROFS, false),
+        ] {
+            assert_eq!(PyErr::os(errno).is_permission(), want, "errno {errno}");
+        }
+        assert!(!PyErr::runtime("x".into()).is_permission());
+        assert_eq!(PyErr::runtime("boom".into()).to_string(), "boom");
+    }
+
+    // ---- G4: directories and metadata --------------------------------------
+
+    #[test]
+    fn mkdir_p_creates_every_level_and_accepts_existing_directories() {
+        let d = tmpdir("mkp");
+        let deep = format!("{d}/a/b/c");
+        mkdir_p(&deep).unwrap();
+        assert!(is_type(&lstat(&deep).unwrap(), libc::S_IFDIR));
+        mkdir_p(&deep).unwrap();
+        // a symlink to a directory counts as an existing directory (pathlib exist_ok)
+        symlink(format!("{d}/a"), format!("{d}/via")).unwrap();
+        mkdir_p(&format!("{d}/via/b")).unwrap();
+        // a regular file in the way is FileExistsError, naming the file
+        std::fs::write(format!("{d}/file"), b"x").unwrap();
+        let e = mkdir_p(&format!("{d}/file")).unwrap_err();
+        assert_eq!(
+            (e.errno, e.msg),
+            (
+                Some(libc::EEXIST),
+                format!("[Errno 17] File exists: '{d}/file'")
+            )
+        );
+        // ...and so is a dangling symlink, whose target does not exist
+        symlink(format!("{d}/gone"), format!("{d}/dangling")).unwrap();
+        assert_eq!(
+            mkdir_p(&format!("{d}/dangling")).unwrap_err().errno,
+            Some(libc::EEXIST)
+        );
+        // anything below a file fails at the file, not further down
+        let e = mkdir_p(&format!("{d}/file/sub")).unwrap_err();
+        assert_eq!(e.msg, format!("[Errno 17] File exists: '{d}/file'"));
+    }
+
+    #[test]
+    fn mkdir_p_reports_other_errors_at_the_failing_level() {
+        if !not_root() {
+            return;
+        }
+        let d = tmpdir("mkpro");
+        let ro = format!("{d}/ro");
+        std::fs::create_dir(&ro).unwrap();
+        chmod(&ro, 0o500);
+        let e = mkdir_p(&format!("{ro}/x/y")).unwrap_err();
+        assert_eq!(
+            (e.errno, e.msg),
+            (
+                Some(libc::EACCES),
+                format!("[Errno 13] Permission denied: '{ro}/x'")
+            )
+        );
+    }
+
+    #[test]
+    fn mkdir_owned_creates_0700_and_fixes_an_existing_mode() {
+        let d = tmpdir("mko");
+        let (u, g) = me();
+        let p = format!("{d}/new");
+        mkdir_owned(&p, u, g).unwrap();
+        assert_eq!(mode_of(&p), 0o700);
+        let q = format!("{d}/old");
+        std::fs::create_dir(&q).unwrap();
+        chmod(&q, 0o775);
+        mkdir_owned(&q, u, g).unwrap();
+        assert_eq!(mode_of(&q), 0o700);
+        // idempotent
+        mkdir_owned(&q, u, g).unwrap();
+        assert_eq!(mode_of(&q), 0o700);
+    }
+
+    #[test]
+    fn mkdir_owned_refuses_anything_that_is_not_a_real_directory() {
+        let d = tmpdir("mkor");
+        let (u, g) = me();
+        std::fs::write(format!("{d}/file"), b"x").unwrap();
+        std::fs::create_dir(format!("{d}/real")).unwrap();
+        symlink(format!("{d}/real"), format!("{d}/link")).unwrap();
+        for name in ["file", "link"] {
+            let p = format!("{d}/{name}");
+            let e = mkdir_owned(&p, u, g).unwrap_err();
+            assert_eq!(
+                (e.errno, e.msg),
+                (None, format!("{p} is not a directory; refusing to use it")),
+                "{name}"
+            );
+        }
+        // the link's target was not touched
+        assert_eq!(mode_of(&format!("{d}/real")) & 0o700, 0o700);
+        // a missing parent: mkdir fails and says where
+        let p = format!("{d}/no/such/dir");
+        let e = mkdir_owned(&p, u, g).unwrap_err();
+        assert_eq!(
+            (e.errno, e.msg),
+            (
+                Some(libc::ENOENT),
+                format!("[Errno 2] No such file or directory: '{p}'")
+            )
+        );
+        // lstat failing for another reason is returned as it is
+        let p = format!("{d}/file/below");
+        assert_eq!(
+            mkdir_owned(&p, u, g).unwrap_err().errno,
+            Some(libc::ENOTDIR)
+        );
+    }
+
+    #[test]
+    fn prepare_hs_dir_creates_missing_directories_and_secures_them() {
+        let d = tmpdir("phd");
+        let (u, g) = me();
+        let svc = format!("{d}/x/svc");
+        let mut log = vec![];
+        prepare_hs_dir(&svc, u, g, &mut log).unwrap();
+        assert_eq!(mode_of(&svc), 0o700);
+        assert!(log.is_empty(), "{log:?}");
+        prepare_hs_dir(&svc, u, g, &mut log).unwrap();
+        assert!(log.is_empty(), "{log:?}");
+    }
+
+    #[test]
+    fn prepare_hs_dir_refuses_links_and_non_directories_with_the_exact_text() {
+        let d = tmpdir("phdr");
+        let (u, g) = me();
+        std::fs::write(format!("{d}/file"), b"x").unwrap();
+        std::fs::create_dir(format!("{d}/real")).unwrap();
+        symlink(format!("{d}/real"), format!("{d}/link")).unwrap();
+        for (name, kind) in [("file", "not a directory"), ("link", "a symlink")] {
+            let p = format!("{d}/{name}");
+            let e = prepare_hs_dir(&p, u, g, &mut vec![]).unwrap_err();
+            assert_eq!(
+                e.msg,
+                format!("{p} in the key volume is {kind}; refusing to use it as a service directory. Replace it with the real directory (restore it from a backup).")
+            );
+        }
+        // an lstat error that is not "missing" is returned, not repaired
+        let p = format!("{d}/file/below");
+        let e = prepare_hs_dir(&p, u, g, &mut vec![]).unwrap_err();
+        assert_eq!(
+            (e.errno, e.msg),
+            (
+                Some(libc::ENOTDIR),
+                format!("[Errno 20] Not a directory: '{p}'")
+            )
+        );
+    }
+
+    #[test]
+    fn prepare_hs_dir_accepts_a_directory_the_tor_user_already_owns() {
+        if !not_root() {
+            return;
+        }
+        // Mode 0 is the stand-in for "the tor user's 0700 directory the supervisor
+        // can no longer open": opening it fails with EACCES, then the already-prepared
+        // check must pass on owner and mode.
+        let d = tmpdir("phdo");
+        let (u, g) = me();
+        let svc = format!("{d}/svc");
+        std::fs::create_dir(&svc).unwrap();
+        chmod(&svc, 0o000);
+        let mut log = vec![];
+        prepare_hs_dir(&svc, u, g, &mut log).unwrap();
+        assert_eq!(
+            log,
+            [format!(
+                "{svc} is already the tor user's (prepared by a previous start); nothing to change."
+            )]
+        );
+        assert_eq!(mode_of(&svc), 0, "nothing was changed");
+        // the same directory for a different expected owner: the error stands
+        let e = prepare_hs_dir(&svc, u.wrapping_add(1), g, &mut vec![]).unwrap_err();
+        assert_eq!(
+            (e.errno, e.msg),
+            (
+                Some(libc::EACCES),
+                format!("[Errno 13] Permission denied: '{svc}'")
+            )
+        );
+        // group or other access means it is not the locked-down directory
+        for mode in [0o070, 0o007, 0o077, 0o040, 0o004] {
+            chmod(&svc, mode); // owner bits clear, so it still cannot be opened
+            let mut log = vec![];
+            let r = prepare_hs_dir(&svc, u, g, &mut log);
+            assert_eq!(
+                r.unwrap_err().errno,
+                Some(libc::EACCES),
+                "mode {mode:o} must not count as prepared"
+            );
+            assert!(log.is_empty(), "{log:?}");
+        }
+        chmod(&svc, 0o700);
+    }
+
+    #[test]
+    fn secure_service_dir_makes_0700_and_explains_what_it_cannot_do() {
+        let d = tmpdir("ssd");
+        let svc = format!("{d}/svc");
+        std::fs::create_dir(&svc).unwrap();
+        chmod(&svc, 0o700);
+        secure_service_dir(&svc).unwrap();
+        for mode in [0o775, 0o755, 0o500, 0o1700, 0o2700] {
+            chmod(&svc, mode);
+            secure_service_dir(&svc).unwrap();
+            assert_eq!(mode_of(&svc), 0o700, "from {mode:o}");
+        }
+        std::fs::write(format!("{d}/file"), b"x").unwrap();
+        assert_eq!(
+            secure_service_dir(&format!("{d}/file")).unwrap_err().errno,
+            Some(libc::ENOTDIR)
+        );
+        symlink(&svc, format!("{d}/link")).unwrap();
+        assert_eq!(
+            secure_service_dir(&format!("{d}/link")).unwrap_err().errno,
+            Some(libc::ENOTDIR)
+        );
+        if not_root() {
+            // "/" belongs to root and is not 0700: the error says how to fix it
+            let st = lstat("/").unwrap();
+            let e = secure_service_dir("/").unwrap_err();
+            assert_eq!(e.errno, Some(libc::EPERM));
+            assert_eq!(
+                e.msg,
+                format!(
+                    "[Errno 1] / is mode 0o{:o}, which Tor refuses, and it cannot be set to 0700 here (it belongs to uid {} and the runtime grants no FOWNER). Run `chmod 700` on it on the host.",
+                    imode(&st),
+                    st.st_uid
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn chmod_dir_nofollow_honours_only_if_root_owned() {
+        let d = tmpdir("cdn");
+        let p = format!("{d}/dir");
+        std::fs::create_dir(&p).unwrap();
+        chmod(&p, 0o755);
+        if not_root() {
+            // we own it, root does not: with the filter it is left alone
+            assert!(!chmod_dir_nofollow(&p, 0o711, true).unwrap());
+            assert_eq!(mode_of(&p), 0o755);
+        }
+        assert!(chmod_dir_nofollow(&p, 0o711, false).unwrap());
+        assert_eq!(mode_of(&p), 0o711);
+        // a link is refused, whatever the flag
+        symlink(&p, format!("{d}/lnk")).unwrap();
+        let l = format!("{d}/lnk");
+        assert_eq!(
+            chmod_dir_nofollow(&l, 0o700, false).unwrap_err().errno,
+            Some(libc::ENOTDIR)
+        );
+        assert_eq!(
+            chmod_dir_nofollow(&l, 0o700, true).unwrap_err().errno,
+            Some(libc::ENOTDIR)
+        );
+        assert_eq!(mode_of(&p), 0o711);
+    }
+
+    #[test]
+    fn chown_one_chowns_files_dirs_and_links_without_noise() {
+        let d = tmpdir("co");
+        let (u, g) = me();
+        let f = format!("{d}/f");
+        std::fs::write(&f, b"x").unwrap();
+        std::fs::create_dir(format!("{d}/sub")).unwrap();
+        std::fs::create_dir(format!("{d}/sub/inner")).unwrap(); // sub now has 3 links
+        symlink("/nonexistent-target", format!("{d}/dangling")).unwrap();
+        let mut log = vec![];
+        chown_one(&f, u, g, &mut log).unwrap();
+        chown_one(&format!("{d}/sub"), u, g, &mut log).unwrap();
+        // a link is chowned itself, so even a dangling one works
+        chown_one(&format!("{d}/dangling"), u, g, &mut log).unwrap();
+        assert!(log.is_empty(), "{log:?}");
+        let e = chown_one(&format!("{d}/none"), u, g, &mut log).unwrap_err();
+        assert_eq!(e.errno, Some(libc::ENOENT));
+        if not_root() {
+            let e = chown_one(&f, u.wrapping_add(1), g, &mut log).unwrap_err();
+            assert_eq!(
+                e.msg, "[Errno 1] Operation not permitted",
+                "fchown through the descriptor, so no path in the text"
+            );
+        }
+    }
+
+    #[test]
+    fn chown_one_names_hard_links_devices_and_sockets_and_does_not_touch_them() {
+        let d = tmpdir("cow");
+        let (u, g) = me();
+        std::fs::write(format!("{d}/a"), b"x").unwrap();
+        std::fs::hard_link(format!("{d}/a"), format!("{d}/b")).unwrap();
+        let mut log = vec![];
+        chown_one(&format!("{d}/b"), u, g, &mut log).unwrap();
+        assert_eq!(
+            log,
+            [format!(
+                "Warning: not taking ownership of {d}/b: it has 2 hard links, so it is also a file outside this directory. Tor never hard-links its key files; remove the extra links."
+            )]
+        );
+        // even a chown that would be refused is skipped, proving no fchown ran
+        if not_root() {
+            let mut log = vec![];
+            chown_one(&format!("{d}/a"), u.wrapping_add(1), g, &mut log).unwrap();
+            assert_eq!(log.len(), 1);
+        }
+        // a character device (never opened) and a socket
+        let want = |p: &str| {
+            format!("Warning: not taking ownership of {p} in the key volume: it is a device node or socket, which does not belong there.")
+        };
+        let mut log = vec![];
+        chown_one("/dev/null", u.wrapping_add(1), g, &mut log).unwrap();
+        assert_eq!(log, [want("/dev/null")]);
+        let sock = format!("{d}/sock");
+        let _l = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+        let mut log = vec![];
+        chown_one(&sock, u.wrapping_add(1), g, &mut log).unwrap();
+        assert_eq!(log, [want(&sock)]);
+    }
+
+    #[test]
+    fn chown_one_does_not_block_on_a_fifo() {
+        let d = tmpdir("cof");
+        let (u, g) = me();
+        let fifo = format!("{d}/fifo");
+        mkfifo(&fifo);
+        let log = within(move || {
+            let mut log = vec![];
+            chown_one(&fifo, u, g, &mut log).unwrap();
+            log
+        });
+        assert!(log.is_empty());
+    }
+
+    #[test]
+    fn is_label_and_is_onion_check_length_alphabet_and_suffix() {
+        let lab = "a".repeat(56);
+        assert!(is_label(&lab));
+        assert!(!is_label(&"a".repeat(55)));
+        assert!(!is_label(&"a".repeat(57)));
+        assert!(!is_label(""));
+        assert!(is_label(&"az27".repeat(14)));
+        for bad in [
+            'A', '0', '1', '8', '9', '{', '`', '-', '.', '/', ':', '\u{e9}',
+        ] {
+            let s = format!("{}{bad}", "a".repeat(55));
+            if bad.len_utf8() == 1 {
+                assert!(!is_label(&s), "{bad:?} accepted");
+            }
+            let s = format!("{bad}{}", "a".repeat(55));
+            assert!(!is_label(&s), "{bad:?} accepted first");
+        }
+        let on = format!("{lab}.onion");
+        assert!(is_onion(&on));
+        assert!(!is_onion(&format!("{}.onion", "a".repeat(55))));
+        assert!(!is_onion(&format!("{}.onion", "a".repeat(57))));
+        assert!(!is_onion(&format!("{lab}.onioN")));
+        assert!(!is_onion(&format!("{lab}.onyon")));
+        assert!(!is_onion(&format!("{lab}xonion")));
+        assert!(!is_onion(&lab));
+        assert!(!is_onion(&format!("{lab}.onion\n")));
+        assert!(!is_onion(&format!("{}1.onion", "a".repeat(55))));
+        assert!(!is_onion(&format!("{}A.onion", "a".repeat(55))));
+        assert!(!is_onion(&format!("{}8.onion", "a".repeat(55))));
+        assert!(is_onion(&format!("{}7.onion", "a".repeat(55))));
+        assert!(is_onion(&format!("{}2.onion", "z".repeat(55))));
+        assert!(is_onion(&format!("2{}.onion", "7".repeat(55))));
+        assert!(!is_onion(&format!("{}\u{e9}.onion", "a".repeat(54))));
+    }
+
+    // ---- G5: dropped mappings, publish, passwd, names -----------------------
+
+    #[test]
+    fn write_dropped_mappings_writes_one_reason_per_line_with_mode_0600() {
+        let d = tmpdir("wdm");
+        let (u, g) = me();
+        let p = format!("{d}/dropped");
+        let mut log = vec![];
+        write_dropped_mappings(&p, &["first".into(), "second".into()], u, g, &mut log);
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "first\nsecond\n");
+        assert_eq!(mode_of(&p), 0o600);
+        assert_eq!(log, [format!("Recorded 2 dropped mapping(s) in {p}")]);
+        // rewritten, not appended, when the set changes
+        let mut log = vec![];
+        write_dropped_mappings(&p, &["only".into()], u, g, &mut log);
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "only\n");
+        assert_eq!(log, [format!("Recorded 1 dropped mapping(s) in {p}")]);
+        // an empty set removes the file, silently, and silently again when it is gone
+        let mut log = vec![];
+        write_dropped_mappings(&p, &[], u, g, &mut log);
+        write_dropped_mappings(&p, &[], u, g, &mut log);
+        assert!(!std::path::Path::new(&p).exists());
+        assert!(log.is_empty(), "{log:?}");
+    }
+
+    #[test]
+    fn write_dropped_mappings_reports_failures_in_the_log() {
+        let d = tmpdir("wdmf");
+        let (u, g) = me();
+        let mut log = vec![];
+        let p = format!("{d}/no/such/dropped");
+        write_dropped_mappings(&p, &["r".into()], u, g, &mut log);
+        assert_eq!(
+            log,
+            [format!(
+                "Warning: could not write {p}: [Errno 2] No such file or directory: '{p}'"
+            )]
+        );
+        // removal that fails for a reason other than "absent" is reported
+        let dir = format!("{d}/isdir");
+        std::fs::create_dir(&dir).unwrap();
+        let mut log = vec![];
+        write_dropped_mappings(&dir, &[], u, g, &mut log);
+        assert_eq!(
+            log,
+            [format!(
+                "Warning: could not remove {dir}: [Errno 21] Is a directory: '{dir}'"
+            )]
+        );
+        // a link at the path is not followed when writing
+        std::fs::write(format!("{d}/t"), b"keep").unwrap();
+        symlink(format!("{d}/t"), format!("{d}/l")).unwrap();
+        let mut log = vec![];
+        write_dropped_mappings(&format!("{d}/l"), &["r".into()], u, g, &mut log);
+        assert_eq!(std::fs::read(format!("{d}/t")).unwrap(), b"keep");
+        assert!(log[0].starts_with("Warning: could not write "), "{log:?}");
+    }
+
+    fn onion_of(c: char) -> String {
+        format!("{}.onion", c.to_string().repeat(56))
+    }
+
+    fn pub_setup(tag: &str) -> (Tmp, Fd) {
+        let d = tmpdir(tag);
+        let fd = open_dir_nofollow(&d).unwrap();
+        (d, fd)
+    }
+
+    fn mk_service(d: &str, name: &str, hostname: Option<&[u8]>) -> String {
+        let svc = format!("{d}/{name}");
+        std::fs::create_dir(&svc).unwrap();
+        if let Some(h) = hostname {
+            std::fs::write(format!("{svc}/hostname"), h).unwrap();
+        }
+        svc
+    }
+
+    fn leftovers(d: &str) -> Vec<String> {
+        let mut v: Vec<String> = std::fs::read_dir(d)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with('.') || n.ends_with(".tmp"))
+            .collect();
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn publish_addresses_writes_0644_logs_and_leaves_no_temp_file() {
+        let (d, kfd) = pub_setup("pub1");
+        let on = onion_of('a');
+        let svc = mk_service(&d, "a", Some(format!("{on}\n").as_bytes()));
+        let (mut st, mut log) = (PublishState::default(), vec![]);
+        publish_addresses(&[svc], &d, &kfd, &mut || true, &|_| None, &mut st, &mut log);
+        let target = format!("{d}/a.onion");
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), format!("{on}\n"));
+        assert_eq!(mode_of(&target), 0o644);
+        assert_eq!(log, [format!("Published address for a: {on}")]);
+        assert_eq!(leftovers(&d), Vec::<String>::new());
+    }
+
+    #[test]
+    fn publish_addresses_is_idempotent_and_replaces_a_stale_copy() {
+        let (d, kfd) = pub_setup("pub2");
+        let (on1, on2) = (onion_of('a'), onion_of('b'));
+        let svc = mk_service(&d, "a", Some(format!("{on1}\n").as_bytes()));
+        let target = format!("{d}/a.onion");
+        let (mut st, mut log) = (PublishState::default(), vec![]);
+        let gate_calls = std::cell::Cell::new(0);
+        let mut gate = || {
+            gate_calls.set(gate_calls.get() + 1);
+            true
+        };
+        publish_addresses(
+            std::slice::from_ref(&svc),
+            &d,
+            &kfd,
+            &mut gate,
+            &|_| None,
+            &mut st,
+            &mut log,
+        );
+        assert_eq!((gate_calls.get(), log.len()), (1, 1));
+        // nothing new: no gate call, no write, no log
+        publish_addresses(
+            std::slice::from_ref(&svc),
+            &d,
+            &kfd,
+            &mut gate,
+            &|_| None,
+            &mut st,
+            &mut log,
+        );
+        assert_eq!((gate_calls.get(), log.len()), (1, 1));
+        // an equal copy with different whitespace is still the same address
+        std::fs::write(&target, format!("  {on1}\r\n")).unwrap();
+        publish_addresses(
+            std::slice::from_ref(&svc),
+            &d,
+            &kfd,
+            &mut gate,
+            &|_| None,
+            &mut st,
+            &mut log,
+        );
+        assert_eq!((gate_calls.get(), log.len()), (1, 1));
+        // the service's address changed: the stale copy is replaced
+        std::fs::write(format!("{svc}/hostname"), format!("{on2}\n")).unwrap();
+        publish_addresses(
+            std::slice::from_ref(&svc),
+            &d,
+            &kfd,
+            &mut gate,
+            &|_| None,
+            &mut st,
+            &mut log,
+        );
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            format!("{on2}\n")
+        );
+        assert_eq!(
+            log.last().unwrap(),
+            &format!("Published address for a: {on2}")
+        );
+        assert_eq!(gate_calls.get(), 2);
+        // a damaged published copy (not an address, not ASCII) is rewritten too
+        for junk in [&b"garbage"[..], &b"\xff\xfe\n"[..], &vec![b'a'; 300][..]] {
+            std::fs::write(&target, junk).unwrap();
+            publish_addresses(
+                std::slice::from_ref(&svc),
+                &d,
+                &kfd,
+                &mut gate,
+                &|_| None,
+                &mut st,
+                &mut log,
+            );
+            assert_eq!(
+                std::fs::read_to_string(&target).unwrap(),
+                format!("{on2}\n")
+            );
+        }
+        assert_eq!(leftovers(&d), Vec::<String>::new());
+    }
+
+    #[test]
+    fn publish_addresses_replaces_a_planted_link_instead_of_following_it() {
+        let (d, kfd) = pub_setup("pub3");
+        let svc = mk_service(&d, "a", Some(format!("{}\n", onion_of('a')).as_bytes()));
+        std::fs::write(format!("{d}/victim"), b"keep").unwrap();
+        symlink(format!("{d}/victim"), format!("{d}/a.onion")).unwrap();
+        let (mut st, mut log) = (PublishState::default(), vec![]);
+        publish_addresses(&[svc], &d, &kfd, &mut || true, &|_| None, &mut st, &mut log);
+        assert_eq!(std::fs::read(format!("{d}/victim")).unwrap(), b"keep");
+        assert_eq!(
+            std::fs::read_to_string(format!("{d}/a.onion")).unwrap(),
+            format!("{}\n", onion_of('a'))
+        );
+        assert!(!is_type(
+            &lstat(&format!("{d}/a.onion")).unwrap(),
+            libc::S_IFLNK
+        ));
+    }
+
+    #[test]
+    fn publish_addresses_skips_invalid_hostnames_without_a_word() {
+        let (d, kfd) = pub_setup("pub4");
+        let mut services = vec![];
+        let bad: [(&str, Vec<u8>); 5] = [
+            (
+                "nonascii",
+                format!("{}\u{e9}\n", onion_of('a')).into_bytes(),
+            ),
+            ("short", b"abc.onion\n".to_vec()),
+            ("upper", format!("{}\n", onion_of('A')).into_bytes()),
+            ("empty", Vec::new()),
+            (
+                "twolines",
+                format!("{}\n{}\n", onion_of('a'), onion_of('a')).into_bytes(),
+            ),
+        ];
+        for (name, content) in &bad {
+            services.push(mk_service(&d, name, Some(content)));
+        }
+        let (mut st, mut log) = (PublishState::default(), vec![]);
+        let gate_calls = std::cell::Cell::new(0);
+        publish_addresses(
+            &services,
+            &d,
+            &kfd,
+            &mut || {
+                gate_calls.set(1);
+                true
+            },
+            &|_| None,
+            &mut st,
+            &mut log,
+        );
+        assert!(log.is_empty(), "{log:?}");
+        assert_eq!(gate_calls.get(), 0, "nothing to publish, so no gate call");
+        for (name, _) in &bad {
+            assert!(!std::path::Path::new(&format!("{d}/{name}.onion")).exists());
+        }
+        // a gate that says no keeps everything pending and writes nothing
+        let good = mk_service(&d, "good", Some(format!("{}\n", onion_of('c')).as_bytes()));
+        publish_addresses(
+            std::slice::from_ref(&good),
+            &d,
+            &kfd,
+            &mut || false,
+            &|_| None,
+            &mut st,
+            &mut log,
+        );
+        assert!(log.is_empty());
+        assert!(!std::path::Path::new(&format!("{d}/good.onion")).exists());
+    }
+
+    #[test]
+    fn publish_addresses_asks_the_owner_only_after_a_permission_error() {
+        if !not_root() {
+            return;
+        }
+        let (d, kfd) = pub_setup("pub5");
+        let on = onion_of('d');
+        // unreadable by us: the owner-side reader is asked, with this exact path
+        let svc = mk_service(&d, "locked", Some(format!("{on}\n").as_bytes()));
+        chmod(&format!("{svc}/hostname"), 0o000);
+        // missing hostname and a FIFO are not permission errors: the owner is not asked
+        let missing = mk_service(&d, "missing", None);
+        let fifo = mk_service(&d, "fifo", None);
+        mkfifo(&format!("{fifo}/hostname"));
+        let asked = std::cell::RefCell::new(Vec::new());
+        let reader = |p: &str| {
+            asked.borrow_mut().push(p.to_string());
+            Some(format!("{on}\n").into_bytes())
+        };
+        let (mut st, mut log) = (PublishState::default(), vec![]);
+        let services = [missing, fifo.clone(), svc.clone()];
+        publish_addresses(
+            &services,
+            &d,
+            &kfd,
+            &mut || true,
+            &reader,
+            &mut st,
+            &mut log,
+        );
+        assert_eq!(*asked.borrow(), [format!("{svc}/hostname")]);
+        assert_eq!(
+            std::fs::read_to_string(format!("{d}/locked.onion")).unwrap(),
+            format!("{on}\n")
+        );
+        // the FIFO warns (EINVAL) once; the missing file is silent; the locked one published
+        assert_eq!(log.len(), 2, "{log:?}");
+        assert!(
+            log[0].contains("for fifo: read hostname failed: Invalid argument."),
+            "{log:?}"
+        );
+        assert_eq!(log[1], format!("Published address for locked: {on}"));
+    }
+
+    #[test]
+    fn publish_addresses_warns_once_when_even_the_owner_cannot_read() {
+        if !not_root() {
+            return;
+        }
+        let (d, kfd) = pub_setup("pub6");
+        let svc = mk_service(
+            &d,
+            "locked",
+            Some(format!("{}\n", onion_of('d')).as_bytes()),
+        );
+        chmod(&format!("{svc}/hostname"), 0o000);
+        let (mut st, mut log) = (PublishState::default(), vec![]);
+        for _ in 0..3 {
+            publish_addresses(
+                std::slice::from_ref(&svc),
+                &d,
+                &kfd,
+                &mut || true,
+                &|_| None,
+                &mut st,
+                &mut log,
+            );
+        }
+        assert_eq!(
+            log,
+            [format!(
+                "Warning: cannot publish the .onion address for locked: read hostname failed: Permission denied. The service itself is unaffected -- read the address with 'su-exec tor cat {d}/locked/hostname' instead. (Reported once; further identical failures are not repeated.)"
+            )]
+        );
+        assert!(!std::path::Path::new(&format!("{d}/locked.onion")).exists());
+    }
+
+    #[test]
+    fn publish_addresses_cleans_up_and_warns_once_when_the_rename_fails() {
+        let (d, kfd) = pub_setup("pub7");
+        let svc = mk_service(&d, "a", Some(format!("{}\n", onion_of('a')).as_bytes()));
+        // a directory where the address file belongs: rename cannot replace it
+        std::fs::create_dir(format!("{d}/a.onion")).unwrap();
+        let (mut st, mut log) = (PublishState::default(), vec![]);
+        for _ in 0..2 {
+            publish_addresses(
+                std::slice::from_ref(&svc),
+                &d,
+                &kfd,
+                &mut || true,
+                &|_| None,
+                &mut st,
+                &mut log,
+            );
+        }
+        assert_eq!(
+            log,
+            [format!(
+                "Warning: cannot publish the .onion address for a: write {d}/a.onion failed: Is a directory. The service itself is unaffected -- read the address with 'su-exec tor cat {d}/a/hostname' instead. (Reported once; further identical failures are not repeated.)"
+            )]
+        );
+        assert_eq!(
+            leftovers(&d),
+            Vec::<String>::new(),
+            "the temp file is removed"
+        );
+    }
+
+    #[test]
+    fn warn_once_is_per_service_action_and_errno_and_ignores_enoent() {
+        let mut st = PublishState::default();
+        let mut log = vec![];
+        st.warn_once(
+            "a",
+            "read hostname",
+            &PyErr::os(libc::ENOENT),
+            "/k",
+            &mut log,
+        );
+        assert!(log.is_empty());
+        st.warn_once(
+            "a",
+            "read hostname",
+            &PyErr::os(libc::EACCES),
+            "/k",
+            &mut log,
+        );
+        st.warn_once(
+            "a",
+            "read hostname",
+            &PyErr::os(libc::EACCES),
+            "/k",
+            &mut log,
+        );
+        assert_eq!(log.len(), 1);
+        // another service, another action word, another errno: each reported once; the
+        // path after the action word does not count (Python keys on action.split()[0])
+        st.warn_once(
+            "b",
+            "read hostname",
+            &PyErr::os(libc::EACCES),
+            "/k",
+            &mut log,
+        );
+        st.warn_once(
+            "a",
+            "write /k/a.onion",
+            &PyErr::os(libc::EACCES),
+            "/k",
+            &mut log,
+        );
+        st.warn_once(
+            "a",
+            "write /k/other",
+            &PyErr::os(libc::EACCES),
+            "/k",
+            &mut log,
+        );
+        st.warn_once("a", "read hostname", &PyErr::os(libc::EIO), "/k", &mut log);
+        assert_eq!(log.len(), 4, "{log:?}");
+        // an error without an errno counts as errno 0, and is reported
+        st.warn_once(
+            "c",
+            "read hostname",
+            &PyErr::runtime("x".into()),
+            "/k",
+            &mut log,
+        );
+        assert_eq!(log.len(), 5);
+        assert!(log[4].contains("failed: Success."), "{}", log[4]);
+    }
+
+    #[test]
+    fn parse_passwd_picks_the_first_matching_user_and_its_fields() {
+        let text = "root:x:0:0:root:/root:/bin/sh\n\
+                    tor:x:100:101:Tor:/var/lib/tor:/sbin/nologin\n\
+                    tor:x:200:201:Tor again:/elsewhere:/bin/sh\n";
+        assert_eq!(
+            parse_passwd(text, "tor"),
+            Some((100, 101, "/var/lib/tor".to_string()))
+        );
+        assert_eq!(
+            parse_passwd(text, "root"),
+            Some((0, 0, "/root".to_string()))
+        );
+        assert_eq!(parse_passwd(text, "to"), None);
+        assert_eq!(parse_passwd(text, "tor2"), None);
+        assert_eq!(parse_passwd(text, ""), None);
+        assert_eq!(parse_passwd("", "tor"), None);
+        // exactly seven fields is a full line; six is not
+        assert_eq!(
+            parse_passwd("tor:x:1:2:c:/h:/s", "tor"),
+            Some((1, 2, "/h".to_string()))
+        );
+        assert_eq!(parse_passwd("tor:x:1:2:c:/h", "tor"), None);
+        // the name must be the first field, not any field
+        assert_eq!(parse_passwd("x:tor:1:2:c:/h:/s", "tor"), None);
+        // a field-count above seven (extra colons in the shell) still parses
+        assert_eq!(
+            parse_passwd("tor:x:1:2:c:/h:/s:extra", "tor"),
+            Some((1, 2, "/h".to_string()))
+        );
+        // a non-numeric id is not a user
+        assert_eq!(parse_passwd("tor:x:abc:2:c:/h:/s", "tor"), None);
+        assert_eq!(parse_passwd("tor:x:1:abc:c:/h:/s", "tor"), None);
+        assert_eq!(getpwnam("root").map(|(u, g, _)| (u, g)), Some((0, 0)));
+        assert_eq!(getpwnam("no-such-user-hf-test"), None);
+    }
+
+    #[test]
+    fn hex_names_are_sixteen_zero_padded_lowercase_digits() {
+        assert_eq!(
+            hex8([0x00, 0x01, 0xab, 0xff, 0x10, 0x7f, 0x80, 0xfe]),
+            "0001abff107f80fe"
+        );
+        assert_eq!(hex8([0; 8]), "0000000000000000");
+        // the fallback XORs the low 64 bits of the clock with the pid
+        assert_eq!(fallback_hex8(0b0110, 0b0011), "0000000000000005");
+        assert_eq!(fallback_hex8((1u128 << 64) | 0x10, 3), "0000000000000013");
+        assert_eq!(fallback_hex8(0, 0), "0000000000000000");
+        assert_eq!(fallback_hex8(u128::MAX, 0), "ffffffffffffffff");
+        // the live generator draws all 64 bits: a clock-based name starts with 0 or 1
+        let names: Vec<String> = (0..64).map(|_| random_hex8()).collect();
+        for n in &names {
+            assert!(
+                n.len() == 16
+                    && n.bytes()
+                        .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()),
+                "{n}"
+            );
+        }
+        assert!(names.iter().any(|n| n.as_bytes()[0] > b'1'), "{names:?}");
+        let mut uniq = names.clone();
+        uniq.sort();
+        uniq.dedup();
+        assert_eq!(uniq.len(), names.len());
     }
 
     #[test]
