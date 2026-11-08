@@ -31,6 +31,9 @@ Behaviour is steered by HF_FAKE_MKP224O:
                   generator can do; the caller must keep the key it produced
     fail_silent   exit 2 with nothing on stderr at all
     noise         write a valid key directory plus an unrelated directory beside it
+    linkedpub     a valid key directory whose public key file is a symlink to a
+                  copy outside it; a caller that follows it trusts a file the
+                  generator did not write there
     deaf          emit statistics and IGNORE SIGTERM, the way a wedged generator
                   would; only SIGKILL stops it. A closed stderr does not stop it
                   either: a caller that drops its end of the pipe is still waiting
@@ -98,6 +101,12 @@ def main():
     if record:
         with open(record, "a", encoding="utf-8") as fh:
             fh.write(repr(sys.argv[1:]) + "\n")
+    dirmode = os.environ.get("HF_FAKE_MKP224O_DIRMODE")
+    if dirmode:
+        # The permission bits of the -d directory: the caller made it, and a
+        # fresh secret key lands in it.
+        with open(dirmode, "w", encoding="ascii") as fh:
+            fh.write(oct(os.stat(args.outdir).st_mode & 0o7777))
 
     mode = os.environ.get("HF_FAKE_MKP224O", "ok")
 
@@ -173,6 +182,14 @@ def main():
         # another. Only the independent re-derivation catches this.
         onion = derive(bytes.fromhex(PUB_HEX))
         write_keydir(args.outdir, OTHER_PUB_HEX, dirname=onion, hostname=onion)
+        return 0
+
+    if mode == "linkedpub":
+        d = write_keydir(args.outdir, PUB_HEX)
+        pub = os.path.join(d, "hs_ed25519_public_key")
+        elsewhere = os.path.join(os.path.dirname(args.outdir), "linked-public-key")
+        os.replace(pub, elsewhere)
+        os.symlink(elsewhere, pub)
         return 0
 
     # -n says how many to find. Honouring it is what makes a caller that asks for

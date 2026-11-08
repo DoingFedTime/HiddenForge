@@ -1979,11 +1979,21 @@ fn human_duration(s: f64) -> String {
     }
 }
 
+/// Make a directory only its owner can enter (Python: mkdir(mode=0o700), mkdtemp).
+/// The mode is passed to mkdir(2), so it is never briefly wider than 0700 under any umask.
+fn mkdir_private(path: &str, recursive: bool) -> std::io::Result<()> {
+    use std::os::unix::fs::DirBuilderExt;
+    std::fs::DirBuilder::new()
+        .recursive(recursive)
+        .mode(0o700)
+        .create(path)
+}
+
 fn benchmark(seconds: i64, threads: i64) -> Result<f64, String> {
     use std::io::BufRead;
     let seconds = seconds.max(1);
     let tmp = format!("/tmp/hf-bench-{}", random_hex8());
-    std::fs::create_dir(&tmp).map_err(|e| e.to_string())?;
+    mkdir_private(&tmp, false).map_err(|e| e.to_string())?;
     let mut child = std::process::Command::new(mkp224o_path()?)
         .args([
             "-d",
@@ -2055,9 +2065,9 @@ fn vanity_generate(
             "{target} already exists. Refusing to overwrite a key set: the key IS the .onion address and there is no recovery. Pass --force to archive the old one and generate a fresh address."
         )));
     }
-    std::fs::create_dir_all(out).map_err(|e| (EXIT_FAIL, e.to_string()))?;
+    mkdir_private(out, true).map_err(|e| (EXIT_FAIL, e.to_string()))?;
     let tmp = join(out, &format!("hf-vanity-{}", random_hex8()));
-    std::fs::create_dir(&tmp).map_err(|e| (EXIT_FAIL, e.to_string()))?;
+    mkdir_private(&tmp, false).map_err(|e| (EXIT_FAIL, e.to_string()))?;
     let res = (|| -> Result<(String, Option<String>), (i32, String)> {
         let outp = std::process::Command::new(mkp224o_path().map_err(|e| (EXIT_FAIL, e))?)
             .args(["-d", &tmp, "-t", &threads.to_string(), "-n", "1", prefix])
@@ -2119,7 +2129,7 @@ fn vanity_generate(
                 ),
             ));
         }
-        let file_onion = std::fs::read(join(&src, HOSTNAME_FILE))
+        let file_onion = read_nofollow(&join(&src, HOSTNAME_FILE), 8192)
             .ok()
             .filter(|d| d.is_ascii())
             .map(|d| py::strip_str(&String::from_utf8_lossy(&d)).to_string())
@@ -2134,7 +2144,7 @@ fn vanity_generate(
                 ),
             ));
         }
-        let pk = std::fs::read(join(&src, PUBLIC_FILE)).map_err(|e| (EXIT_FAIL, e.to_string()))?;
+        let pk = read_nofollow(&join(&src, PUBLIC_FILE), 8192).map_err(|e| (EXIT_FAIL, e))?;
         let pk = if pk.len() == 64 && pk.starts_with(PUBLIC_TAG) {
             pk[32..].to_vec()
         } else {
