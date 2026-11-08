@@ -34,6 +34,14 @@ Behaviour is steered by HF_FAKE_MKP224O:
     linkedpub     a valid key directory whose public key file is a symlink to a
                   copy outside it; a caller that follows it trusts a file the
                   generator did not write there
+    barekey       a valid key directory whose public key file is the bare 32-byte
+                  key, without Tor's 32-byte tag (accepted, like a hand-made volume)
+    badpub        a public key file of 40 bytes: neither the tagged nor the bare form
+    genfail       statistics for `-n 0`, but a real search (`-n 1`) exits 2 with a
+                  message on stderr having written nothing
+    race          a valid key directory, and another key set appears at the path in
+                  HF_FAKE_MKP224O_RACE (with a file inside, so it cannot be renamed
+                  over) before the generator exits: the caller lost the race
     deaf          emit statistics and IGNORE SIGTERM, the way a wedged generator
                   would; only SIGKILL stops it. A closed stderr does not stop it
                   either: a caller that drops its end of the pipe is still waiting
@@ -190,6 +198,32 @@ def main():
         elsewhere = os.path.join(os.path.dirname(args.outdir), "linked-public-key")
         os.replace(pub, elsewhere)
         os.symlink(elsewhere, pub)
+        return 0
+
+    if mode == "genfail":
+        sys.stderr.write("fake mkp224o: exploded\n")
+        return 2
+
+    if mode == "barekey":
+        d = write_keydir(args.outdir, PUB_HEX)
+        with open(os.path.join(d, "hs_ed25519_public_key"), "wb") as fh:
+            fh.write(bytes.fromhex(PUB_HEX))
+        announce(d)
+        return 0
+
+    if mode == "badpub":
+        d = write_keydir(args.outdir, PUB_HEX)
+        with open(os.path.join(d, "hs_ed25519_public_key"), "wb") as fh:
+            fh.write(b"\x07" * 40)
+        announce(d)
+        return 0
+
+    if mode == "race":
+        announce(write_keydir(args.outdir, PUB_HEX))
+        target = os.environ["HF_FAKE_MKP224O_RACE"]
+        os.makedirs(target, exist_ok=True)
+        with open(os.path.join(target, "rival"), "w", encoding="ascii") as fh:
+            fh.write("someone else's key\n")
         return 0
 
     # -n says how many to find. Honouring it is what makes a caller that asks for
