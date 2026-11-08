@@ -100,6 +100,13 @@ def test_pack_is_deterministic(bi, tmp_path, monkeypatch):
 
 
 class _Resp(io.BytesIO):
+    def __init__(self, blob, url):
+        super().__init__(blob)
+        self.url = url
+
+    def geturl(self):
+        return self.url
+
     def __enter__(self):
         return self
 
@@ -107,8 +114,10 @@ class _Resp(io.BytesIO):
         return False
 
 
-def _serve(mod, monkeypatch, blob):
-    monkeypatch.setattr(mod.urllib.request, "urlopen", lambda url, timeout: _Resp(blob))
+def _serve(mod, monkeypatch, blob, landed_at=None):
+    # landed_at: where redirects ended up (urlopen follows them silently).
+    monkeypatch.setattr(mod.urllib.request, "urlopen",
+                        lambda url, timeout: _Resp(blob, landed_at or url))
 
 
 def test_fetch_roundtrip(bi, tmp_path, monkeypatch):
@@ -141,6 +150,16 @@ def test_fetch_rejects_hostile_entries(bi, tmp_path, monkeypatch, kind):
     with pytest.raises(SystemExit, match="unexpected entry"):
         mod.fetch("https://example.invalid/a.tar", tmp_path / "dest")
     assert not (tmp_path / "b.txt").exists()
+
+
+def test_fetch_refuses_a_redirect_to_plain_http(bi, tmp_path, monkeypatch):
+    mod, src = bi
+    blob = _pack(mod, src, tmp_path / "a.tar", monkeypatch)
+    _serve(mod, monkeypatch, blob, landed_at="http://mirror.invalid/a.tar")
+    monkeypatch.setattr(mod, "verify", lambda d: 0)
+    with pytest.raises(SystemExit, match="https only"):
+        mod.fetch("https://example.invalid/a.tar", tmp_path / "dest")
+    assert not any((tmp_path / "dest").iterdir())
 
 
 def test_fetch_refuses_plain_http_and_nonempty_dest(bi, tmp_path):

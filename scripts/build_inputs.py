@@ -245,6 +245,9 @@ def fetch(url: str, dest: Path) -> int:
     if any(dest.iterdir()):
         raise SystemExit(f"FAIL fetch: {dest} is not empty")
     with urllib.request.urlopen(url, timeout=60) as r:  # noqa: S310 (https checked above)
+        # urlopen follows redirects, including from https to plain http.
+        if not r.geturl().startswith("https://"):
+            raise SystemExit("FAIL fetch: https only (redirected to a non-https URL)")
         blob = r.read(FETCH_MAX + 1)
     if len(blob) > FETCH_MAX:
         raise SystemExit("FAIL fetch: archive larger than expected")
