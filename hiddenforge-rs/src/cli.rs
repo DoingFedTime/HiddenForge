@@ -2038,9 +2038,10 @@ fn mkdir_private(path: &str, recursive: bool) -> std::io::Result<()> {
 fn benchmark(seconds: i64, threads: i64) -> Result<f64, String> {
     use std::io::BufRead;
     let seconds = seconds.max(1);
+    let generator = mkp224o_path()?;
     let tmp = format!("/tmp/hf-bench-{}", random_hex8());
     mkdir_private(&tmp, false).map_err(|e| e.to_string())?;
-    let mut child = std::process::Command::new(mkp224o_path()?)
+    let spawned = std::process::Command::new(generator)
         .args([
             "-d",
             &tmp,
@@ -2055,8 +2056,14 @@ fn benchmark(seconds: i64, threads: i64) -> Result<f64, String> {
         ])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|e| e.to_string())?;
+        .spawn();
+    let mut child = match spawned {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&tmp);
+            return Err(e.to_string());
+        }
+    };
     let mut best = 0.0f64;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(seconds as u64);
     if let Some(err) = child.stderr.take() {

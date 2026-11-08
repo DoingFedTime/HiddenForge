@@ -79,3 +79,24 @@ def test_generate_refuses_a_public_key_that_is_a_symlink(vanity, tmp_path):
     r = vanity([*GEN, "--out", str(out)], "linkedpub", timeout=30)
     assert r.returncode == 1, r.stdout + r.stderr
     assert not (out / "svc").exists()
+
+
+def _bench_dirs():
+    return set(Path("/tmp").glob("hf-bench-*"))
+
+
+@pytest.mark.parametrize("generator", ["missing", "unspawnable"])
+def test_a_benchmark_that_cannot_start_leaves_no_temp_dir(tmp_path, generator):
+    """Python's TemporaryDirectory is removed on every path; so must ours be."""
+    gen = tmp_path / "mkp224o"
+    if generator == "unspawnable":
+        gen.write_text("#!/nonexistent/interpreter\n")
+        gen.chmod(0o755)
+    link = tmp_path / "vanity.py"
+    link.symlink_to(RUST)
+    before = _bench_dirs()
+    r = subprocess.run([str(link), "--prefix", "a", "--bench", "--seconds", "1"],
+                       env={**os.environ, "MKP224O": str(gen)},
+                       capture_output=True, text=True, timeout=30)
+    assert r.returncode != 0, r.stdout + r.stderr
+    assert _bench_dirs() - before == set()
