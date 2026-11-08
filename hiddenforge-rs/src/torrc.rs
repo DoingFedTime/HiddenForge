@@ -585,4 +585,142 @@ mod tests {
         assert!(parse_ipv4_strict("01.2.3.4").is_none());
         assert!(parse_ipv4_strict("256.1.1.1").is_none());
     }
+
+    fn dns2(name: &str) -> Result<Vec<String>, String> {
+        match name {
+            "web" => Ok(vec!["10.0.0.5".into()]),
+            "db" => Ok(vec!["10.0.0.6".into()]),
+            "123" | "1.2.3" | "a.b.c.d" | "1.2.3.4444" => Ok(vec!["10.9.9.9".into()]),
+            _ => Err("[Errno -2] Name does not resolve".into()),
+        }
+    }
+
+    #[test]
+    fn remove_all_removes_every_whole_occurrence_left_to_right() {
+        let r = |s: &str, o: &str| py::to_string(&remove_all(&py::from_str(s), o)).unwrap();
+        assert_eq!(r("xab", "abc"), "xab");
+        assert_eq!(r("ab", "abc"), "ab");
+        assert_eq!(r("", "abc"), "");
+        assert_eq!(r("A_TOR_SERVICE_HOSTS", SUFFIX), "A");
+        assert_eq!(r("X_TOR_SERVICE_HOSTS_TOR_SERVICE_HOSTS", SUFFIX), "X");
+        assert_eq!(r("abcabc", "abc"), "");
+        assert_eq!(r("aaa", "aa"), "a");
+        assert_eq!(r("zabcz", "abc"), "zz");
+    }
+
+    #[test]
+    fn each_backend_is_recorded_once_with_its_own_address() {
+        let t = build(
+            &env(&[("A_TOR_SERVICE_HOSTS", "80:web:80,81:db:80,82:web:81")]),
+            &dns2,
+        );
+        assert_eq!(
+            t.resolved,
+            vec![
+                ("web".to_string(), "10.0.0.5".to_string()),
+                ("db".to_string(), "10.0.0.6".to_string())
+            ]
+        );
+        assert!(t.content.contains(
+            "HiddenServicePort 80 10.0.0.5:80\nHiddenServicePort 81 10.0.0.6:80\nHiddenServicePort 82 10.0.0.5:81\n"
+        ));
+        assert!(t.unresolved.is_empty());
+        // a literal address needs no resolution and is not recorded as a backend
+        let t = build(&env(&[("A_TOR_SERVICE_HOSTS", "80:10.0.0.2:80")]), &dns2);
+        assert!(t.resolved.is_empty());
+    }
+
+    #[test]
+    fn only_four_dotted_numbers_skip_the_resolver() {
+        for host in ["123", "1.2.3", "a.b.c.d", "1.2.3.4444"] {
+            let t = build(
+                &env(&[("A_TOR_SERVICE_HOSTS", format!("80:{host}:80").as_str())]),
+                &dns2,
+            );
+            assert_eq!(
+                t.resolved,
+                vec![(host.to_string(), "10.9.9.9".to_string())],
+                "{host}"
+            );
+            assert!(
+                t.log
+                    .iter()
+                    .any(|l| *l == format!("Resolved '{host}' → 10.9.9.9")),
+                "{host}: {:?}",
+                t.log
+            );
+            assert_eq!(t.hs_dirs.len(), 1, "{host}");
+            assert!(
+                !t.dropped.iter().any(|d| d.contains("Invalid IPv4")),
+                "{host}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_dotted_quad_is_validated_not_looked_up() {
+        let never = |name: &str| -> Result<Vec<String>, String> {
+            panic!("a dotted quad must not reach the resolver: {name}")
+        };
+        let t = build(&env(&[("A_TOR_SERVICE_HOSTS", "80:1.2.3.4:80")]), &never);
+        assert!(t.content.contains("HiddenServicePort 80 1.2.3.4:80\n"));
+        for bad in ["1.2.3.04", "256.1.1.1", "01.2.3.4", "1.2.3.400"] {
+            let t = build(
+                &env(&[("A_TOR_SERVICE_HOSTS", format!("80:{bad}:80").as_str())]),
+                &never,
+            );
+            assert!(t.hs_dirs.is_empty(), "{bad}");
+            let want = format!("Invalid IPv4 address '{bad}' in 80:{bad}:80");
+            assert!(
+                t.dropped.iter().any(|d| d.contains(&want)),
+                "{bad}: {:?}",
+                t.dropped
+            );
+        }
+    }
+
+    #[test]
+    fn parse_ipv4_strict_takes_four_plain_decimal_octets() {
+        for (s, want) in [
+            ("0.0.0.0", Some([0, 0, 0, 0])),
+            ("255.255.255.255", Some([255; 4])),
+            ("10.0.0.5", Some([10, 0, 0, 5])),
+            ("0.1.2.3", Some([0, 1, 2, 3])),
+            ("1.2.3.+5", None),
+            ("1.2.3.-1", None),
+            ("1.2.3. 4", None),
+            ("1.2.3.4 ", None),
+            ("1.2.3.4444", None),
+            ("1.2.3.256", None),
+            ("1.2.3.04", None),
+            ("00.1.1.1", None),
+            ("1.2.3", None),
+            ("1.2.3.4.5", None),
+            ("1..2.3", None),
+            ("a.b.c.d", None),
+            ("", None),
+        ] {
+            assert_eq!(parse_ipv4_strict(s), want, "{s:?}");
+        }
+    }
+
+    #[test]
+    fn looks_dotted_means_four_parts_of_one_to_three_ascii_digits() {
+        for (s, want) in [
+            ("1.2.3.4", true),
+            ("999.999.999.999", true),
+            ("010.0.0.1", true),
+            ("123", false),
+            ("1.2.3", false),
+            ("1.2.3.4.5", false),
+            ("a.b.c.d", false),
+            ("1.2.3.4444", false),
+            ("1.2.3.", false),
+            ("1.2.3.x", false),
+            ("1.2.3.+5", false),
+            ("", false),
+        ] {
+            assert_eq!(looks_dotted(s), want, "{s:?}");
+        }
+    }
 }
