@@ -93,11 +93,34 @@ fn copy_if_present(from_dir: &str, to_dir: &str, name: &str, mode: u32) -> Resul
 
 /// Before Tor starts: put the decrypted key in RAM. Returns a line to log, if any.
 pub fn unseal(name: &str, pass: &[u8]) -> Result<Option<String>, String> {
-    let vol = format!("{KEYS}/{name}");
-    let ram = format!("{RAM}/{name}");
+    unseal_at(KEYS, RAM, name, pass)
+}
+
+fn unseal_at(keys: &str, ramroot: &str, name: &str, pass: &[u8]) -> Result<Option<String>, String> {
+    let vol = format!("{keys}/{name}");
+    let ram = format!("{ramroot}/{name}");
     let mut note = None;
     let secret: Option<Secret> = if let Some(env) = read(&format!("{vol}/{SEALED}"), 8192) {
-        Some(keycrypt::decrypt(&env, pass).map_err(|e| format!("{name}: {e}"))?)
+        let s = keycrypt::decrypt(&env, pass).map_err(|e| format!("{name}: {e}"))?;
+        // A plaintext key beside the envelope means a migration was interrupted after the
+        // envelope was written (a crash, a failed wipe). Left alone it would stay on the
+        // volume for good, since this branch is taken on every later start. Same bytes:
+        // finish the migration. Different bytes: two identities, so refuse to pick one.
+        match read(&format!("{vol}/{SECRET}"), 8192) {
+            Some(p) if p == s.0 => {
+                wipe(&format!("{vol}/{SECRET}"))?;
+                note = Some(format!(
+                    "{name}: finished an interrupted migration: the plaintext key left on the volume matched {SEALED} and was overwritten and removed."
+                ));
+            }
+            Some(_) => {
+                return Err(format!(
+                    "{name}: {SECRET} is still on the volume and differs from the sealed key ({SEALED}); refusing to start with two identities. Remove the one that is wrong."
+                ))
+            }
+            None => {}
+        }
+        Some(s)
     } else if let Some(plain) = read(&format!("{vol}/{SECRET}"), 8192) {
         // Migration of an existing plaintext key: seal, prove the seal opens to
         // the same bytes, and only then remove the plaintext.
@@ -281,6 +304,66 @@ mod tests {
         std::fs::create_dir_all(d.join("myapp")).unwrap();
         let k = d.to_string_lossy().into_owned();
         (k.clone(), format!("{k}/myapp"))
+    }
+
+    /// A migration interrupted after the envelope was written (crash, failed wipe) must not
+    /// leave the plaintext key on the volume for good: the next start finishes the job.
+    #[test]
+    fn unseal_finishes_an_interrupted_migration() {
+        let (keys, vol) = svc("interrupted");
+        let ram = format!("{keys}-ram");
+        let _ = std::fs::remove_dir_all(&ram);
+        std::fs::create_dir_all(format!("{ram}/myapp")).unwrap();
+        std::fs::write(
+            format!("{vol}/{SEALED}"),
+            keycrypt::encrypt(KEY, PASS).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(format!("{vol}/{SECRET}"), KEY).unwrap(); // the leftover plaintext
+        let note = unseal_at(&keys, &ram, "myapp", PASS).unwrap();
+        assert!(
+            std::fs::metadata(format!("{vol}/{SECRET}")).is_err(),
+            "the plaintext key is removed from the volume"
+        );
+        assert!(
+            note.is_some_and(|n| n.contains("interrupted")),
+            "and the operator is told"
+        );
+        assert_eq!(std::fs::read(format!("{ram}/myapp/{SECRET}")).unwrap(), KEY);
+        assert!(
+            std::fs::metadata(format!("{vol}/{SEALED}")).is_ok(),
+            "the envelope stays"
+        );
+        let _ = std::fs::remove_dir_all(&keys);
+        let _ = std::fs::remove_dir_all(&ram);
+    }
+
+    /// A plaintext key that DIFFERS from the sealed one is a second identity: refuse,
+    /// change nothing, and say why.
+    #[test]
+    fn unseal_refuses_a_different_leftover_plaintext() {
+        let (keys, vol) = svc("twokeys");
+        let ram = format!("{keys}-ram");
+        let _ = std::fs::remove_dir_all(&ram);
+        std::fs::create_dir_all(format!("{ram}/myapp")).unwrap();
+        std::fs::write(
+            format!("{vol}/{SEALED}"),
+            keycrypt::encrypt(KEY, PASS).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(format!("{vol}/{SECRET}"), b"some other secret key").unwrap();
+        let err = unseal_at(&keys, &ram, "myapp", PASS).unwrap_err();
+        assert!(err.contains("differs from the sealed key"), "{err}");
+        assert_eq!(
+            std::fs::read(format!("{vol}/{SECRET}")).unwrap(),
+            b"some other secret key"
+        );
+        assert!(
+            std::fs::metadata(format!("{ram}/myapp/{SECRET}")).is_err(),
+            "nothing unsealed"
+        );
+        let _ = std::fs::remove_dir_all(&keys);
+        let _ = std::fs::remove_dir_all(&ram);
     }
 
     #[test]
