@@ -165,13 +165,78 @@ pub fn list(keys: &str, service: &str) -> Result<Vec<String>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fsops::testtmp::Tmp;
+    use std::os::unix::fs::{symlink, PermissionsExt};
+
+    extern "C" {
+        fn EVP_PKEY_new_raw_private_key(
+            typ: c_int,
+            e: *mut c_void,
+            key: *const u8,
+            keylen: usize,
+        ) -> *mut c_void;
+    }
+
+    /// The x25519 public key of a private key, by OpenSSL, independent of how
+    /// x25519_keypair produced the pair.
+    fn public_of(private: &[u8]) -> [u8; 32] {
+        const NID_X25519: c_int = 1034;
+        // SAFETY: a 32-byte key buffer; the key object is freed by Pkey.
+        let k = Pkey(unsafe {
+            EVP_PKEY_new_raw_private_key(NID_X25519, std::ptr::null_mut(), private.as_ptr(), 32)
+        });
+        assert!(!k.0.is_null());
+        let mut out = [0u8; 32];
+        let mut len = 32usize;
+        // SAFETY: 32-byte buffer, length says so.
+        assert_eq!(
+            unsafe { EVP_PKEY_get_raw_public_key(k.0, out.as_mut_ptr(), &mut len) },
+            1
+        );
+        assert_eq!(len, 32);
+        out
+    }
+
+    fn b32_decode(s: &str) -> Vec<u8> {
+        let (mut bits, mut acc, mut out) = (0u32, 0u32, Vec::new());
+        for c in s.bytes() {
+            let v = match c {
+                b'A'..=b'Z' => c - b'A',
+                b'2'..=b'7' => c - b'2' + 26,
+                _ => panic!("not base32: {c}"),
+            };
+            acc = (acc << 5) | u32::from(v);
+            bits += 5;
+            if bits >= 8 {
+                bits -= 8;
+                out.push((acc >> bits) as u8);
+                acc &= (1 << bits) - 1;
+            }
+        }
+        out
+    }
+
+    fn mode_of(p: &str) -> u32 {
+        std::fs::metadata(p).unwrap().permissions().mode() & 0o7777
+    }
+
+    fn onion() -> String {
+        "a".repeat(56) + ".onion"
+    }
 
     #[test]
-    fn keypair_is_fresh_and_encodes_like_tor() {
+    fn keypair_is_fresh_and_consistent() {
         let (p1, s1) = x25519_keypair().unwrap();
-        let (p2, _) = x25519_keypair().unwrap();
+        let (p2, s2) = x25519_keypair().unwrap();
         assert_ne!(p1, p2);
+        assert_ne!(s1.0, s2.0);
+        assert_eq!(s1.0.len(), 32);
         assert_ne!(s1.0, vec![0u8; 32]);
+        assert_ne!(p1, [0u8; 32]);
+        // the public half really belongs to the private half
+        assert_eq!(public_of(&s1.0), p1);
+        assert_eq!(public_of(&s2.0), p2);
+        assert_ne!(public_of(&s1.0), p2);
         let b = base32_upper(&p1);
         assert_eq!(b.len(), 52); // 32 bytes -> 52 base32 chars, no padding
         assert!(b
@@ -180,42 +245,264 @@ mod tests {
     }
 
     #[test]
-    fn rfc4648_vector() {
-        assert_eq!(base32_upper(b"foobar"), "MZXW6YTBOI");
+    fn base32_matches_rfc_4648_without_padding() {
+        // RFC 4648 section 10 test vectors, '=' padding removed
+        for (plain, want) in [
+            ("", ""),
+            ("f", "MY"),
+            ("fo", "MZXQ"),
+            ("foo", "MZXW6"),
+            ("foob", "MZXW6YQ"),
+            ("fooba", "MZXW6YTB"),
+            ("foobar", "MZXW6YTBOI"),
+        ] {
+            assert_eq!(base32_upper(plain.as_bytes()), want, "{plain:?}");
+        }
+        assert_eq!(b32_decode("MZXW6YTBOI"), b"foobar");
     }
 
     #[test]
     fn names() {
-        assert!(client_name_ok("alice"));
-        assert!(client_name_ok("desk_2"));
-        assert!(!client_name_ok("../x"));
-        assert!(!client_name_ok("-x"));
-        assert!(!client_name_ok("A"));
-        assert!(!client_name_ok(""));
+        for ok in [
+            "alice",
+            "desk_2",
+            "a",
+            "0",
+            "_x",
+            "x-",
+            "a-b",
+            &"a".repeat(63),
+        ] {
+            assert!(client_name_ok(ok), "{ok:?}");
+        }
+        for bad in [
+            "",
+            "../x",
+            "-x",
+            "-",
+            "A",
+            "alIce",
+            "a b",
+            "a.b",
+            "a/b",
+            "a\n",
+            "é",
+            "x\0y",
+            &"a".repeat(64),
+        ] {
+            assert!(!client_name_ok(bad), "{bad:?}");
+        }
     }
 
     #[test]
-    fn add_list_remove() {
-        let d = std::env::temp_dir().join(format!("hf-ca-{}", std::process::id()));
-        std::fs::create_dir_all(d.join("svc")).unwrap();
-        let keys = d.to_string_lossy().into_owned();
-        let onion = "a".repeat(56) + ".onion";
-        let line = add(&keys, "svc", "alice", &onion).unwrap();
-        assert!(line.starts_with(&format!("{}:descriptor:x25519:", "a".repeat(56))));
+    fn auth_dir_is_below_the_service_directory() {
+        assert_eq!(auth_dir("/k", "svc"), "/k/svc/authorized_clients");
+    }
+
+    #[test]
+    fn add_writes_the_public_key_only_and_returns_the_client_line() {
+        let d = Tmp::new("caadd");
+        std::fs::create_dir(format!("{d}/svc")).unwrap();
+        let line = add(&d, "svc", "alice", &onion()).unwrap();
+        let (head, private_b32) = line.rsplit_once(':').unwrap();
+        assert_eq!(head, format!("{}:descriptor:x25519", "a".repeat(56)));
+        assert_eq!(private_b32.len(), 52);
+        let file = format!("{d}/svc/authorized_clients/alice.auth");
+        let auth = std::fs::read_to_string(&file).unwrap();
         assert!(
-            add(&keys, "svc", "alice", &onion).is_err(),
-            "a second key for the same name"
+            auth.starts_with("descriptor:x25519:") && auth.ends_with('\n'),
+            "{auth:?}"
         );
-        let auth = std::fs::read_to_string(d.join("svc/authorized_clients/alice.auth")).unwrap();
-        assert!(auth.starts_with("descriptor:x25519:") && auth.ends_with('\n'));
+        assert_eq!(auth.matches('\n').count(), 1);
+        // the file holds the public half of the key the client was given
+        let private = b32_decode(private_b32);
+        assert_eq!(private.len(), 32);
+        assert_eq!(
+            auth,
+            format!("descriptor:x25519:{}\n", base32_upper(&public_of(&private)))
+        );
         assert!(
-            !auth.contains(line.rsplit(':').next().unwrap()),
+            !auth.contains(private_b32),
             "private key on the service side"
         );
-        assert_eq!(list(&keys, "svc").unwrap(), vec!["alice".to_string()]);
-        assert!(remove(&keys, "svc", "alice").unwrap());
-        assert!(!remove(&keys, "svc", "alice").unwrap());
-        assert!(list(&keys, "svc").unwrap().is_empty());
-        let _ = std::fs::remove_dir_all(&d);
+        // modes: private directory, private file
+        assert_eq!(mode_of(&format!("{d}/svc/authorized_clients")), 0o700);
+        assert_eq!(mode_of(&file), 0o600);
+    }
+
+    #[test]
+    fn add_a_second_client_gets_its_own_key_and_keeps_the_first() {
+        let d = Tmp::new("caadd2");
+        std::fs::create_dir(format!("{d}/svc")).unwrap();
+        let a = add(&d, "svc", "alice", &onion()).unwrap();
+        let first = std::fs::read(format!("{d}/svc/authorized_clients/alice.auth")).unwrap();
+        let b = add(&d, "svc", "bob", &onion()).unwrap();
+        assert_ne!(a, b);
+        assert_eq!(
+            std::fs::read(format!("{d}/svc/authorized_clients/alice.auth")).unwrap(),
+            first
+        );
+        assert_eq!(list(&d, "svc").unwrap(), ["alice", "bob"]);
+    }
+
+    #[test]
+    fn add_refuses_an_existing_client_a_dangling_link_and_a_bad_directory() {
+        let d = Tmp::new("caaddref");
+        std::fs::create_dir(format!("{d}/svc")).unwrap();
+        add(&d, "svc", "alice", &onion()).unwrap();
+        let before = std::fs::read(format!("{d}/svc/authorized_clients/alice.auth")).unwrap();
+        assert_eq!(
+            add(&d, "svc", "alice", &onion()),
+            Err("client alice already exists for svc; remove it first to issue a new key".into())
+        );
+        assert_eq!(
+            std::fs::read(format!("{d}/svc/authorized_clients/alice.auth")).unwrap(),
+            before
+        );
+        // a link at the client's file name, even a dangling one, is "already exists"
+        symlink(
+            "/nonexistent",
+            format!("{d}/svc/authorized_clients/eve.auth"),
+        )
+        .unwrap();
+        assert!(add(&d, "svc", "eve", &onion())
+            .unwrap_err()
+            .starts_with("client eve already exists"));
+        // the authorized_clients entry is a file or a link, not a directory
+        std::fs::create_dir(format!("{d}/f")).unwrap();
+        std::fs::write(format!("{d}/f/authorized_clients"), b"x").unwrap();
+        let dir = format!("{d}/f/authorized_clients");
+        assert_eq!(
+            add(&d, "f", "c", &onion()),
+            Err(format!("{dir} is not a directory; refusing to write there"))
+        );
+        std::fs::create_dir_all(format!("{d}/l/real")).unwrap();
+        symlink(format!("{d}/l/real"), format!("{d}/l/authorized_clients")).unwrap();
+        let dir = format!("{d}/l/authorized_clients");
+        assert_eq!(
+            add(&d, "l", "c", &onion()),
+            Err(format!("{dir} is not a directory; refusing to write there"))
+        );
+        assert_eq!(std::fs::read_dir(format!("{d}/l/real")).unwrap().count(), 0);
+        // a missing service directory cannot get its client directory
+        let dir = format!("{d}/nosvc/authorized_clients");
+        assert_eq!(
+            add(&d, "nosvc", "c", &onion()),
+            Err(format!(
+                "cannot create {dir}: No such file or directory (os error 2)"
+            ))
+        );
+    }
+
+    #[test]
+    fn add_returns_the_onion_label_without_whitespace_or_suffix() {
+        let d = Tmp::new("caonion");
+        std::fs::create_dir(format!("{d}/svc")).unwrap();
+        let label = "b".repeat(56);
+        for (i, given) in [
+            format!("{label}.onion"),
+            format!("  {label}.onion\n"),
+            label.clone(),
+        ]
+        .iter()
+        .enumerate()
+        {
+            let line = add(&d, "svc", &format!("c{i}"), given).unwrap();
+            assert!(
+                line.starts_with(&format!("{label}:descriptor:x25519:")),
+                "{given:?}: {line}"
+            );
+            assert!(!line.contains(".onion"));
+        }
+    }
+
+    #[test]
+    fn list_is_sorted_and_only_shows_valid_auth_files() {
+        let d = Tmp::new("calist");
+        assert_eq!(
+            list(&d, "svc").unwrap(),
+            Vec::<String>::new(),
+            "no directory"
+        );
+        std::fs::create_dir_all(format!("{d}/svc/authorized_clients")).unwrap();
+        assert_eq!(
+            list(&d, "svc").unwrap(),
+            Vec::<String>::new(),
+            "empty directory"
+        );
+        let dir = format!("{d}/svc/authorized_clients");
+        for f in [
+            "zed.auth",
+            "alice.auth",
+            "bob_2.auth",
+            "notes.txt",
+            "Carol.auth",
+            "-dash.auth",
+            ".auth",
+            "alice.auth.bak",
+            "nosuffix",
+        ] {
+            std::fs::write(format!("{dir}/{f}"), b"x").unwrap();
+        }
+        assert_eq!(list(&d, "svc").unwrap(), ["alice", "bob_2", "zed"]);
+    }
+
+    #[test]
+    fn list_reports_an_unreadable_directory() {
+        let d = Tmp::new("calisterr");
+        std::fs::create_dir(format!("{d}/svc")).unwrap();
+        std::fs::write(format!("{d}/svc/authorized_clients"), b"x").unwrap();
+        let dir = format!("{d}/svc/authorized_clients");
+        assert_eq!(
+            list(&d, "svc"),
+            Err(format!("cannot read {dir}: Not a directory (os error 20)"))
+        );
+        // a missing service is just empty, not an error
+        assert_eq!(list(&d, "nope"), Ok(vec![]));
+    }
+
+    #[test]
+    fn remove_deletes_regular_files_and_refuses_anything_else() {
+        let d = Tmp::new("caremove");
+        std::fs::create_dir(format!("{d}/svc")).unwrap();
+        add(&d, "svc", "alice", &onion()).unwrap();
+        assert_eq!(remove(&d, "svc", "alice"), Ok(true));
+        assert_eq!(remove(&d, "svc", "alice"), Ok(false));
+        assert_eq!(remove(&d, "nosvc", "alice"), Ok(false));
+        assert_eq!(list(&d, "svc").unwrap(), Vec::<String>::new());
+        let dir = format!("{d}/svc/authorized_clients");
+        // a symlink (even to a regular file) and a directory are left alone
+        std::fs::write(format!("{d}/victim"), b"keep").unwrap();
+        symlink(format!("{d}/victim"), format!("{dir}/ln.auth")).unwrap();
+        std::fs::create_dir(format!("{dir}/dr.auth")).unwrap();
+        for n in ["ln", "dr"] {
+            let p = format!("{dir}/{n}.auth");
+            assert_eq!(
+                remove(&d, "svc", n),
+                Err(format!("{p} is not a regular file; refusing to touch it"))
+            );
+            assert!(std::fs::symlink_metadata(&p).is_ok());
+        }
+        assert_eq!(std::fs::read(format!("{d}/victim")).unwrap(), b"keep");
+    }
+
+    #[test]
+    fn remove_reports_a_file_it_cannot_delete() {
+        if crate::privs::is_root() {
+            return;
+        }
+        let d = Tmp::new("caremoveerr");
+        std::fs::create_dir(format!("{d}/svc")).unwrap();
+        add(&d, "svc", "alice", &onion()).unwrap();
+        let dir = format!("{d}/svc/authorized_clients");
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+        assert_eq!(
+            remove(&d, "svc", "alice"),
+            Err(format!(
+                "cannot remove {dir}/alice.auth: Permission denied (os error 13)"
+            ))
+        );
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(list(&d, "svc").unwrap(), ["alice"]);
     }
 }
