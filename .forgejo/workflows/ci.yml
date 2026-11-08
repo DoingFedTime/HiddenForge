@@ -153,21 +153,19 @@ jobs:
         run: /tmp/hf-unit/bin/python scripts/mutation_spotcheck.py
 
   mutation:
-    name: mutation (tags and nightly)
+    name: mutation (on request)
     timeout-minutes: 60
-    # The full run takes twenty minutes and more (the gate re-grades every
-    # timeout on its own), so it is not on the path of every
-    # push: it runs for a TAG (the release trigger) and on the daily schedule,
-    # which is where a regression has to be caught before it ships. Run it
-    # locally before asking for a review -- `mutmut run && python
-    # scripts/mutation_gate.py` -- rather than finding out at the tag.
+    # On request only (workflow_dispatch). It ran nightly and on every tag, but
+    # it mutates the 2.x Python reference sources, which 3.0 no longer ships,
+    # and a nightly run of unchanged code can only repeat the last answer: a
+    # whole machine's worth of CPU every night to learn nothing new. Run it when
+    # the code it covers changes -- `mutmut run && python
+    # scripts/mutation_gate.py` locally, or dispatch this job.
     #
     # Its own venv: mutmut pulls in thirteen packages nothing else needs (libcst,
     # textual, rich, pygments, ...), and widening the toolchain that lints and
     # tests the code for the benefit of one job is the wrong trade.
-    if: >-
-      github.event_name == 'schedule' ||
-      startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'workflow_dispatch'
     runs-on: docker
     steps:
       - uses: https://github.com/actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4

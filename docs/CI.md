@@ -18,13 +18,13 @@ tests happen.
 |---|---|
 | `lint` | hadolint (threshold `warning`, rules that cannot apply listed in `.hadolint.yaml`); `cargo fmt --check` and `cargo clippy --all-targets -D warnings` for the runtime; the wizard is rebuilt from its sources and must match (`wizard/build.py --check`); `ruff`, `py_compile` incl. the extensionless CLI, `mypy` over sources *and* tests, `tests/test_version_consistency.py`, and `docker compose config -q` on both shipped compose files |
 | `unit` | host unit + property tests with the coverage floor enforced; `cargo test`; the differential tests that hold the Rust runtime to the 2.x reference (torrc, `setup`, the guard monitors' decisions) and the wizard to `setup`; `manifest.json` is checked against the code; `scripts/mutation_spotcheck.py` |
-| `mutation (tags and nightly)` | a full `mutmut run` over the 2.x Python reference (`entrypoint.py`, `healthcheck.py`, `vanity.py`), then `scripts/mutation_gate.py`: every mutant that survives must be explained in the gate's allowlist or the job fails. The gate also re-runs each mutant mutmut recorded as a `timeout` on its own, because that label is a wall-clock bound rather than a verdict; a mutant that really hangs must be named in `DOCUMENTED_HANGS`. Tag/schedule only. See `review/MUTATION-2026-09-18.md` |
+| `mutation (on request)` | dispatched by hand only: a full `mutmut run` over the 2.x Python reference (`entrypoint.py`, `healthcheck.py`, `vanity.py`), then `scripts/mutation_gate.py`: every mutant that survives must be explained in the gate's allowlist or the job fails. The gate also re-runs each mutant mutmut recorded as a `timeout` on its own, because that label is a wall-clock bound rather than a verdict; a mutant that really hangs must be named in `DOCUMENTED_HANGS`. It no longer runs nightly or on tags: that code does not ship in 3.0 and does not change. See `review/MUTATION-2026-09-18.md` |
 | `build-and-test` | verifies the build inputs, builds the image offline from them, checks the generated torrc is accepted by the image's Tor, checks the 2.x compatibility forms (and that `sh -c id` and `python3 -c` are refused), the CLI contract, a vanity smoke test, and the live acceptance suite (`HIDDENFORGE_E2E=1`) |
 | `security` | trivy and grype over the image at every severity, fixed or not (either finding anything fails the job); trivy fs (secrets, misconfiguration), semgrep (security-audit + dockerfile), gitleaks over every commit and the working tree. Runs daily too, so an advisory published after the last commit is still caught |
 | `reproducibility` | clones the commit twice, once under umask 007 and once under 022, and builds each with `--no-cache` for `linux/amd64`; fails if the OCI index digests differ. The two-platform release digest is reproduced by hand before signing |
 | `inputs-integrity (nightly)` | `scripts/build_inputs.py verify` over the archived inputs (lock, signatures, checksums), and a warning when Tor has published a newer stable than the one the build pins. Schedule/dispatch only |
 
-Every job has a `timeout-minutes` so a hung step cannot hold the single runner: lint 20, unit 30, mutation 60, build-and-test 30, security 30, reproducibility 30, inputs-integrity 20. `mutation` and `inputs-integrity` do not run on an ordinary push, so a green push run does not include them.
+Every job has a `timeout-minutes` so a hung step cannot hold the single runner: lint 20, unit 30, mutation 60, build-and-test 30, security 30, reproducibility 30, inputs-integrity 20. `mutation` runs only when dispatched, and `inputs-integrity` only on schedule or dispatch, so a green push run includes neither.
 
 **The inputs.** The build needs the input archive, which is not in the
 repository (it is tens of megabytes of packages). The runner reads its path from
@@ -51,12 +51,10 @@ The hardware signature needs the physical key, so it can never run in CI.
 ### A tag is the release gate
 
 Pushing a `v*` tag runs every job except `inputs-integrity` (schedule and dispatch only), including the live acceptance suite
-in `build-and-test`. **Do not publish an image until that run is green on
+in `build-and-test`, but not `mutation`, which runs only on request. **Do not publish an image until that run is green on
 the tagged commit** -- a tag whose CI never ran, or failed, must not become an
 image. The `reproducibility` and `security` jobs run on a tag too, so the released
-bits are reproducible and scanned at the moment they are tagged. `mutation` runs
-on a tag for the same reason: a regression that the test suite would not have
-caught must not be discovered after the image is published.
+bits are reproducible and scanned at the moment they are tagged.
 
 ## Running the same checks by hand
 

@@ -570,8 +570,7 @@ podman info --format '{{.Host.Security.Rootless}}'   # expected: true
 | [SECURITY.md](SECURITY.md) | Supported versions and how to report a vulnerability |
 | [CHANGELOG.md](CHANGELOG.md) | Every release |
 
-Mutation testing runs on tags and nightly. The input-integrity check runs
-nightly.
+Mutation testing runs on request. The input-integrity check runs nightly.
 
 ## License
 
