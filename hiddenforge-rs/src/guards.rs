@@ -17,7 +17,7 @@
 
 use crate::py;
 use std::collections::BTreeMap;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -1050,7 +1050,10 @@ impl Link {
 
     fn read_line(&mut self) -> std::io::Result<String> {
         let mut buf = Vec::new();
-        let n = self.r.read_until(b'\n', &mut buf)?;
+        // Read at most one byte past the cap, so an endless line is bounded in memory.
+        let n = (&mut self.r)
+            .take((1 << 20) + 1)
+            .read_until(b'\n', &mut buf)?;
         if n == 0 {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
@@ -1463,6 +1466,42 @@ mod tests {
 
     fn ev(s: &str) -> Event {
         parse_event(s, now()).unwrap()
+    }
+
+    fn link_fed(bytes: Vec<u8>) -> (Link, std::thread::JoinHandle<()>) {
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        ours.set_read_timeout(Some(std::time::Duration::from_secs(3)))
+            .unwrap();
+        let feeder = std::thread::spawn(move || {
+            use std::io::Write;
+            let mut t = theirs;
+            let _ = t.write_all(&bytes);
+            // Hold the connection open, the way a stalled peer would.
+            std::thread::sleep(std::time::Duration::from_secs(5));
+        });
+        let link = Link {
+            w: ours.try_clone().unwrap(),
+            r: BufReader::new(ours),
+            pending: Vec::new(),
+        };
+        (link, feeder)
+    }
+
+    #[test]
+    fn read_line_stops_at_the_cap_without_waiting_for_a_newline() {
+        // 1 MiB + 1 bytes and no newline: the cap must trip on what has arrived,
+        // not after buffering an unbounded line.
+        let (mut link, _feeder) = link_fed(vec![b'a'; (1 << 20) + 1]);
+        let e = link.read_line().unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::InvalidData, "{e}");
+    }
+
+    #[test]
+    fn read_line_accepts_a_line_exactly_at_the_cap() {
+        let mut line = vec![b'a'; (1 << 20) - 2];
+        line.extend_from_slice(b"\r\n");
+        let (mut link, _feeder) = link_fed(line);
+        assert_eq!(link.read_line().unwrap().len(), (1 << 20) - 2);
     }
 
     #[test]
