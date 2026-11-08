@@ -123,8 +123,20 @@ fn parse(prog: &str, specs: &[Opt], argv: &[String]) -> Result<Args, i32> {
             println!("{}", usage());
             std::process::exit(0);
         }
-        let (name, inline) = match arg.split_once('=') {
-            Some((n, v)) if n.starts_with("--") => (n.to_string(), Some(v.to_string())),
+        let attached = (!arg.starts_with("--") && arg.len() > 2)
+            .then(|| arg.get(..2))
+            .flatten()
+            .filter(|p| specs.iter().any(|s| s.short == Some(*p)));
+        let (name, inline) = match (attached, arg.split_once('=')) {
+            // argparse: `-oVALUE` and `-o=VALUE` both give the short option VALUE.
+            (Some(p), _) => {
+                let rest = &arg[2..];
+                (
+                    p.to_string(),
+                    Some(rest.strip_prefix('=').unwrap_or(rest).to_string()),
+                )
+            }
+            (None, Some((n, v))) if n.starts_with("--") => (n.to_string(), Some(v.to_string())),
             _ => (arg.clone(), None),
         };
         let matches: Vec<&Opt> = if name.starts_with("--") {
@@ -2783,6 +2795,35 @@ pub fn run(cmd: &str, rest: &[String]) -> Option<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_takes_short_option_values_the_argparse_ways() {
+        let specs = [
+            Opt {
+                short: Some("-o"),
+                ..o("--out", Kind::Value)
+            },
+            o("--force", Kind::Flag),
+        ];
+        let out = |args: &[&str]| {
+            let v: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+            parse("t", &specs, &v)
+                .ok()
+                .and_then(|a| a.get("out").map(String::from))
+        };
+        for form in [
+            &["-o", "dir"][..],
+            &["-odir"],
+            &["-o=dir"],
+            &["--out=dir"],
+            &["--o", "dir"],
+        ] {
+            assert_eq!(out(form).as_deref(), Some("dir"), "{form:?}");
+        }
+        assert_eq!(out(&["-o=a=b"]).as_deref(), Some("a=b"));
+        assert_eq!(out(&["-o="]).as_deref(), Some(""));
+        assert_eq!(out(&["-xdir"]), None, "unknown short option");
+    }
 
     // ── refusal paths (mutation sample, 2026-11-08: none of these were tested) ──
 
