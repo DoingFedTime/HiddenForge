@@ -1644,7 +1644,18 @@ fn cmd_setup(a: &Args) -> i32 {
             .with("keys", keys.as_str().into())
             .with("container", container.as_str().into())
             .with("runtime", runtime.as_str().into())
-            .with("onion_port", Json::Int(onion_port))
+            // From the mapping, like "backend": --onion-port applies only to the
+            // --backend form, and a --service mapping carries its own port.
+            .with(
+                "onion_port",
+                Json::Int(
+                    firstmaps[0]
+                        .split(':')
+                        .next()
+                        .and_then(|p| p.parse().ok())
+                        .unwrap_or(onion_port),
+                ),
+            )
             .with("output_dir", realpath_lenient(&out).into())
             .with("merge", merge.as_str().into())
             .with(
