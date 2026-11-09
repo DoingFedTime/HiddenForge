@@ -21,16 +21,35 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import getpass
 import json
 import os
 import pathlib
+import re
 import shutil
+import socket
 import subprocess
 import sys
 import time
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
 PY = REPO / ".venv" / "bin" / "python"
+
+
+def _scrub(text: str) -> str:
+    """Remove the build machine's layout and identity from raw output.
+
+    The bundle is published and signed, and gate output is full of absolute
+    paths, the user's home directory, temp directories named after the user and
+    sometimes the host name. None of that belongs in a public file.
+    """
+    for real, shown in ((str(REPO), "<repo>"), (str(pathlib.Path.home()), "<home>"),
+                        (socket.gethostname(), "<host>")):
+        if real and len(real) > 1:
+            text = text.replace(real, shown)
+    user = re.escape(getpass.getuser())
+    text = re.sub(rf"(?<=[/-]){user}(?=[/\s:\"'.,)]|$)", "user", text)
+    return re.sub(r"/tmp/user/\d+", "/tmp/user/<uid>", text)
 
 
 def _run(name: str, cmd: list[str], out: pathlib.Path,
@@ -50,7 +69,7 @@ def _run(name: str, cmd: list[str], out: pathlib.Path,
         rc = 124
     elapsed = time.time() - started
     header = f"# {name}\nexit_code: {rc}\nduration_s: {elapsed:.1f}\n\n"
-    (out / f"{name}.txt").write_text(header + body)
+    (out / f"{name}.txt").write_text(_scrub(header + body))
     return rc
 
 
@@ -91,7 +110,7 @@ def _image_digest(image: str | None, out: pathlib.Path) -> str | None:
             f"RepoDigests={local.stdout.strip() or '[]'}\n"
         )
     (out / "image-digest.txt").write_text(
-        f"$ docker buildx imagetools inspect {image}\n\n{text}")
+        _scrub(f"$ docker buildx imagetools inspect {image}\n\n{text}"))
     if proc.returncode != 0:
         return None
     for line in text.splitlines():
@@ -168,7 +187,7 @@ def main() -> int:
 
     meta["image_digest"] = _image_digest(args.image or None, out)
     meta["gates_exit_code"] = rc_total
-    (out / "build.json").write_text(json.dumps(meta, indent=2) + "\n")
+    (out / "build.json").write_text(_scrub(json.dumps(meta, indent=2)) + "\n")
 
     # manifest over every file, excluding itself.
     lines = [
