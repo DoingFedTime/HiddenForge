@@ -255,6 +255,13 @@ silent: it prints a warning naming the mode, the `--json` output carries
 `cipher_mode`, and `--require-aead` refuses to proceed at all. Restore reports
 which mode it decrypted. Use `--require-aead` for a production key.
 
+`restore` and `decrypt-key` decide from gpg's machine-readable status lines, not
+its exit code: the data must have been decrypted and its integrity proven, by
+AEAD or by the MDC. gpg exits 0 on a file that was never encrypted (a bare
+literal packet), so trusting the exit code would let anyone who can replace a
+backup install a key set of their choosing without the passphrase. Such a file,
+or one without integrity protection, is refused before anything is written.
+
 ### Explicitly out of scope
 
 - A compromised host, a malicious gpg/age binary, or an attacker who already has
