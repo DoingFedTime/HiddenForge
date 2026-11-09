@@ -72,10 +72,11 @@ name answers only the forms 2.x documented and refuses everything else
 `doctor` probe, byte for byte. A scanner that sees `/bin/sh` is not seeing a
 shell.
 
-**`unsafe` in the Rust binary.** Every `unsafe` block is a system call or an
-OpenSSL call through `libc`, with a `SAFETY:` comment saying why the arguments
-are valid. The binary depends on no other crate, so there is no unsafe code it
-did not write itself.
+**`unsafe` in the Rust binary.** Every `unsafe` block in the shipped code is a
+system call or an OpenSSL call through `libc`, with a `SAFETY:` comment (or, for
+the two `unsafe fn`s, a `# Safety` section) saying why the arguments are valid.
+The test modules contain a few more, all trivial. The binary depends on no
+other crate, so there is no unsafe code it did not write itself.
 
 ## Limits of this release
 

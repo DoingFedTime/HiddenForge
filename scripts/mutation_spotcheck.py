@@ -168,7 +168,7 @@ MUTATIONS = [
         "scripts/hiddenforge",
         '            out.append(f"\\\\U{cp:08x}")',
         '            out.append(f"\\\\u{cp:04x}")',
-        "tests/test_fuzz.py -k structure_of_the_setup_files",
+        "tests/test_setup_key_paths.py -k structure_of_the_setup_files",
     ),
     (
         "the key path goes into the compose fragment unquoted (container escape)",
