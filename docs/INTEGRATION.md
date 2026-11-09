@@ -399,7 +399,9 @@ is missing (a release signed before the hardware key was available); either
 way the result reports `complete: false`, and an image with neither signature
 verified is refused even with both flags. `--skip-registry` verifies the
 signatures without comparing the registry, and is likewise reported as
-`complete: false`. Result fields: `registry_digest`, `signed_digest`,
+`complete: false`. An image reference pinned by digest (`<repo>@sha256:...`) is
+compared with the signed digest on every run, with or without the registry, and
+a different digest is a failure. Result fields: `registry_digest`, `signed_digest`,
 `digest_match`, `ssh_fido2`, `mldsa`, `trust_anchor`, `failures`, `unchecked`,
 `complete`. Exit `0` verified, `1` not verified, `2` bad arguments.
 

@@ -105,6 +105,12 @@ inputs this project archives and verifies.
   key volume, and `podman exec <container> hiddenforge show` and `doctor` work
   as root (2.1.6 printed a Python traceback). Root there cannot enter the tor
   user's directory, so the read is done as tor.
+- **`verify-image --skip-registry` ignored the digest in the image reference.**
+  `hiddenforge verify-image <repo>@sha256:<any digest> --skip-registry` checked
+  the signature set and answered `ok`, whatever digest followed the `@`, and that
+  digest is the one an operator pins afterwards. A reference pinned by digest is
+  now compared with the signed digest on every run, with or without the registry
+  check. 2.x has the same defect.
 
 ### How it was tested
 

@@ -278,6 +278,50 @@ def test_both_opt_outs_together_never_accept_an_unsigned_image(hf, tmp_path, cap
     assert "neither signature was verified" in doc["failures"]
 
 
+def test_a_reference_pinned_to_another_digest_fails_without_the_registry(
+        hf, tmp_path, capsys, monkeypatch):
+    """A valid signature set says nothing about a digest it did not sign. With
+    --skip-registry this used to answer ok for any digest typed after the @."""
+    _mldsa_verified(monkeypatch, hf)
+    d = _without_hardware_sig(tmp_path)
+    signed = (d / "hiddenforge.digest").read_text().strip()
+    other = "sha256:" + "0" * 64
+    assert other != signed
+    rc = hf.main(["verify-image", f"example.com/x@{other}", "--sigdir", str(d),
+                  "--skip-registry", "--allow-pq-only", "--json"])
+    doc = json.loads(capsys.readouterr().out)
+    assert rc == hf.EXIT_FAIL and doc["ok"] is False
+    assert any(other in f and signed in f for f in doc["failures"]), doc["failures"]
+
+
+@pytest.mark.parametrize("suffix", [
+    "@sha256:" + "A" * 64,                       # upper case: not the signed form
+    "@sha512:" + "a" * 128,
+    "@sha256:" + "a" * 63,
+    "@sha256:{signed}@sha256:" + "0" * 64,       # two digests
+])
+def test_a_reference_digest_that_cannot_be_compared_is_refused(hf, tmp_path, capsys,
+                                                               monkeypatch, suffix):
+    _mldsa_verified(monkeypatch, hf)
+    d = _without_hardware_sig(tmp_path)
+    signed = (d / "hiddenforge.digest").read_text().strip()
+    rc = hf.main(["verify-image", "example.com/x" + suffix.format(signed=signed),
+                  "--sigdir", str(d), "--skip-registry", "--allow-pq-only", "--json"])
+    doc = json.loads(capsys.readouterr().out)
+    assert rc == hf.EXIT_FAIL and doc["ok"] is False
+
+
+def test_a_reference_pinned_to_the_signed_digest_still_verifies(hf, tmp_path, capsys,
+                                                                monkeypatch):
+    _mldsa_verified(monkeypatch, hf)
+    d = _without_hardware_sig(tmp_path)
+    signed = (d / "hiddenforge.digest").read_text().strip()
+    rc = hf.main(["verify-image", f"example.com/x@{signed}", "--sigdir", str(d),
+                  "--skip-registry", "--allow-pq-only", "--json"])
+    doc = json.loads(capsys.readouterr().out)
+    assert rc == 0 and doc["ok"] is True, doc["failures"]
+
+
 def test_an_ssh_keygen_that_hangs_is_not_checked_rather_than_a_crash(hf, tmp_path,
                                                                      monkeypatch):
     d = tmp_path / "sig"

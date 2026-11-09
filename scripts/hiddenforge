@@ -3441,6 +3441,20 @@ def cmd_verify_image(args) -> int:
 
         failures = []
         unchecked = []
+        # A reference pinned by digest names the exact image the operator will
+        # run, and that comparison needs no registry. Without it, --skip-registry
+        # verified the signature set and said nothing about the digest typed on
+        # the command line: `verify-image repo@sha256:<anything> --skip-registry`
+        # answered ok, and that digest was the one the README says to pin.
+        if "@" in image:
+            pinned = re.fullmatch(r"[^@]+@(sha256:[0-9a-f]{64})", image)
+            if pinned is None:
+                failures.append(f"the image reference {image!r} names a digest that "
+                                "is not one sha256 digest in lower-case hex, so it "
+                                "cannot be compared with the signed digest")
+            elif pinned.group(1) != signed:
+                failures.append(f"the image reference is pinned to {pinned.group(1)}, "
+                                f"which is not the signed digest ({signed})")
         if args.skip_registry:
             unchecked.append("registry digest: not compared (--skip-registry)")
         elif registry is None:
