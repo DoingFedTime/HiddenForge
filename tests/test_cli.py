@@ -329,6 +329,18 @@ def test_setup_multi_service_form(hf, tmp_path, capsys):
     assert desc["env_value"] == "80:web:80"
 
 
+def test_setup_descriptor_onion_port_is_the_mapping_port(hf, tmp_path, capsys):
+    """`onion_port` used to echo --onion-port (default 80) even when a --service
+    mapping carried its own port, so the descriptor named a port nothing served."""
+    rc = hf.main(["setup", "--service", "app:8080:web:80", "--onion-port", "9",
+                  "-o", str(tmp_path), "--json"])
+    assert rc == 0
+    desc = json.loads(capsys.readouterr().out)
+    assert desc["env_value"] == "8080:web:80"
+    assert desc["onion_port"] == 8080
+    assert json.loads((tmp_path / "hiddenforge.json").read_text())["onion_port"] == 8080
+
+
 def test_setup_ip_backend_omits_depends_on(hf, tmp_path, capsys):
     """An IP-literal backend must not emit `depends_on: [<ip>]`.
 

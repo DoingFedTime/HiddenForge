@@ -2110,7 +2110,9 @@ def cmd_setup(args) -> int:
             "keys": keys,
             "container": container,
             "runtime": runtime,
-            "onion_port": args.onion_port,
+            # From the mapping, like "backend": --onion-port applies only to the
+            # --backend form, and a --service mapping carries its own port.
+            "onion_port": int(services[first["name"]][0].split(":")[0]),
             "output_dir": str(out.resolve()),
             "merge": merge_cmd,
             "address_command": f"hiddenforge show --json --name {first['name']}",
@@ -2474,6 +2476,16 @@ def _key_files(keys: Path) -> list[Path]:
     found: list[Path] = []
     for root, dirs, files in os.walk(keys, onerror=fail, followlinks=False):
         dirs.sort()
+        # A link is never followed (the volume may come from untrusted media),
+        # and skipping one used to drop that service from the archive while the
+        # command still answered ok. Refuse instead, naming it.
+        for name in sorted(dirs) + sorted(files):
+            if os.path.islink(os.path.join(root, name)):
+                raise ValueError(
+                    f"{Path(root) / name} is a symbolic link. Links in the key "
+                    "volume are not followed, and leaving it out would silently "
+                    "drop what it points to from the archive; nothing was written. "
+                    "Replace it with the real file or directory, or remove it.")
         found.extend(Path(root) / f for f in sorted(files))
     return found
 
@@ -2487,8 +2499,8 @@ def _tar_keys(keys: Path, max_bytes: int = 512 * 1024 * 1024) -> bytes:
         count = 0
         has_identity = False
         for path in _key_files(keys):
-            if path.is_symlink():
-                continue
+            if path.is_symlink():   # _key_files refuses links; a race lands here
+                raise ValueError(f"{path} became a symbolic link while being read")
             if not path.is_file():
                 continue
             rel = path.relative_to(keys)
@@ -2601,33 +2613,36 @@ def _encrypt_bytes(tool: str, plaintext: bytes, passphrase: str | None,
     raise ValueError(f"unknown tool {tool!r}")
 
 
-def _gpg_cipher_mode(tool: str, ciphertext: bytes, passphrase: str | None) -> str | None:
-    """Best-effort: report whether a gpg backup is AEAD or CFB, for restore.
+def _gpg_decryption_mode(status: str) -> str:
+    """'aead' or 'cfb' (CFB+MDC) from gpg's --status-file output, or raise.
 
-    The cipher is recorded in the file's packet header, so this needs the
-    passphrase only to decrypt the session key. Returns None if it cannot tell --
-    the caller then says nothing rather than guessing.
+    gpg's exit status alone says nothing about encryption: `gpg --decrypt` of a
+    file made with `gpg --store` (a literal packet, no encryption at all) exits 0
+    and prints the attacker's tar, so a restore that trusted the exit status
+    installed a key set nobody had encrypted, without the passphrase ever being
+    used. The status lines are gpg's machine interface and the only reliable
+    answer: the data must have been decrypted (DECRYPTION_OKAY) and its integrity
+    proven, by AEAD (DECRYPTION_INFO's third field is the AEAD algorithm, 0 for
+    none) or by the MDC (GOODMDC). The mode used to be guessed by searching
+    `--list-packets` text for "aead", which also matches "aead 0", so every backup
+    was reported as AEAD.
     """
-    if tool != "gpg" or passphrase is None:
-        return None
-    pass_fd, write_fd = os.pipe()
-    try:
-        os.write(write_fd, passphrase.encode())
-        os.close(write_fd)
-        proc = subprocess.run(
-            ["gpg", "--list-packets", "--batch", "--pinentry-mode", "loopback",
-             "--passphrase-fd", str(pass_fd)],
-            input=ciphertext, capture_output=True, pass_fds=(pass_fd,), check=False,
-            timeout=60)
-    finally:
-        with contextlib.suppress(OSError):
-            os.close(pass_fd)
-    text = (proc.stdout + proc.stderr).decode(errors="replace").lower()
-    if "aead" in text:
+    lines = [ln.split()[1:] for ln in status.splitlines() if ln.startswith("[GNUPG:] ")]
+    names = {f[0] for f in lines if f}
+    info = next((f for f in lines if f and f[0] == "DECRYPTION_INFO"), None)
+    if "DECRYPTION_OKAY" not in names or info is None:
+        raise RuntimeError("the file is not gpg-encrypted data (gpg reported no "
+                           "decryption); it is not a backup this tool wrote, so it "
+                           "was not restored")
+    if names & {"BADMDC", "DECRYPTION_FAILED"}:
+        raise RuntimeError("gpg could not prove the file's integrity; it was not restored")
+    if len(info) >= 4 and info[3] != "0":
         return "aead"
-    if "cipher" in text:
+    if "GOODMDC" in names:
         return "cfb"
-    return None
+    raise RuntimeError("the file is encrypted without integrity protection (no MDC, "
+                       "no AEAD), so a modified file would not be detected; it was "
+                       "not restored")
 
 
 def cmd_backup(args) -> int:
@@ -2669,6 +2684,13 @@ def cmd_backup(args) -> int:
 
 
 def _decrypt_bytes(tool: str, ciphertext: bytes, passphrase: str | None) -> bytes:
+    return _decrypt_with_mode(tool, ciphertext, passphrase)[0]
+
+
+def _decrypt_with_mode(tool: str, ciphertext: bytes, passphrase: str | None
+                       ) -> tuple[bytes, str | None]:
+    """(plaintext, mode). mode is 'aead' or 'cfb' for gpg, None for age (whose
+    format is always authenticated)."""
     if tool == "age":
         if not sys.stdin.isatty():
             raise ValueError("age needs an interactive TTY to prompt for a passphrase; "
@@ -2679,28 +2701,35 @@ def _decrypt_bytes(tool: str, ciphertext: bytes, passphrase: str | None) -> byte
                               check=False)
         if proc.returncode != 0:
             raise RuntimeError("age decrypt failed")
-        return proc.stdout
+        return proc.stdout, None
     if tool == "openssl":
         raise ValueError("openssl decryption is not supported; use gpg or age")
     if tool == "gpg":
         if passphrase is None:
             raise ValueError("gpg needs --passphrase-file")
-        pass_fd, write_fd = os.pipe()
-        try:
-            os.write(write_fd, passphrase.encode())
-            os.close(write_fd)
-            proc = subprocess.run(
-                ["gpg", "--decrypt", "--batch", "--yes", "--pinentry-mode", "loopback",
-                 "--passphrase-fd", str(pass_fd)],
-                input=ciphertext, capture_output=True, pass_fds=(pass_fd,), check=False,
-                timeout=600)
-        finally:
-            with contextlib.suppress(OSError):
-                os.close(pass_fd)
+        # The status lines go to their own file, not stderr: stderr also carries
+        # text taken from the packet (the literal file name), which the file's
+        # author controls and could shape into a status line.
+        with tempfile.TemporaryDirectory(prefix="hf-gpg-") as tmp:
+            status_path = Path(tmp) / "status"
+            pass_fd, write_fd = os.pipe()
+            try:
+                os.write(write_fd, passphrase.encode())
+                os.close(write_fd)
+                proc = subprocess.run(
+                    ["gpg", "--decrypt", "--batch", "--yes", "--pinentry-mode", "loopback",
+                     "--status-file", str(status_path), "--passphrase-fd", str(pass_fd)],
+                    input=ciphertext, capture_output=True, pass_fds=(pass_fd,),
+                    check=False, timeout=600)
+            finally:
+                with contextlib.suppress(OSError):
+                    os.close(pass_fd)
+            status = (status_path.read_text(errors="replace")
+                      if status_path.is_file() else "")
         if proc.returncode != 0:
             detail = proc.stderr.decode(errors="replace").strip()
             raise RuntimeError(f"gpg decrypt failed: {detail}")
-        return proc.stdout
+        return proc.stdout, _gpg_decryption_mode(status)
     raise ValueError(f"unknown tool {tool!r}")
 
 
@@ -2904,8 +2933,7 @@ def cmd_restore(args) -> int:
                     "unattended; use --tool gpg with --passphrase-file instead")
             raise ValueError("no passphrase source: pass --passphrase-file (or a TTY)")
         ciphertext_bytes = src.read_bytes()
-        cipher_mode = _gpg_cipher_mode(tool, ciphertext_bytes, passphrase)
-        plaintext = _decrypt_bytes(tool, ciphertext_bytes, passphrase)
+        plaintext, cipher_mode = _decrypt_with_mode(tool, ciphertext_bytes, passphrase)
         import io
         with tarfile.open(fileobj=io.BytesIO(plaintext), mode="r") as tar:
             members = tar.getmembers()

@@ -111,6 +111,21 @@ inputs this project archives and verifies.
   digest is the one an operator pins afterwards. A reference pinned by digest is
   now compared with the signed digest on every run, with or without the registry
   check. 2.x has the same defect.
+- **`restore` and `decrypt-key` accepted a file that was never encrypted.** gpg
+  exits 0 when it "decrypts" a `gpg --store` file (a literal packet), so anyone
+  able to replace a backup could have a key set of their choosing installed
+  without knowing the passphrase. Decryption now requires gpg's own status lines
+  to confirm the data was decrypted and its integrity proven (AEAD or MDC), and
+  refuses anything else. 2.x has the same defect.
+- **`restore` reported every gpg backup as AEAD.** The mode was found by
+  searching gpg's packet listing for "aead", which also matches "aead 0", so a
+  CFB+MDC backup was reported as AEAD. It is now read from gpg's status output.
+- **`backup` and `encrypt-key` left out a key that was a symbolic link and still
+  answered `ok`.** Links in the key volume are not followed; they are now refused
+  by name instead of skipped, so an archive never silently misses a service.
+- **`setup --json` (and the wizard) reported `onion_port` from `--onion-port`**
+  even when a `--service` mapping carried its own port; it now reports the
+  mapping's port.
 
 ### How it was tested
 

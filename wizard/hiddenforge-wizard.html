@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-2SOebnIpXZZWbZ2lyg24qui2os8U1kLmZ33mpYGGLQ8='; style-src 'sha256-LAY216Fef1ocDljku/kTA1a6ygJANlE11o7wo6akqFw='; img-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'; object-src 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-fpIyMowe0tgO2vF+UlP3Khb1UsgJ++A5MI0ZoueUd30='; style-src 'sha256-LAY216Fef1ocDljku/kTA1a6ygJANlE11o7wo6akqFw='; img-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'; object-src 'none'">
 <meta name="referrer" content="no-referrer">
 <title>HiddenForge setup (offline)</title>
 <style>
@@ -418,7 +418,7 @@ footer { color: var(--muted); font: 11px var(--mono); margin-top: 30px; text-ali
     var d = {
       name: first.name, env_var: first.env_var, env_value: first.env_value, services: list,
       backend: svc[0][1][0].split(":")[1], image: o.image, keys: o.keys, container: o.container,
-      runtime: o.runtime, onion_port: o.onionPort, output_dir: o.outputDir, merge: merge,
+      runtime: o.runtime, onion_port: parseInt(svc[0][1][0].split(":")[0], 10), output_dir: o.outputDir, merge: merge,
       address_command: "hiddenforge show --json --name " + first.name,
       ready_command: "hiddenforge status --json", bare_command: merge,
       address_file: first.address_file, key_path: first.key_path,

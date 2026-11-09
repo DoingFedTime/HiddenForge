@@ -305,7 +305,7 @@
     var d = {
       name: first.name, env_var: first.env_var, env_value: first.env_value, services: list,
       backend: svc[0][1][0].split(":")[1], image: o.image, keys: o.keys, container: o.container,
-      runtime: o.runtime, onion_port: o.onionPort, output_dir: o.outputDir, merge: merge,
+      runtime: o.runtime, onion_port: parseInt(svc[0][1][0].split(":")[0], 10), output_dir: o.outputDir, merge: merge,
       address_command: "hiddenforge show --json --name " + first.name,
       ready_command: "hiddenforge status --json", bare_command: merge,
       address_file: first.address_file, key_path: first.key_path,

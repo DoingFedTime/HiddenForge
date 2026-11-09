@@ -33,6 +33,7 @@ CASES = [
         runtime="podman",
         pp="/srv/pp'x",
     ),
+    dict(services={"app": ["8080:web:80"]}),   # the mapping's port, not the default 80
     dict(
         services={"my-app": ["443:web:8080"]},
         onion_port=443,

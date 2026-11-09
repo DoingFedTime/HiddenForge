@@ -1094,3 +1094,111 @@ def test_a_backup_made_under_sudo_belongs_to_the_invoking_user(hf, monkeypatch):
     monkeypatch.setattr(hf.os, "geteuid", lambda: 1000)
     monkeypatch.setenv("SUDO_UID", "1000")
     assert hf._sudo_owner() is None, "only root hands a file to someone else"
+
+
+def _key_tar() -> bytes:
+    import io
+    import tarfile
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        info = tarfile.TarInfo("app/hs_ed25519_secret_key")
+        data = _sk(0x33)
+        info.size = len(data)
+        tar.addfile(info, io.BytesIO(data))
+    return buf.getvalue()
+
+
+def _gpg(tmp_path, out, *args):
+    import subprocess
+    home = tmp_path / "gnupg"
+    home.mkdir(mode=0o700, exist_ok=True)
+    subprocess.run(["gpg", "--homedir", str(home), "--batch", "--yes", "-o", str(out), *args],
+                   input=_key_tar(), check=True, capture_output=True)
+    return out
+
+
+def test_restore_refuses_a_file_that_was_never_encrypted(hf, tmp_path, capsys):
+    """`gpg --decrypt` of a `gpg --store` file (a literal packet) exits 0 and
+    prints its contents, so a restore that trusted the exit status installed a
+    key set nobody had encrypted, without the passphrase ever being used."""
+    pp = tmp_path / "pp"
+    pp.write_text("the operator's passphrase\n")
+    planted = _gpg(tmp_path, tmp_path / "keys.tar.gpg", "--store")
+    dest = tmp_path / "restored"
+    rc, doc = _run(hf, capsys, ["restore", "--keys", str(dest), "--input", str(planted),
+                                "--tool", "gpg", "--passphrase-file", str(pp), "--json"])
+    assert rc == hf.EXIT_FAIL and doc["ok"] is False
+    assert "not gpg-encrypted" in doc["error"]
+    assert not (dest / "app" / "hs_ed25519_secret_key").exists()
+
+
+def test_decrypt_key_refuses_a_file_that_was_never_encrypted(hf, tmp_path, capsys):
+    pp = tmp_path / "pp"
+    pp.write_text("the operator's passphrase\n")
+    keys = tmp_path / "tor-keys"
+    keys.mkdir(mode=0o700)
+    _gpg(tmp_path, keys / "app.keys.tar.gpg", "--store")
+    rc, doc = _run(hf, capsys, ["decrypt-key", "--keys", str(keys), "--name", "app",
+                                "--tool", "gpg", "--passphrase-file", str(pp), "--json"])
+    assert rc == hf.EXIT_FAIL and doc["ok"] is False
+    assert not (keys / "app" / "hs_ed25519_secret_key").exists()
+
+
+@pytest.mark.parametrize("mode_args, expected", [
+    (["--force-aead"], "aead"),
+    (["--force-mdc"], "cfb"),
+])
+def test_restore_reports_the_mode_it_actually_decrypted(hf, tmp_path, capsys, mode_args,
+                                                        expected):
+    """The mode used to be found by searching --list-packets text for "aead",
+    which also matches "aead 0", so a CFB+MDC backup was reported as AEAD."""
+    pp = tmp_path / "pp"
+    pp.write_text(TEST_PASSPHRASE + "\n")
+    blob = _gpg(tmp_path, tmp_path / "keys.tar.gpg", "--symmetric", "--cipher-algo",
+                "AES256", *mode_args, "--pinentry-mode", "loopback",
+                "--passphrase", TEST_PASSPHRASE)
+    rc, doc = _run(hf, capsys, ["restore", "--keys", str(tmp_path / "r"), "--input",
+                                str(blob), "--tool", "gpg", "--passphrase-file", str(pp),
+                                "--json"])
+    assert rc == 0, doc
+    assert doc["cipher_mode"] == expected
+
+
+@pytest.mark.parametrize("status, verdict", [
+    ("[GNUPG:] DECRYPTION_INFO 0 9 2\n[GNUPG:] DECRYPTION_OKAY\n[GNUPG:] GOODMDC\n", "aead"),
+    ("[GNUPG:] DECRYPTION_INFO 2 9 0\n[GNUPG:] DECRYPTION_OKAY\n[GNUPG:] GOODMDC\n", "cfb"),
+    ("[GNUPG:] PLAINTEXT 62 0\n", None),                                    # not encrypted
+    ("[GNUPG:] DECRYPTION_INFO 0 9 0\n[GNUPG:] DECRYPTION_OKAY\n", None),   # no MDC, no AEAD
+    ("[GNUPG:] DECRYPTION_INFO 2 9 0\n[GNUPG:] DECRYPTION_OKAY\n[GNUPG:] BADMDC\n", None),
+    ("gpg: [GNUPG:] DECRYPTION_OKAY\n[GNUPG:] DECRYPTION_INFO 2 9 0\n[GNUPG:] GOODMDC\n", None),
+])
+def test_only_authenticated_decryption_is_accepted(hf, status, verdict):
+    if verdict is None:
+        with pytest.raises(RuntimeError):
+            hf._gpg_decryption_mode(status)
+    else:
+        assert hf._gpg_decryption_mode(status) == verdict
+
+
+@pytest.mark.parametrize("linked", ["file", "directory"])
+def test_backup_refuses_a_link_rather_than_silently_leaving_a_service_out(
+        hf, keys, tmp_path, capsys, linked):
+    """Links are never followed. They used to be skipped, so a service whose key
+    (or whole directory) was a link was missing from an archive reported ok."""
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "hs_ed25519_secret_key").write_bytes(_sk(0x44))
+    if linked == "file":
+        (keys / "second").mkdir(mode=0o700)
+        (keys / "second" / "hs_ed25519_secret_key").symlink_to(
+            elsewhere / "hs_ed25519_secret_key")
+    else:
+        (keys / "second").symlink_to(elsewhere, target_is_directory=True)
+    pp = tmp_path / "pp"
+    pp.write_text(TEST_PASSPHRASE + "\n")
+    out = tmp_path / "keys.tar.gpg"
+    rc, doc = _run(hf, capsys, ["backup", "--keys", str(keys), "--out", str(out),
+                                "--tool", "gpg", "--passphrase-file", str(pp), "--json"])
+    assert rc != 0 and doc["ok"] is False
+    assert "symbolic link" in doc["error"] and "second" in doc["error"]
+    assert not out.exists()
