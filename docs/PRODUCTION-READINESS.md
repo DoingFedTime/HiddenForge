@@ -1,124 +1,41 @@
-# Production-readiness checklist
+# Production readiness: 3.0.0
 
-This page certifies **2.1.2** (tag `v2.1.2`, commit `72266d7`, index digest
-`sha256:cc6c215d0a85b94ff7724951b2d6176111f508030235733afbb40116a93c3f05`). Each
-row names the commit or image it was measured on:
+What was checked on 3.0.0, how, and what each check showed. It covers tag
+`v3.0.0` (commit `079bc260e875417196cdbbd1a9e0fdfc74e0beac`) and the image built
+from it, whose index digest is in `signatures/hiddenforge.digest`. Everything
+below was measured on 2026-11-09 unless a row says otherwise. A sentence here is
+not evidence: the automatable rows are produced as raw output by
+`scripts/collect_evidence.py` (see `signatures/README.md`), and the rest give the
+command so you can repeat them.
 
-| Rows | Measured on | Why that still holds for 2.1.2 |
-|---|---|---|
-| R1, R4, R5 | 2.1.2 itself (`72266d7`, published image) | Measured on the release |
-| R2, R3, R6 to R12, R16 | commit `a16a7e6`, 2026-10-19 (tor 0.4.9.14, python3 3.12.15, openssl 3.5.9, zlib 1.3.2-r1) | 2.1.1 and 2.1.2 change only the Dockerfile's file and directory modes and CI; `entrypoint.py`, `healthcheck.py` and both compose files are identical between `a16a7e6` and `72266d7` |
-| R13 to R15 | the full pass of 2026-09-26 (`983c94d`), run on an earlier image with the same runtime code and compose files | The same four files are identical between `983c94d` and `72266d7` |
+Each row names what it does **not** show. The last section lists what was not
+tested at all.
 
-Where a row could not be re-run, it says so and gives the date and commit of the
-result it does quote.
-
-The raw output of the automatable rows is captured by `scripts/collect_evidence.py`
-into the release **evidence bundle** (`signatures/README.md`), which is signed
-alongside the image digest. A row marked "manual" is one whose output is a live
-observation (an address, a memory curve) that the script records as a command and
-result rather than reproducing.
-
-| # | Claim | Command | Result |
+| # | Claim | How it was checked | Result |
 |---|---|---|---|
-| R1 | The image builds bit-for-bit reproducibly | two fresh clones (one under umask 007, one under 022), `--no-cache`, `buildx --platform linux/amd64,linux/arm64 --output type=oci`, compare `index.json` digests; plus CI `reproducibility` (amd64) | **pass (2.1.2)** (`72266d7`, tag `v2.1.2`): both two-platform builds `sha256:cc6c215d0a85b94ff7724951b2d6176111f508030235733afbb40116a93c3f05`, byte-identical archives, one clone under umask 007 and one under 022 (buildx v0.19.3, BuildKit v0.30.0); the published index on both registries is that digest. 2.1.0 reproduced only under one umask: its `COPY` layers recorded the clone's file modes (fixed in 2.1.1; 2.1.2 also creates the copy destinations 0755, and compared path by path with 2.1.0 the image differs only in the two modes that fix makes). The digest moves with each commit's `SOURCE_DATE_EPOCH`, so the release tag's own pair of builds is compared again at publish time |
-| R2 | Two onions from one container | the committed `docker-compose.yml` plus a second `*_TOR_SERVICE_HOSTS`; `status` and `show` for each | **pass** (`a16a7e6`): both ready after recreate; `show` agrees for each; both return HTTP 200 over Tor |
-| R3 | The committed `docker-compose.yml` boots | `docker compose up -d` with only the image (and, on this host, the subnets) overridden | **pass** (`a16a7e6`): `status` ready 19s after `up` (fresh key); host-side `doctor` ok, 16 checks, no failures, no warnings |
-| R4 | `sbom` emits a valid SPDX document | `hiddenforge sbom --image ...` | **pass (2.1.2)** (`72266d7` image): SPDX-2.3, 43 packages, from `sambent.dev/sam/hiddenforge:2.1.2` |
-| R5 | `verify-image` verifies a published release | run without `--skip-registry` against `sambent.dev`, with stock tools only (Alpine 3.23: OpenSSL, ssh-keygen, skopeo; no pqsign) | **pass (2.1.2)** (`72266d7` image, checked from master `634b461`): in a stock `alpine:3.23.5` container (OpenSSL 3.5.9, ssh-keygen, skopeo; no pqsign), from a fresh clone of master (`634b461`), against both `sambent.dev` and Docker Hub: the registry digest equals the signed `sha256:cc6c215d...`; ML-DSA-65 verifies through OpenSSL against the pinned key; exit 0 with `--allow-pq-only` (`complete: false`), and exit 1 without it, because there is no SSH-FIDO2 signature. 2.0.4 passed with both halves |
-| R6 | The arm64 image runs on an arm64 kernel | full-system arm64 VM (QEMU `virt`, Debian 13 arm64, real aarch64 kernel 6.12; emulated CPU), the shipped compose file | **pass** (`a16a7e6`, Debian 13 arm64, kernel 6.12.113): ready in 333s on the emulated CPU, descriptor uploaded, HTTP 200 over Tor (fetched from the host's Tor client, and from a fresh client inside the VM in 69s); Tor at uid 100 with `Seccomp: 2`, `Seccomp_filters: 2` (runtime profile + `Sandbox 1`, same as amd64); Tor killed, container restarted (restarts=1) with the same address and ready again; `doctor` no failures, no warnings. The VM's long-running system Tor client failed its first fetches (`No more HSDir available to query`) after slow circuit builds through one guard, and kept that failure cached; the host and a fresh in-VM client both reached the service. Not real ARM hardware |
-| R7 | The built image is clean | CI `security`: trivy image (HIGH/CRITICAL, fixable), trivy fs, semgrep, gitleaks over every commit | **pass** (`a16a7e6` image; CI job on `983c94d`): trivy on the `a16a7e6` image: 0 vulnerabilities at any severity (pinned `aquasec/trivy@sha256:ab70a022...`, the CI image). The full CI `security` job on `983c94d`: every scan step passed, no leaks. Run locally with `forgejo-runner exec`, where the final artifact-upload step cannot run (no artifact server); that step is the only one that failed |
-| R8 | Every in-image CLI subcommand works | CI `build-and-test` plus the documented `docker run <image> ...` forms | **pass** (`a16a7e6`): `version`/`info` contract (the `a16a7e6` image reports 2.1.0, Tor 0.4.9.14), in-image `vanity` (also with `--network none`), `setup` writes its four files; live E2E 5/5 in 110s |
-| R9 | Image contents are what they should be | inspect the built image | **pass** (`a16a7e6`): 40 apk packages (tor 0.4.9.14-r0, python3 3.12.15-r0, openssl 3.5.9-r0, zlib 1.3.2-r1, su-exec 0.3-r0); no pip/gcc/cc/make/curl/sshd (BusyBox's `wget` applet is present, as in every Alpine image); no `hs_ed25519*` or `.onion` baked in; `setuptools` absent |
-| R10 | Tor accepts the generated torrc | `tests/test_torrc.py` in the image | **pass** (`a16a7e6`): 17/17 checks, Tor 0.4.9.14, on amd64 and arm64 |
-| R11 | Untrusted parsers survive fuzzing | `fuzz/fuzz_parsers.py` under atheris (now both runtimes' `setup` files) | **pass** (`a16a7e6`): 168,320 runs in 600s, no crash (and 279,948 in 900s on `dcff31a`). The previous run, on `43b6db1`, found a command injection in a `deploy.sh` line added that day (see Findings) |
-| R12 | The service is stable over time | 90s sample on the final image; plus a soak of several hours on earlier images of the same runtime code, with the backend moved to a new IP 20 times | **pass** (`a16a7e6`): two services, memory flat 179-180 MiB, PIDs 39, 0 restarts, healthy. Soak: every backend move followed (torrc IP == backend IP in 42/42 samples), 0 unexplained restarts, memory flat |
-| R13 | A real host reboot brings the onion back (Docker) | Debian 13 VM, Docker 26, the shipped compose file; `systemctl reboot` three times, each proven by a new `boot_id` | **pass** (`983c94d` pass, earlier image, same runtime code and compose file): back on its own every time, same address, backend mapping correct, ready 27-252s after boot (the slow one: a fresh directory fetch over emulated networking) |
-| R14 | A real host reboot brings the onion back (rootless Podman) | Ubuntu 24.04 VM, Podman 4.9.3, linger + `podman-restart.service` enabled, real reboots | **pass with `restart: always`** (`983c94d` pass, earlier image, same runtime code and compose file; `restart: always` is what ships): back ready with the same address. With the old `unless-stopped` both containers stayed Exited |
-| R15 | Rootless Podman applies every declared limit | Docker Compose v2 (Ubuntu's `docker-compose-v2`, no Docker engine) on the rootless Podman socket, the shipped `podman-compose.yml` | **pass** (`983c94d` pass, earlier image, same compose file): `pids.max` 256, `memory.swap.max` 0, DNS isolated; Tor killed, restarted, same address, HTTP 200; `doctor` no failures, no warnings |
-| R16 | "Ready" means clients can reach it | fresh key and restart; compare Tor's HS_DESC UPLOADED events with the moment of ready, fetch at that moment | **pass** (`a16a7e6`): ready 1s after the first upload (fresh) and in the same second (restart, fetched by a Tor client that had never seen the address); the fetch returned HTTP 200 both times. A client that fetched the descriptor *before* the restart holds stale introduction points: its first fetch at the ready moment timed out and its retry succeeded after 67s. That is the client's cache, not readiness, and it heals without action. Before the fix, ready came ~45s before the upload |
+| R1 | The image builds bit for bit reproducibly | Two fresh clones of the tag, one under umask 007 and one under 022, each built with `--no-cache --provenance=false --platform linux/amd64,linux/arm64` and `rewrite-timestamp=true`, BuildKit v0.30.0, buildx v0.19.3; the OCI index digest of each compared | **Pass.** Both give `sha256:RELEASE-DIGEST`, covering both platforms. Both builds ran on one machine; no second, independent builder has reproduced it yet |
+| R2 | The build inputs are exactly the locked set | `python3 scripts/build_inputs.py verify <inputs>` | **Pass.** `ALL INPUTS VERIFIED`: every file against `build-inputs.sha256`, every package index against its pinned key, every package against its signed index, the Tor tarball against Tor's release keys, the `libc` crate against `Cargo.lock` |
+| R3 | The inputs are the newest available | Each version compared with its publisher on the day | **Pass, one note.** Tor 0.4.9.16, all 25 DHI packages, Alpine's `zlib`, the `libc` crate and mkp224o are the newest. Docker rebuilt its `static` base tag with `tzdata` 2026f; that build was not adopted (no security content, provenance for the new digest not verified). See `docs/DEPENDENCIES.md` |
+| R4 | The image has no known vulnerabilities | trivy 0.76.2 (database updated 2026-11-08) at every severity, and grype 0.121.2 (database built 2026-11-08), each on the `linux/amd64` and the `linux/arm64` image extracted from the built archive | **Pass.** 0 findings from either scanner on either platform. dockle reports two items, both reviewed and recorded as false positives (an environment variable whose name contains `KEYS` but holds a directory path; Docker Content Trust, which is not used) |
+| R5 | The image contains only what it should | Export of the amd64 image; run the documented refusals | **Pass.** 767 entries, 0 setuid or setgid files, 39.9 MB. No shell, package manager or interpreter: `sh -c id` and `python3 -c` are refused with a message naming the 3.0 command |
+| R6 | Every process is confined as documented, under Docker | The release image, started with the options of the shipped `docker-compose.yml` (all capabilities dropped, five added back, `no-new-privileges`, read-only root, tmpfs, limits); `/proc/<pid>/status` read from the host | **Pass.** Supervisor: uid 0, `CapEff 0xc2` (DAC_OVERRIDE, SETGID, SETUID). Tor, the upload watcher and the guard monitor: uid 100, `CapEff 0`. All four: `NoNewPrivs 1`, `Seccomp 2`. The log reports Landlock enforced (ABI 8) and `Bootstrapped 100%` |
+| R7 | The same under rootless Podman | The release image with the options of the shipped `podman-compose.yml` on Podman 4.9.3 | **Pass.** Supervisor `CapEff 0xc0` (SETGID, SETUID); Tor and helpers `CapEff 0`; NoNewPrivs, seccomp and Landlock as above; the service is ready; `hiddenforge show` run as root in the container works (2.1.6 raised a Python traceback there); the published `<name>.onion` file is written. Measured on the release image |
+| R8 | Nothing leaves the container but Tor traffic | The release image, `tcpdump` on the container's bridge for 170 seconds from a cold start, with `dns: 127.0.0.1` as shipped | **Pass.** 2,449 packets: 2,435 TCP, all to 3 public addresses on ports 443 and 9001 (Tor's), and 14 ARP. 0 UDP, 0 DNS, 0 packets to any private or LAN address. Measured on the release image |
+| R9 | The service comes up and is reachable | The same container: healthcheck, and Tor's own report | **Pass.** Ready within 100 seconds of a cold start under both engines: bootstrapped, circuit established, descriptor uploaded, 12 introduction points |
+| R10 | Live end-to-end behaviour | `HIDDENFORGE_E2E=1 pytest tests/test_e2e_live.py` against the release image | **Pass, 5 of 5, 117 s.** The compose fragment validates; a vanity search runs inside the image and the address starts with the prefix; the running container has the posture its fragment promises; a demo service publishes and `show` agrees with it; upgrading a 2.1.6 volume to 3.0 and rolling back both keep the address |
+| R11 | The Rust runtime is tested | `cargo test`; the differential tests; `cargo +nightly miri test`; `cargo llvm-cov`; mutation testing | **366 unit tests pass.** 512 binary-level tests (`tests/rust`) run the same inputs through the runtime and the 2.x reference and compare. **Miri:** the 194 tests that need no system call run clean, no undefined behaviour; 170 that need real syscalls are skipped under Miri. **Line coverage 80.7%**; the files that run only inside the container (supervisor loop 5%, Landlock set-up 12%) are covered by R10, not by unit tests. **Mutation testing** with cargo-mutants: every surviving mutant was reviewed; each is equivalent to the original, lives in container-only code, or has a written reason it is not worth a test. Several real defects were found and fixed this way (see the CHANGELOG) |
+| R12 | The host tooling is tested | `pytest` (1,033 tests), `ruff`, `mypy` over sources and tests, `cargo fmt --check`, `cargo clippy -D warnings`, `scripts/check_manifest.py` | **Pass.** Coverage of the 2.x reference is 98.9% (the floor is 72%) |
+| R13 | The release signature verifies | `pqsign verify`; stock OpenSSL 3.5.9; `hiddenforge verify-image` against the key pinned in the CLI; a deliberately altered digest | **Pass.** All three accept the signature; the altered digest is rejected by each. `complete: false` because there is no hardware signature (see `SECURITY.md`) |
 
-CI on the `v2.1.0` tag (`a939a74`, sambent.dev Actions, 2026-10-21): lint, unit
-(mutation spot-check 63/63; 99.03% coverage of `entrypoint.py`, re-measured on the
-tag with the job's own command), mutation (the full mutmut run and gate),
-build-and-test (live E2E), security (trivy, semgrep, gitleaks) and reproducibility
-all pass. `pin-freshness` runs on schedule and dispatch only; it passed on the same
-commit in a dispatch run that day.
+## Not tested
 
-CI on the `v2.1.2` tag (`72266d7`, 2026-10-22): lint, unit, mutation,
-build-and-test (live E2E), security and reproducibility (now two clones under
-umask 007 and 022) all pass; master at the same commit passed the same jobs.
-2.1.1 and 2.1.2 change the Dockerfile's file and directory modes and CI only, so the image-bearing
-rows above other than R1, R4 and R5 are carried forward from `a16a7e6`.
-
-Supporting detail for the rows that produced a finding follows.
-
-## R1: why a fresh clone is required
-
-`rewrite-timestamp` *clamps* mtimes to `SOURCE_DATE_EPOCH` (`min(mtime, epoch)`),
-it does not set them equal. In a fresh clone every file's mtime is the checkout
-time (newer than the commit), so all of them clamp to the same value. In a
-working tree edited at different times, a file *older* than `SOURCE_DATE_EPOCH`
-keeps its own mtime and lands in the layer verbatim, producing a digest only that
-tree can generate. Reproduce from a pristine checkout (see `signatures/README.md`).
-
-## R5: which digest is signed
-
-The published, signed digest is **2.1.2**'s
-(`sha256:cc6c215d0a85b94ff7724951b2d6176111f508030235733afbb40116a93c3f05`). A
-build of any other commit has a different digest, so a mismatch against
-`hiddenforge.digest` for such a build means "not this release", not "tampered
-with".
-
-## R6: how arm64 was verified
-
-With qemu's `binfmt_misc` handler for aarch64 registered on the builder
-(`docker run --privileged --rm tonistiigi/binfmt --install arm64`), buildx builds
-`linux/arm64` directly. The pinned base digest is the multi-arch index, every
-pinned apk exists for aarch64, and mkp224o's `./configure` carries no amd64
-assumption. Two builds from a fresh clone produced the same index digest, and the
-loaded image passed the same in-image checks as amd64.
-
-## Findings from the first pass, each fixed and re-verified
-
-- **2026-09-26, R11 re-run: a command injection in `deploy.sh`,** in a line
-  added that day, never released. A key path holding `"` closed the echo it
-  was quoted inside and the rest ran as shell (measured: a crafted `--keys`
-  made the script create a file). Fixed; a regression test executes the line
-  with two payloads. CI had passed with it present, because its payloads were all
-  newlines, which the validator refuses anyway. CI now carries a property
-  test with the fuzz target's structure invariant, which on its first run found
-  a second fault: non-BMP characters in the key path produced a fragment Docker
-  Compose refused to parse. Fixed.
-- **2026-09-26, R3: `doctor` failed for ever over a retired service's kept
-  keys.** Now a warning that says so; a configured service still fails.
-
-- **R3 exposed a shipped bug:** `docker-compose.yml` and `podman-compose.yml` set
-  `ulimits.nproc: 256`. RLIMIT_NPROC is per host uid, and the tor user is uid 100,
-  which other containers on the same host can share. With uid 100 already at high thread counts,
-  `su-exec` `setuid()` returned EAGAIN and Tor never started, silently (the image
-  logs to `/dev/null`, so it looked like a restart loop). Fixed: `nproc` removed,
-  `pids_limit` remains the cap, and the entrypoint probes `su-exec tor true` and
-  fails with a named error.
-- **R7 exposed a vulnerable TLS stack:** the image shipped OpenSSL 3.5.7-r0
-  (20 CVEs, 2 HIGH). The HIGH ones are QUIC-server issues and Tor has no QUIC,
-  but the image should not ship a known-vulnerable OpenSSL. OpenSSL is now
-  pinned explicitly rather than inherited from the base digest (first 3.5.8-r0;
-  3.5.9-r0 since Alpine pruned it); rescan clean.
-- **Fuzzing (R11) found a real crash:** a lone surrogate in an environment value
-  reached a log line and aborted startup. Fixed.
-- **R11, re-run (2026-09-18).** The target gained a third invariant when the key
-  path turned out to be an input channel reaching two operator-executed files, so
-  the old run was no longer evidence for what the target now asserts. The re-run
-  found a crash on its second input, and the crash was in the invariant rather
-  than the code: it compared LINE COUNTS, and `shlex.quote` puts a newline inside
-  single quotes, which adds a line without adding a command. Checked by hand that
-  the rendered script is still valid bash and that the payload never becomes a
-  command word. The invariant now compares STRUCTURE (the fragment's parsed YAML
-  keys and volumes, and deploy.sh's shell words), which is what it was always
-  meant to check and which a newline cannot trip. 162,177 runs, no crash.
-- **R9 key-material audit:** no `hs_ed25519*` or `.onion` material in any layer.
-
-On a host whose Docker default address pools are used up by other projects, do
-not prune networks that are not yours: give the test stacks two free subnets of
-your own (`HIDDENFORGE_E2E_SUBNETS=<subnet-1>,<subnet-2>` for the E2E suite).
+- **Fuzzing, fault injection and long-duration soak testing.** None was done.
+- **A second, independent builder.** R1 ran twice on one machine.
+- **Real ARM hardware.** arm64 is built, scanned and reproduced, and was run in a
+  full-system arm64 VM in an earlier pass; it has not run on real ARM hardware.
+- **Host reboots under 3.0.** The reboot tests (Docker and rootless Podman) were
+  run on 2.1.x. The 3.0 supervisor and restart behaviour are covered by R10 but a
+  reboot was not repeated.
+- **CI on the forge for this release.** The workflow was validated and its
+  commands were run by hand; the run on the tag happens when the tag is pushed.
+- **A hardware-held signature.** The release carries the ML-DSA-65 signature only.

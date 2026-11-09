@@ -63,8 +63,10 @@ verification that compares `.Id` reports a false "NOT REPRODUCIBLE".
 ### Architecture: what is verified
 
 This release index is **multi-platform** (`linux/amd64` + `linux/arm64`), and the
-**whole index** was reproduced: two independent clean builds of `v3.0.0`
-produced the same index digest, which covers both platform manifests. The arm64
+**whole index** was reproduced: two clean builds of `v3.0.0` from fresh clones,
+one under umask 007 and one under 022, produced the same index digest, which
+covers both platform manifests. Both ran on the maintainer's machine; a build on
+another machine is the check that would remove that single point. The arm64
 half was built under qemu emulation on an amd64 host and run on a full-system
 arm64 VM, but not on real ARM hardware.
 An amd64-only build produces a different index digest than the two-platform
