@@ -1,36 +1,15 @@
 #!/usr/bin/env python3
-"""A curated mutation kill-check for the code mutmut cannot reach.
+"""A curated mutation kill-check for scripts/hiddenforge, the operator CLI.
 
-Scope, and an earlier claim withdrawn. This script was written when a full
-`mutmut run` reported ~500 mutants checked and ZERO killed, and its docstring
-blamed a harness-integration defect in mutmut 3.5.0 under this project's pytest
-configuration. That was wrong, and the real causes were found by reproducing the
-run rather than reasoning about it:
+The CLI is the one Python file 3.0 still ships. It holds the backup encryption,
+the restore path, the image-reference validation and the setup files it writes,
+so it is the code least acceptable to leave unmeasured. Each entry below is a
+realistic wrong answer in that code, paired with the tests that must catch it.
 
-  1. `mutmut run` was being invoked as `python -m mutmut`. That executes
-     mutmut/__main__.py as `__main__`, so the trampoline's
-     `from mutmut.__main__ import record_trampoline_hit` re-imports the whole
-     module, which calls `set_start_method('fork')` a second time and raises.
-     The stats phase died on the first test. Use the console script (`mutmut`),
-     where mutmut.__main__ is already in sys.modules.
-  2. tests/test_subprocess_timeouts.py is a source-TEXT audit and read
-     `Path(__file__).parent.parent / "entrypoint.py"` -- which, under mutmut, is
-     the generated one-function-per-mutant copy, whose call sites no longer have
-     their justifying comments adjacent. It failed on an unmutated baseline, and
-     the stats phase runs with `-x`, so it aborted the whole run. With no stats,
-     every mutant maps to zero tests and is recorded as "not checked".
-
-Both are fixed, mutmut runs, and entrypoint.py / healthcheck.py / vanity.py now
-have a real, reproducible kill rate (see `mutmut run && mutmut results`).
-
-What is left for this script is the one file mutmut cannot mutate:
-`scripts/hiddenforge` has no .py extension, and mutmut only generates mutants for
-files ending in .py (walk_source_files / should_ignore_for_mutation in
-mutmut/__main__.py). That file holds the backup encryption, the restore path and
-the image-reference validation, so it is exactly the code least acceptable to
-leave unmeasured. The entrypoint.py mutations below are kept as a fast canary --
-they are also covered by the full run, and a disagreement between the two is
-itself a finding.
+A few entries mutate entrypoint.py, the 2.x runtime that the differential tests
+(tests/rust) run beside the Rust runtime as the reference. A reference that
+silently gave wrong answers would let a wrong Rust answer pass, so it is guarded
+too. The Rust runtime itself is mutation-tested with cargo-mutants, on request.
 
 Each mutation is applied to a THROWAWAY COPY of the tree, the named tests are
 run there, and a non-zero pytest exit is a KILL. It used to rewrite the real

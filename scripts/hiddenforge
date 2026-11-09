@@ -1655,8 +1655,8 @@ def _yaml_double_quoted(value: str) -> str:
     json.dumps was used, and it is almost right: the result is one scalar, so a
     path cannot open a key. But it writes a character outside the Basic
     Multilingual Plane as a UTF-16 surrogate pair (\\ud83d\\udcc1), which YAML
-    reads as two separate, invalid code points -- found by the property test in
-    tests/test_fuzz.py. Measured: Docker Compose refused the fragment outright
+    reads as two separate, invalid code points -- found by the property test now
+    in tests/test_setup_key_paths.py. Measured: Docker Compose refused the fragment outright
     ("invalid Unicode character escape code"), and a lenient parser (PyYAML)
     decoded a different path, a different key directory. YAML has an 8-digit
     escape for exactly this. Printable ASCII is kept as is; everything else is

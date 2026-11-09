@@ -1,8 +1,8 @@
 """Single source of truth for the torrc directive whitelist.
 
-Shared by tests/test_torrc_gen.py (golden + presence tests) and tests/test_fuzz.py
-(the injection-proof property). Keeping one copy means adding a directive to the
-generator updates both, instead of drifting silently.
+Used by tests/test_torrc_gen.py (golden + presence tests). Keeping the list in
+one module means adding a directive to the generator updates every test that
+checks it, instead of drifting silently.
 """
 
 # Every directive token that may legitimately begin a non-comment torrc line.
