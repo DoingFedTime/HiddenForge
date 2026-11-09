@@ -1601,8 +1601,7 @@ def test_a_newline_in_the_key_path_adds_a_line_but_not_a_command(hf):
     on its second input: it compared LINE COUNTS, and a newline inside
     `shlex.quote`'s single quotes adds a line while adding nothing executable.
     The property that actually matters is that the script's WORDS do not change,
-    which is what `fuzz/fuzz_parsers.py` now asserts and what this pins down by
-    hand for the payload that exposed it.
+    which is what this pins down by hand for the payload that exposed it.
     """
     services = {"app": ["80:127.0.0.1:8080"]}
     benign = hf.render_deploy_sh(services, "/keys", "tor")

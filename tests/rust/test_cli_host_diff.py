@@ -14,9 +14,21 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from test_cli_common import (
-    ONION, OTHER_ONION, OTHER_PUB, PUB, Pair, derive, env_for, needs_rust, norm, py, rust,
-    same, scratch, service, snapshot, write,  # noqa: F401  (scratch is a fixture)
+from test_cli_common import (  # noqa: F401  (scratch is a fixture, used by name)
+    ONION,
+    OTHER_ONION,
+    OTHER_PUB,
+    PUB,
+    Pair,
+    env_for,
+    needs_rust,
+    norm,
+    py,
+    rust,
+    same,
+    scratch,
+    service,
+    write,
 )
 
 pytestmark = needs_rust
@@ -25,6 +37,7 @@ K = ["--keys", "keys"]
 
 
 # ───────────────────────────────── show ─────────────────────────────────
+
 
 def fx_ready(d):
     service(d / "keys", "a")
@@ -100,12 +113,30 @@ def fx_closed_but_other_ready(d):
     (d / "keys" / "a").chmod(0o000)
 
 
-FIXTURES = [fx_ready, fx_nofiles, fx_inconsistent, fx_published, fx_derived, fx_mixed,
-            fx_not_ready_and_ready, fx_listing_noise, fx_empty, fx_missing,
-            fx_unlistable, fx_closed_service_published, fx_closed_service,
-            fx_closed_but_other_ready]
-SHOW_ARGS = [[], ["--json"], ["--name", "a"], ["--name", "a", "--json"],
-             ["--name", "nope"], ["--name", "nope", "--json"]]
+FIXTURES = [
+    fx_ready,
+    fx_nofiles,
+    fx_inconsistent,
+    fx_published,
+    fx_derived,
+    fx_mixed,
+    fx_not_ready_and_ready,
+    fx_listing_noise,
+    fx_empty,
+    fx_missing,
+    fx_unlistable,
+    fx_closed_service_published,
+    fx_closed_service,
+    fx_closed_but_other_ready,
+]
+SHOW_ARGS = [
+    [],
+    ["--json"],
+    ["--name", "a"],
+    ["--name", "a", "--json"],
+    ["--name", "nope"],
+    ["--name", "nope", "--json"],
+]
 
 
 @pytest.mark.parametrize("fixture", FIXTURES, ids=lambda f: f.__name__)
@@ -114,20 +145,49 @@ def test_show_matches_the_host_cli(scratch, fixture, args):
     Pair(scratch, fixture).check(["show", *K, *args])
 
 
-@pytest.mark.parametrize("args", [
-    ["--name", "Bad"], ["--name", "../x"], ["--name=-x"], ["--name", "a" * 64],
-    ["--name", "a", "--container=-x"], ["--container", "a b"], ["--container", ""],
-], ids=lambda a: " ".join(a))
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--name", "Bad"],
+        ["--name", "../x"],
+        ["--name=-x"],
+        ["--name", "a" * 64],
+        ["--name", "a", "--container=-x"],
+        ["--container", "a b"],
+        ["--container", ""],
+    ],
+    ids=" ".join,
+)
 def test_show_refuses_bad_names_and_containers_like_the_host_cli(scratch, args):
     p = Pair(scratch, fx_ready)
     r = p.check(["show", *K, *args, "--json"])
     assert r.rc == 2
 
 
-@pytest.mark.parametrize("value", ["-5", "-1x", "-.5", "-1.5", "-1.", "-.", "-1e5", "-a b", "-",
-                                   "--", "-x", "--json", "--na", "-0", "5-", "- 5", "-5 "])
+@pytest.mark.parametrize(
+    "value",
+    [
+        "-5",
+        "-1x",
+        "-.5",
+        "-1.5",
+        "-1.",
+        "-.",
+        "-1e5",
+        "-a b",
+        "-",
+        "--",
+        "-x",
+        "--json",
+        "--na",
+        "-0",
+        "5-",
+        "- 5",
+        "-5 ",
+    ],
+)
 def test_option_values_that_start_with_a_dash_follow_argparse(scratch, value):
-    """argparse takes `-5`, `-.5` and anything with a space as a value; `-1x` and `-x` are options."""
+    """argparse takes `-5`, `-.5` and anything with a space as a value; `-1x`, `-x` are options."""
     p = Pair(scratch, fx_ready)
     r, q = p.run(["show", *K, "--name", value, "--json"])
     assert (r.rc, r.out) == (q.rc, q.out), value
@@ -135,17 +195,25 @@ def test_option_values_that_start_with_a_dash_follow_argparse(scratch, value):
     assert r.err.strip().splitlines()[-1:] == q.err.strip().splitlines()[-1:], value
 
 
-@pytest.mark.parametrize("args", [["setup", "-o"], ["setup", "--out"], ["setup", "-o", "--force"],
-                                  ["setup", "--runtime", "lxc"], ["setup", "--onion-port", "x"],
-                                  ["setup", "-o=a", "--force=1"], ["setup", "--force=1"]])
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["setup", "-o"],
+        ["setup", "--out"],
+        ["setup", "-o", "--force"],
+        ["setup", "--runtime", "lxc"],
+        ["setup", "--onion-port", "x"],
+        ["setup", "-o=a", "--force=1"],
+        ["setup", "--force=1"],
+    ],
+)
 def test_argument_errors_name_the_option_like_argparse(scratch, args):
     d = scratch / "w"
     d.mkdir()
     r = rust(args, d)
     q = py(args, d)
     assert r.rc == q.rc == 2
-    assert r.err.strip().splitlines()[-1] == \
-        q.err.strip().splitlines()[-1]
+    assert r.err.strip().splitlines()[-1] == q.err.strip().splitlines()[-1]
 
 
 def test_show_json_documents_have_the_contract_fields(scratch):
@@ -155,23 +223,35 @@ def test_show_json_documents_have_the_contract_fields(scratch):
     r = rust(["show", *K, "--name", "a", "--json"], d)
     doc = json.loads(r.out)
     assert r.rc == 0 and doc == {
-        "ok": True, "exit_code": 0, "name": "a", "onion": ONION, "source": "hostname",
-        "derived_matches": True, "key_path": "keys/a/hs_ed25519_secret_key",
+        "ok": True,
+        "exit_code": 0,
+        "name": "a",
+        "onion": ONION,
+        "source": "hostname",
+        "derived_matches": True,
+        "key_path": "keys/a/hs_ed25519_secret_key",
         "public_key_path": "keys/a/hs_ed25519_public_key",
-        "address_path": "keys/a.onion", "key_dir": "keys/a"}
+        "address_path": "keys/a.onion",
+        "key_dir": "keys/a",
+    }
     assert r.out.endswith("\n") and r.out.count("\n") == 1
 
 
 def test_show_exit_codes_are_0_4_1_2(scratch):
     codes = {}
-    for fx in (fx_ready, fx_nofiles, fx_inconsistent, fx_missing, fx_mixed,
-               fx_not_ready_and_ready):
+    for fx in (fx_ready, fx_nofiles, fx_inconsistent, fx_missing, fx_mixed, fx_not_ready_and_ready):
         d = scratch / fx.__name__
         d.mkdir()
         fx(d)
         codes[fx.__name__] = rust(["show", *K, "--json"], d).rc
-    assert codes == {"fx_ready": 0, "fx_nofiles": 4, "fx_inconsistent": 1,
-                     "fx_missing": 2, "fx_mixed": 1, "fx_not_ready_and_ready": 4}
+    assert codes == {
+        "fx_ready": 0,
+        "fx_nofiles": 4,
+        "fx_inconsistent": 1,
+        "fx_missing": 2,
+        "fx_mixed": 1,
+        "fx_not_ready_and_ready": 4,
+    }
 
 
 def test_show_address_is_the_first_sorted_service(scratch):
@@ -204,15 +284,18 @@ def test_show_says_why_there_is_no_address(scratch):
     (d / "keys" / "nodir").rmdir()
     service(d / "keys", "empty", hostname=None, pub=None, secret=False)
     service(d / "keys", "closed", hostname=None, pub=None, secret=False, dirmode=0)
-    err = {n: json.loads(rust(["show", *K, "--name", n, "--json"], d).out)["error"]
-           for n in ("nodir", "empty", "closed")}
+    err = {
+        n: json.loads(rust(["show", *K, "--name", n, "--json"], d).out)["error"]
+        for n in ("nodir", "empty", "closed")
+    }
     assert err["nodir"] == "address not generated yet (no key directory for this service)"
     assert err["empty"] == "address not generated yet (Tor has not written hostname)"
     assert err["closed"] == (
         "address not published yet: keys/closed exists but is not readable by this user, "
         "and keys/closed.onion does not exist. Under Docker it appears once the service is "
         "reachable. Under rootless Podman, 2.1.x never writes it (3.0 does); pass "
-        "--container <name> to read the address from inside the container.")
+        "--container <name> to read the address from inside the container."
+    )
     assert rust(["show", *K, "--name", "closed"], d).rc == 4
 
 
@@ -225,30 +308,35 @@ def test_show_inconsistent_error_names_both_addresses(scratch):
         f"a: the hostname file says {OTHER_ONION} but the public key is {ONION}. Tor serves "
         "the key's address and rewrites hostname at startup, so the file is wrong. The "
         "directory holds files from two key sets (a partial restore or copy): restore the "
-        "whole directory from one backup before publishing any address.")
+        "whole directory from one backup before publishing any address."
+    )
     assert doc["exit_code"] == 1 and doc["onion"] is None
 
 
 # ──────────────────────────────── doctor ────────────────────────────────
 
+
 def keysdir(mode):
     def build(d):
         service(d / "keys", "a")
         (d / "keys").chmod(mode)
+
     return build
 
 
 @pytest.mark.parametrize("mode", [0o700, 0o750, 0o751, 0o755, 0o770, 0o777, 0o711, 0o311, 0o702])
 @pytest.mark.parametrize("flags", [[], ["--json"]], ids=["text", "json"])
 def test_doctor_volume_modes(scratch, mode, flags):
-    Pair(scratch, keysdir(mode)).check(["doctor", "--keys-only", *K, *flags],
-                                       ["doctor", *K, *flags])
+    Pair(scratch, keysdir(mode)).check(
+        ["doctor", "--keys-only", *K, *flags], ["doctor", *K, *flags]
+    )
 
 
 def doctor_fx(dirmode=0o700, keymode=0o600, **kw):
     def build(d):
         service(d / "keys", "a", dirmode=dirmode, keymode=keymode, **kw)
         (d / "keys").chmod(0o700)
+
     return build
 
 
@@ -275,7 +363,8 @@ DOCTOR_FIXTURES = {
 @pytest.mark.parametrize("flags", [[], ["--json"]], ids=["text", "json"])
 def test_doctor_matches_keys_only_on_the_host_cli(scratch, name, flags):
     Pair(scratch, DOCTOR_FIXTURES[name]).check(
-        ["doctor", "--keys-only", *K, *flags], ["doctor", *K, *flags], what=name)
+        ["doctor", "--keys-only", *K, *flags], ["doctor", *K, *flags], what=name
+    )
 
 
 def test_doctor_with_the_keys_only_flag_behaves_the_same(scratch):
@@ -298,7 +387,10 @@ def test_doctor_warnings_alone_exit_zero_and_failures_exit_one(scratch):
     assert (r.rc, doc["ok"], doc["failures"]) == (0, True, [])
     assert doc["checks"][0] == {
         "check": "key volume is not group/world writable or world readable",
-        "ok": False, "detail": "mode=0o755", "severity": "warn"}
+        "ok": False,
+        "detail": "mode=0o755",
+        "severity": "warn",
+    }
     (d / "keys" / "a").chmod(0o750)
     r = rust(["doctor", *K, "--json"], d)
     assert (r.rc, json.loads(r.out)["failures"]) == (1, ["key dir a is 0700"])
@@ -311,7 +403,8 @@ def test_doctor_text_lines(scratch):
     assert rust(["doctor", *K], d).out == (
         "[ok  ] key volume is not group/world writable or world readable: mode=0o700\n"
         "[ok  ] key dir a is 0700: mode=0o700\n"
-        "[FAIL] secret key a is 0600: mode=0o640\n")
+        "[FAIL] secret key a is 0600: mode=0o640\n"
+    )
 
 
 def test_doctor_rejects_a_bad_container_name(scratch):
@@ -327,12 +420,16 @@ def test_doctor_unlistable_volume_says_so(scratch):
     fx_unlistable(d)
     doc = json.loads(rust(["doctor", *K, "--json"], d).out)
     assert doc["checks"][1] == {
-        "check": "service key directories checked", "ok": True, "severity": "warn",
+        "check": "service key directories checked",
+        "ok": True,
+        "severity": "warn",
         "detail": "key volume is not listable (0751 by design); run `docker exec "
-                  "<container> hiddenforge doctor --keys-only` to verify service dir/file modes"}
+        "<container> hiddenforge doctor --keys-only` to verify service dir/file modes",
+    }
 
 
 # ──────────────────────────────── rotate ────────────────────────────────
+
 
 def rotate_fx(d):
     service(d / "keys", "a")

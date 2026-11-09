@@ -18,10 +18,13 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
+import contextlib
 
 REPO = Path(__file__).resolve().parents[2]
-RUST = Path(os.environ.get("HIDDENFORGE_RUST_BIN")
-            or REPO / "hiddenforge-rs" / "target" / "release" / "hiddenforge")
+RUST = Path(
+    os.environ.get("HIDDENFORGE_RUST_BIN")
+    or REPO / "hiddenforge-rs" / "target" / "release" / "hiddenforge"
+)
 PY_CLI = REPO / "scripts" / "hiddenforge"
 PY_VANITY = REPO / "vanity.py"
 FAKE = REPO / "tests" / "fake_mkp224o.py"
@@ -61,9 +64,15 @@ def env_for(**extra: str) -> dict:
 
 
 def _run(cmd, cwd, env, stdin, timeout) -> Result:
-    p = subprocess.run(cmd, cwd=cwd, env=env, capture_output=True, text=True,
-                       stdin=stdin if stdin is not None else subprocess.DEVNULL,
-                       timeout=timeout)
+    p = subprocess.run(
+        cmd,
+        cwd=cwd,
+        env=env,
+        capture_output=True,
+        text=True,
+        stdin=stdin if stdin is not None else subprocess.DEVNULL,
+        timeout=timeout,
+    )
     return Result(p.returncode, p.stdout, p.stderr)
 
 
@@ -74,8 +83,13 @@ def rust(args, cwd, env=None, stdin=None, timeout=60, argv0="hiddenforge") -> Re
         link_dir = Path(tempfile.mkdtemp(prefix="hf-argv0-"))
         try:
             (link_dir / argv0).symlink_to(RUST)
-            return _run([str(link_dir / argv0), *args], cwd,
-                        env if env is not None else env_for(), stdin, timeout)
+            return _run(
+                [str(link_dir / argv0), *args],
+                cwd,
+                env if env is not None else env_for(),
+                stdin,
+                timeout,
+            )
         finally:
             (link_dir / argv0).unlink()
             link_dir.rmdir()
@@ -83,8 +97,13 @@ def rust(args, cwd, env=None, stdin=None, timeout=60, argv0="hiddenforge") -> Re
 
 
 def py(args, cwd, env=None, stdin=None, timeout=60) -> Result:
-    return _run([sys.executable, str(PY_CLI), *args], cwd,
-                env if env is not None else env_for(), stdin, timeout)
+    return _run(
+        [sys.executable, str(PY_CLI), *args],
+        cwd,
+        env if env is not None else env_for(),
+        stdin,
+        timeout,
+    )
 
 
 _TIME = re.compile(r"(?<![0-9])1[0-9]{9}(?![0-9])")
@@ -97,11 +116,11 @@ def norm(s: str) -> str:
 
 def snapshot(root: Path) -> dict:
     """Relative path -> (kind, mode, content for small files) for a whole tree."""
-    snap = {}
+    snap: dict[str, tuple] = {}
     for dirpath, dirnames, filenames in os.walk(root):
         for n in [*dirnames, *filenames]:
             if n.endswith(".profraw"):
-                continue   # a coverage-instrumented binary writes its profile into its cwd
+                continue  # a coverage-instrumented binary writes its profile into its cwd
             p = Path(dirpath) / n
             st = p.lstat()
             rel = norm(str(p.relative_to(root)))
@@ -125,7 +144,8 @@ def snapshot(root: Path) -> dict:
 
 def same(a: Result, b: Result, what: str = "") -> None:
     assert (norm(a.out), a.rc) == (norm(b.out), b.rc), (
-        f"{what}\nrust: rc={a.rc}\n{a.out}\n{a.err}\npython: rc={b.rc}\n{b.out}\n{b.err}")
+        f"{what}\nrust: rc={a.rc}\n{a.out}\n{a.err}\npython: rc={b.rc}\n{b.out}\n{b.err}"
+    )
     assert norm(a.err) == norm(b.err), f"{what}\nstderr differs\nrust: {a.err}\npython: {b.err}"
 
 
@@ -156,14 +176,10 @@ def reopen(root: Path) -> None:
     """Make every directory under root traversable so the tree can be removed."""
     for dirpath, dirnames, _ in os.walk(root):
         for n in dirnames:
-            try:
+            with contextlib.suppress(OSError):
                 os.chmod(Path(dirpath) / n, 0o700)
-            except OSError:
-                pass
-    try:
+    with contextlib.suppress(OSError):
         os.chmod(root, 0o700)
-    except OSError:
-        pass
 
 
 @pytest.fixture
@@ -183,8 +199,16 @@ def write(path: Path, data, mode: int | None = None) -> Path:
     return path
 
 
-def service(keys: Path, name: str, hostname=ONION, pub=PUB, secret=True,
-            dirmode=0o700, keymode=0o600, sealed=False) -> Path:
+def service(
+    keys: Path,
+    name: str,
+    hostname=ONION,
+    pub=PUB,
+    secret=True,
+    dirmode=0o700,
+    keymode=0o600,
+    sealed=False,
+) -> Path:
     """One key directory as Tor leaves it. `hostname`/`pub` of None omit the file."""
     d = keys / name
     d.mkdir(parents=True, exist_ok=True)
@@ -193,7 +217,10 @@ def service(keys: Path, name: str, hostname=ONION, pub=PUB, secret=True,
     if pub is not None:
         write(d / "hs_ed25519_public_key", pubfile(pub), 0o600)
     if secret:
-        write(d / ("hs_ed25519_secret_key.enc" if sealed else "hs_ed25519_secret_key"),
-              b"S" * 96, keymode)
+        write(
+            d / ("hs_ed25519_secret_key.enc" if sealed else "hs_ed25519_secret_key"),
+            b"S" * 96,
+            keymode,
+        )
     d.chmod(dirmode)
     return d

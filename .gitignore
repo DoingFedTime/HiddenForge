@@ -36,8 +36,6 @@ htmlcov/
 security-reports/
 .pytest_cache/
 .hypothesis/
-mutants/
-.mutmut-cache/
 
 # The evidence bundle is generated per-release and signed alongside the
 # image digest; it is not committed (it would be stale the next commit).

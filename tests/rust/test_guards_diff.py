@@ -139,23 +139,28 @@ def test_guards_log_what_vanguards_logs_in_its_format():
     log = _parse_log(rec["stdout"])
     assert rec["closes"] == want
     notices = [m for lv, m in log if lv == "NOTICE"]
-    assert notices[0].startswith("Full vanguards enabled: 0 layer-2 and 0 layer-3 guards restored from ")
-    assert re.fullmatch(r"Vanguards \(HiddenForge guards \S+\) connected to Tor 0\.4\.9\.16", notices[1])
+    assert notices[0].startswith(
+        "Full vanguards enabled: 0 layer-2 and 0 layer-3 guards restored from ")
+    assert re.fullmatch(
+        r"Vanguards \(HiddenForge guards \S+\) connected to Tor 0\.4\.9\.16", notices[1])
     assert notices.count("Full vanguards: 3 layer-2 and 3 layer-3 guards pinned.") == 1
     assert [m.removeprefix("We force-closed circuit ") for m in notices
             if m.startswith("We force-closed circuit ")] == want
     # Bandguards' own decisions, with Vanguards' wording.
     assert ("NOTICE", "Tor bug #29699: Got 2 dropped cell on circ 10 "
             "(in state HS_SERVICE_INTRO HSSI_ESTABLISHED; old state None None).") in log
-    assert ("WARN", "Possible Tor bug, or possible attack if very frequent: Got 3 dropped cell on circ 13 "
+    assert ("WARN", "Possible Tor bug, or possible attack if very frequent: "
+            "Got 3 dropped cell on circ 13 "
             "(in state GENERAL None; old state None None)") in log
     assert ("WARN", "Circ 12 exceeded CIRC_MAX_HSDESC_KILOBYTES: 31745 > 30720. ".strip()) in log
     assert ("INFO", "Tor bug #29927: Got a dropped cell on circ 14 "
             "(in state GENERAL None; old state None None).") in log
     assert ("INFO", "Tor bug #29786: Got a dropped cell on circ 15 "
             "(in state PATH_BIAS_TESTING None; old state HS_CLIENT_REND HSCR_CONNECTING).") in log
-    assert any(lv == "DEBUG" and m.startswith("Added circ for 650 CIRC 10 BUILT ") for lv, m in log)
-    assert any(lv == "DEBUG" and m.startswith("Closed hs circ for 650 CIRC 17 CLOSED ") for lv, m in log)
+    assert any(lv == "DEBUG" and m.startswith("Added circ for 650 CIRC 10 BUILT ")
+               for lv, m in log)
+    assert any(lv == "DEBUG" and m.startswith("Closed hs circ for 650 CIRC 17 CLOSED ")
+               for lv, m in log)
     # Rendguard: the unknown rend point and the overused one.
     assert ("INFO", f"Relay {'E' * 40} is not in our consensus.") in log
     assert any(lv == "NOTICE" and m.startswith(f"Relay {'B' * 40} used ")

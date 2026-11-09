@@ -63,10 +63,6 @@ select = ["E", "F", "W", "B", "S", "UP", "RUF", "PLW", "SIM", "PERF"]
 # vanity.py runs a FIXED mkp224o argv (no shell, no untrusted input); S105/S108
 # are false positives on a key *filename* constant and the manifest's tmpfs path.
 "vanity.py" = ["S105", "S603", "S606", "S607", "S108"]
-# mutation_gate.py's allowlist is keyed on VERBATIM source lines from the mutated
-# file; wrapping them would make the keys unreadable and easy to mistranscribe, and
-# they have to match the generated text exactly to work at all.
-"scripts/mutation_gate.py" = ["E501", "S603", "S607"]
 # scripts/hiddenforge invokes docker/gpg/age by name with fixed argv (S603/S607),
 # chmods the generated deploy.sh 0755 (S103), names a key file constant (S105),
 # and carries /tmp paths as manifest data (S108).
@@ -74,25 +70,8 @@ select = ["E", "F", "W", "B", "S", "UP", "RUF", "PLW", "SIM", "PERF"]
 # Tests legitimately use bare asserts (S101) and set sys.path before importing
 # the module under test (E402, in the in-container smoke test).
 "tests/*" = ["S101", "E402", "S603", "S607", "PLW1510", "S102"]
-# Fuzz targets assert invariants; that is their job (S101).
-"fuzz/*" = ["S101"]
-
-[tool.mutmut]
-# mutmut 3.5.0 (the pinned dev venv) reads `paths_to_mutate`. A newer mutmut
-# deprecates it in favour of `source_paths`; when the dev dependency is bumped,
-# switch and re-verify, or this silently stops finding the code to mutate.
-# The Python reference implementation of the in-image runtime. Since 3.0 these
-# no longer ship (the image runs the Rust port, hiddenforge-rs, and the Rust
-# differential tests check it against them), so this is not a release gate.
-# scripts/hiddenforge, the host CLI, does ship and is deliberately absent:
-# mutmut only mutates files ending in .py
-# (mutmut/__main__.py: walk_source_files, should_ignore_for_mutation), and the
-# CLI is an extensionless script. Its coverage is tests/test_cli.py plus the
-# curated kill-check in scripts/mutation_spotcheck.py.
-paths_to_mutate = ["entrypoint.py", "healthcheck.py", "vanity.py"]
+# Shared fixtures are imported into each module and used by parameter name.
+"tests/rust/*" = ["F811"]
 
 [tool.mypy]
-# A bare `mypy .` checks what scripts/typecheck.sh checks. fuzz/ runs under
-# atheris, which is not installed on the host, so its types cannot be resolved
-# there; mutants/ is mutmut's working copy of the tree, not source.
-exclude = ["^fuzz/", "^mutants/"]
+# A bare `mypy .` checks what scripts/typecheck.sh checks.

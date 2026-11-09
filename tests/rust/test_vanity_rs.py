@@ -9,8 +9,10 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).resolve().parents[2]
-RUST = Path(os.environ.get("HIDDENFORGE_RUST_BIN")
-            or REPO / "hiddenforge-rs" / "target" / "release" / "hiddenforge")
+RUST = Path(
+    os.environ.get("HIDDENFORGE_RUST_BIN")
+    or REPO / "hiddenforge-rs" / "target" / "release" / "hiddenforge"
+)
 FAKE = REPO / "tests" / "fake_mkp224o.py"
 pytestmark = pytest.mark.skipif(
     not RUST.exists(), reason="build hiddenforge-rs first (cargo build --release)"
@@ -27,10 +29,15 @@ def vanity(tmp_path):
     link.symlink_to(RUST)
 
     def run(args, mode, timeout, **env):
-        full = {**os.environ, "MKP224O": str(wrapper), "HF_FAKE_MKP224O": mode,
-                **{k: str(v) for k, v in env.items()}}
-        return subprocess.run([str(link), *args], env=full, capture_output=True,
-                              text=True, timeout=timeout)
+        full = {
+            **os.environ,
+            "MKP224O": str(wrapper),
+            "HF_FAKE_MKP224O": mode,
+            **{k: str(v) for k, v in env.items()},
+        }
+        return subprocess.run(
+            [str(link), *args], env=full, capture_output=True, text=True, timeout=timeout
+        )
 
     return run
 
@@ -43,8 +50,12 @@ def test_benchmark_kills_a_generator_that_ignores_terminate(vanity):
     """
     started = time.monotonic()
     try:
-        r = vanity(["--prefix", "a", "--bench", "--seconds", "1", "--threads", "1"],
-                   "deaf", timeout=15, HF_FAKE_MKP224O_MAX=10_000)
+        r = vanity(
+            ["--prefix", "a", "--bench", "--seconds", "1", "--threads", "1"],
+            "deaf",
+            timeout=15,
+            HF_FAKE_MKP224O_MAX=10_000,
+        )
     except subprocess.TimeoutExpired:
         pytest.fail("benchmark waited for ever on a generator that ignores SIGTERM")
     assert time.monotonic() - started < 12
@@ -68,8 +79,13 @@ def test_generate_and_benchmark_work_in_owner_only_temp_dirs(vanity, tmp_path):
     assert r.returncode == 0, r.stdout + r.stderr
     assert rec.read_text() == "0o700"
     rec.unlink()
-    r = vanity(["--prefix", "a", "--bench", "--seconds", "1", "--threads", "1"], "bench",
-               timeout=30, HF_FAKE_MKP224O_DIRMODE=rec, HF_FAKE_MKP224O_MAX=2)
+    r = vanity(
+        ["--prefix", "a", "--bench", "--seconds", "1", "--threads", "1"],
+        "bench",
+        timeout=30,
+        HF_FAKE_MKP224O_DIRMODE=rec,
+        HF_FAKE_MKP224O_MAX=2,
+    )
     assert r.returncode == 0, r.stdout + r.stderr
     assert rec.read_text() == "0o700"
 
@@ -82,7 +98,7 @@ def test_generate_refuses_a_public_key_that_is_a_symlink(vanity, tmp_path):
 
 
 def _bench_dirs():
-    return set(Path("/tmp").glob("hf-bench-*"))
+    return set(Path("/tmp").glob("hf-bench-*"))  # noqa: S108  (the fixed directory the binary uses)
 
 
 @pytest.mark.parametrize("generator", ["missing", "unspawnable"])
@@ -95,9 +111,13 @@ def test_a_benchmark_that_cannot_start_leaves_no_temp_dir(tmp_path, generator):
     link = tmp_path / "vanity.py"
     link.symlink_to(RUST)
     before = _bench_dirs()
-    r = subprocess.run([str(link), "--prefix", "a", "--bench", "--seconds", "1"],
-                       env={**os.environ, "MKP224O": str(gen)},
-                       capture_output=True, text=True, timeout=30)
+    r = subprocess.run(
+        [str(link), "--prefix", "a", "--bench", "--seconds", "1"],
+        env={**os.environ, "MKP224O": str(gen)},
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
     assert r.returncode != 0, r.stdout + r.stderr
     assert _bench_dirs() - before == set()
 
@@ -106,7 +126,12 @@ def test_benchmark_gives_a_terminated_generator_its_grace_period(vanity, tmp_pat
     """SIGTERM, then up to 5 s to exit by itself, then SIGKILL (Python: wait(5), kill()).
     A generator that cleans up for 1.5 s after SIGTERM must be allowed to finish."""
     mark = tmp_path / "mark"
-    r = vanity(["--prefix", "a", "--bench", "--seconds", "1", "--threads", "1"],
-               "slowdie", timeout=30, HF_FAKE_MKP224O_MAX=10_000, HF_FAKE_MKP224O_MARK=mark)
+    r = vanity(
+        ["--prefix", "a", "--bench", "--seconds", "1", "--threads", "1"],
+        "slowdie",
+        timeout=30,
+        HF_FAKE_MKP224O_MAX=10_000,
+        HF_FAKE_MKP224O_MARK=mark,
+    )
     assert r.returncode == 0, r.stdout + r.stderr
     assert mark.read_text() == "cleaned up\n", "the generator was killed before it could exit"

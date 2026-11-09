@@ -9,7 +9,6 @@ import json
 import os
 import pty
 import re
-import select
 import stat
 import subprocess
 import sys
@@ -19,15 +18,27 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from test_cli_common import (  # noqa: E402
-    ONION, PUB, RUST, Pair, Result, env_for, needs_rust, norm, py, rust, same, scratch, service,  # noqa: F401
-    snapshot, write,
+from test_cli_common import (  # noqa: F401  (scratch is a fixture, used by name)
+    ONION,
+    Pair,
+    RUST,
+    Result,
+    env_for,
+    needs_rust,
+    py,
+    rust,
+    same,
+    scratch,
+    service,
+    snapshot,
+    write,
 )
 
 pytestmark = needs_rust
 
 
 # ─────────────────────────────────── setup ───────────────────────────────────
+
 
 def setup_run(prog, args, cwd, **kw):
     full = ["setup", "-o", "out", *args]
@@ -62,18 +73,25 @@ WEB = ["--backend", "web:80", "--non-interactive"]
 
 @pytest.mark.parametrize("flags", [[], ["--json"]], ids=["text", "json"])
 def test_a_second_setup_lists_what_exists_and_needs_force(scratch, flags):
-    (first, second, forced), d = both_setup(scratch, lambda d: None,
-                                            [[*WEB, *flags], [*WEB, *flags],
-                                             [*WEB, *flags, "--force"]])
+    (first, second, forced), d = both_setup(
+        scratch, lambda d: None, [[*WEB, *flags], [*WEB, *flags], [*WEB, *flags, "--force"]]
+    )
     assert first.rc == 0 and second.rc == 2 and forced.rc == 0
     if flags:
         assert json.loads(second.out)["error"] == (
             "out already contains compose.service.yml, deploy.sh, README.txt, hiddenforge.json; "
-            "pass --force to overwrite")
-    modes = {n: stat.S_IMODE((d / "out" / n).stat().st_mode)
-             for n in ("compose.service.yml", "deploy.sh", "README.txt", "hiddenforge.json")}
-    assert modes == {"compose.service.yml": 0o644, "deploy.sh": 0o755, "README.txt": 0o644,
-                     "hiddenforge.json": 0o644}
+            "pass --force to overwrite"
+        )
+    modes = {
+        n: stat.S_IMODE((d / "out" / n).stat().st_mode)
+        for n in ("compose.service.yml", "deploy.sh", "README.txt", "hiddenforge.json")
+    }
+    assert modes == {
+        "compose.service.yml": 0o644,
+        "deploy.sh": 0o755,
+        "README.txt": 0o644,
+        "hiddenforge.json": 0o644,
+    }
 
 
 def test_only_the_files_that_exist_are_listed(scratch):
@@ -81,8 +99,11 @@ def test_only_the_files_that_exist_are_listed(scratch):
         write(d / "out" / "README.txt", "mine")
         write(d / "out" / "deploy.sh", "mine")
 
-    (r,), d = both_setup(scratch, build, [[*WEB, "--json"]])
-    assert json.loads(r.out)["error"] == "out already contains deploy.sh, README.txt; pass --force to overwrite"
+    (r,), _d = both_setup(scratch, build, [[*WEB, "--json"]])
+    assert (
+        json.loads(r.out)["error"]
+        == "out already contains deploy.sh, README.txt; pass --force to overwrite"
+    )
 
 
 def test_force_replaces_a_regular_file(scratch):
@@ -90,7 +111,9 @@ def test_force_replaces_a_regular_file(scratch):
         write(d / "out" / "README.txt", "mine")
 
     (r,), d = both_setup(scratch, build, [[*WEB, "--force", "--json"]])
-    assert r.rc == 0 and (d / "out" / "README.txt").read_text().startswith("hiddenforge, your setup")
+    assert r.rc == 0 and (d / "out" / "README.txt").read_text().startswith(
+        "hiddenforge, your setup"
+    )
 
 
 @pytest.mark.parametrize("kind", ["symlink", "dir", "fifo"])
@@ -110,7 +133,8 @@ def test_force_never_replaces_a_link_a_directory_or_a_fifo(scratch, kind):
     assert r.rc == 2
     assert json.loads(r.out)["error"] == (
         "refusing to replace deploy.sh in out: not a regular file (a symlink, directory or "
-        "FIFO is not something setup wrote)")
+        "FIFO is not something setup wrote)"
+    )
     assert sorted(p.name for p in (d / "out").iterdir()) == ["deploy.sh"], "nothing was written"
     assert (d / "target").read_text() == "precious"
 
@@ -123,18 +147,41 @@ def test_setup_text_output_matches(scratch):
 def test_setup_service_flags_and_defaults(scratch):
     (scratch / "one").mkdir()
     (scratch / "two").mkdir()
-    both_setup(scratch / "one", lambda d: None, [
-        ["--service", "b:80:y:81", "--service", "a:80:x:80", "--non-interactive", "--json"]])
-    both_setup(scratch / "two", lambda d: None, [
-        ["--services", "a:80:x:80, b:81:y:81 ,", "--backend", "web:8080", "--name", "w",
-         "--onion-port", "8080", "--non-interactive"]])
+    both_setup(
+        scratch / "one",
+        lambda d: None,
+        [["--service", "b:80:y:81", "--service", "a:80:x:80", "--non-interactive", "--json"]],
+    )
+    both_setup(
+        scratch / "two",
+        lambda d: None,
+        [
+            [
+                "--services",
+                "a:80:x:80, b:81:y:81 ,",
+                "--backend",
+                "web:8080",
+                "--name",
+                "w",
+                "--onion-port",
+                "8080",
+                "--non-interactive",
+            ]
+        ],
+    )
 
 
 def run_on_pty(args, cwd, typed, env=None, timeout=20):
     """Run the binary with a terminal as stdin; `typed` is written after it starts."""
     master, slave = pty.openpty()
-    p = subprocess.Popen([str(RUST), *args], cwd=cwd, env=env or env_for(), stdin=slave,
-                         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    p = subprocess.Popen(
+        [str(RUST), *args],
+        cwd=cwd,
+        env=env or env_for(),
+        stdin=slave,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
     os.close(slave)
     try:
         if typed is not None:
@@ -153,34 +200,42 @@ def run_on_pty(args, cwd, typed, env=None, timeout=20):
 def test_setup_prompts_for_a_backend_on_a_terminal(scratch):
     rc, out, err = run_on_pty(["setup", "-o", "out", "--json"], scratch, None)
     assert rc == 2 and json.loads(out)["error"] == (
-        "--backend service:port is required (or --service/--services)"), "--json never prompts"
+        "--backend service:port is required (or --service/--services)"
+    ), "--json never prompts"
     rc, out, err = run_on_pty(["setup", "-o", "out"], scratch, "web:80\n")
     assert rc == 0, (out, err)
     assert "Backend service:port (e.g. web:80): " in err
-    assert "MYAPP_TOR_SERVICE_HOSTS: \"80:web:80\"" in (scratch / "out" / "compose.service.yml").read_text()
+    assert (
+        'MYAPP_TOR_SERVICE_HOSTS: "80:web:80"'
+        in (scratch / "out" / "compose.service.yml").read_text()
+    )
 
 
 def test_setup_prompt_abort_and_garbage(scratch):
     for typed in ("\n", "   \n"):
-        rc, out, err = run_on_pty(["setup", "-o", "out"], scratch, typed)
+        rc, out, _err = run_on_pty(["setup", "-o", "out"], scratch, typed)
         assert rc == 130 and json.loads(out) == {
-            "ok": False, "exit_code": 130, "error": "aborted at prompt"}, repr(typed)
-    rc, out, err = run_on_pty(["setup", "-o", "out"], scratch, "\x04")  # EOF at the prompt
+            "ok": False,
+            "exit_code": 130,
+            "error": "aborted at prompt",
+        }, repr(typed)
+    rc, out, _err = run_on_pty(["setup", "-o", "out"], scratch, "\x04")  # EOF at the prompt
     assert rc == 130 and json.loads(out)["error"] == "aborted at prompt"
-    rc, out, err = run_on_pty(["setup", "-o", "out"], scratch, "no-port\n")
+    rc, out, _err = run_on_pty(["setup", "-o", "out"], scratch, "no-port\n")
     assert rc == 2 and json.loads(out)["error"] == "--backend must be host:port, got 'no-port'"
-    rc, out, err = run_on_pty(["setup", "-o", "out"], scratch, "web:80\n")
+    rc, out, _err = run_on_pty(["setup", "-o", "out"], scratch, "web:80\n")
     assert not (scratch / "out" / "ghost").exists()
     assert rc == 0
 
 
 def test_setup_non_interactive_or_no_terminal_never_prompts(scratch):
     for args in (["setup", "-o", "out", "--non-interactive"], ["setup", "-o", "out", "--json"]):
-        rc, out, err = run_on_pty(args, scratch, "web:80\n")
+        rc, _out, err = run_on_pty(args, scratch, "web:80\n")
         assert rc == 2 and "Backend service" not in err, args
     r = rust(["setup", "-o", "out"], scratch)  # stdin is /dev/null
     assert r.rc == 2 and json.loads(r.out)["error"] == (
-        "--backend service:port is required (or --service/--services)")
+        "--backend service:port is required (or --service/--services)"
+    )
 
 
 # ───────────────────────────────── client-auth ───────────────────────────────
@@ -202,7 +257,10 @@ def ca(scratch):
 
 def test_client_auth_list_when_nobody_is_authorized(ca):
     r = ca("list", "--keys", "keys", "--name", "svc")
-    assert (r.rc, r.out) == (0, "svc: no client authorization (anyone with the address can connect)\n")
+    assert (r.rc, r.out) == (
+        0,
+        "svc: no client authorization (anyone with the address can connect)\n",
+    )
     r = ca("list", "--keys", "keys", "--name", "svc", "--json")
     assert json.loads(r.out) == {"ok": True, "exit_code": 0, "name": "svc", "clients": []}
 
@@ -218,23 +276,31 @@ def test_client_auth_add_list_remove_cycle(ca):
     f = auth / "alice.auth"
     assert stat.S_IMODE(f.stat().st_mode) == 0o600
     assert re.fullmatch(r"descriptor:x25519:[A-Z2-7]{52}\n", f.read_text())
-    assert doc["client_auth_private"].rsplit(":", 1)[1] not in f.read_text(), "no private half stored"
+    assert doc["client_auth_private"].rsplit(":", 1)[1] not in f.read_text(), (
+        "no private half stored"
+    )
 
     r = ca("add", "--keys", "keys", "--name", "svc", "--client", "bob", "--json")
     assert json.loads(r.out)["first_client"] is False
 
     r = ca("add", "--keys", "keys", "--name", "svc", "--client", "alice", "--json")
     assert r.rc == 1 and json.loads(r.out)["error"] == (
-        "client alice already exists for svc; remove it first to issue a new key")
+        "client alice already exists for svc; remove it first to issue a new key"
+    )
 
     assert ca("list", "--keys", "keys", "--name", "svc").out == (
-        "svc: only these clients can connect: alice, bob\n")
+        "svc: only these clients can connect: alice, bob\n"
+    )
     assert json.loads(ca("list", "--keys", "keys", "--name", "svc", "--json").out)["clients"] == [
-        "alice", "bob"]
+        "alice",
+        "bob",
+    ]
 
     r = ca("remove", "--keys", "keys", "--name", "svc", "--client", "alice", "--json")
-    assert (r.rc, json.loads(r.out)) == (0, {"ok": True, "exit_code": 0, "name": "svc",
-                                              "client": "alice", "removed": True})
+    assert (r.rc, json.loads(r.out)) == (
+        0,
+        {"ok": True, "exit_code": 0, "name": "svc", "client": "alice", "removed": True},
+    )
     assert r.out.count("\n") == 1, "one JSON document and nothing else"
     r = ca("remove", "--keys", "keys", "--name", "svc", "--client", "alice", "--json")
     assert json.loads(r.out)["removed"] is False
@@ -246,15 +312,23 @@ def test_client_auth_text_output(ca):
     lines = r.out.split("\n")
     assert r.rc == 0
     assert lines[0] == "svc: authorized client alice."
-    assert lines[1] == ("This is the first client: from the next start, ONLY authorized clients "
-                        f"can reach {ONION}.")
+    assert lines[1] == (
+        f"This is the first client: from the next start, ONLY authorized clients can reach {ONION}."
+    )
     assert lines[2] == RESTART and lines[3] == ""
-    assert lines[4] == ("Give this line to alice, over a channel you trust, and nowhere else. "
-                        "It is shown once and not stored:")
+    assert lines[4] == (
+        "Give this line to alice, over a channel you trust, and nowhere else. "
+        "It is shown once and not stored:"
+    )
     assert PRIVATE.match(lines[5]) and lines[6] == ""
-    assert lines[7].startswith("The client saves it as a file ending in .auth_private in the "
-                               "directory its torrc names with")
-    assert "ClientOnionAuthDir (Tor Browser: paste the key part when it asks for the onion's key)." in r.out
+    assert lines[7].startswith(
+        "The client saves it as a file ending in .auth_private in the "
+        "directory its torrc names with"
+    )
+    assert (
+        "ClientOnionAuthDir (Tor Browser: paste the key part when it asks for the onion's key)."
+        in r.out
+    )
     r = ca("add", "--keys", "keys", "--name", "svc", "--client", "bob")
     assert "This is the first client" not in r.out
     r = ca("remove", "--keys", "keys", "--name", "svc", "--client", "bob")
@@ -269,7 +343,9 @@ def test_client_auth_refusals(ca, scratch):
         return r.rc, json.loads(r.out)["error"]
 
     assert err("list", "--keys", "keys", "--name", "nope") == (
-        2, "no service nope in keys: start it once, or generate its key, before authorizing clients")
+        2,
+        "no service nope in keys: start it once, or generate its key, before authorizing clients",
+    )
     assert err("list", "--keys", "keys", "--name", "Bad")[0] == 2
     assert err("add", "--keys", "keys", "--name", "svc") == (2, "--client <name> is required")
     assert err("remove", "--keys", "keys", "--name", "svc") == (2, "--client <name> is required")
@@ -277,7 +353,9 @@ def test_client_auth_refusals(ca, scratch):
         assert err("add", "--keys", "keys", "--name", "svc", f"--client={bad}")[0] == 2, bad
     service(scratch / "keys", "nokey", pub=None)
     assert err("add", "--keys", "keys", "--name", "nokey", "--client", "a") == (
-        2, "nokey has no public key yet: start it once before authorizing clients")
+        2,
+        "nokey has no public key yet: start it once before authorizing clients",
+    )
     # the default service name is myapp
     assert err("list", "--keys", "keys")[1].startswith("no service myapp in keys")
 
@@ -305,6 +383,7 @@ def test_client_auth_refuses_to_follow_links_in_the_auth_dir(ca, scratch):
 
 # ──────────────────── backup / restore / encrypt-key / decrypt-key ───────────
 
+
 def tools(scratch, *names):
     d = scratch / "bin"
     d.mkdir(exist_ok=True)
@@ -314,12 +393,14 @@ def tools(scratch, *names):
 
 
 def bare_env(path, **extra):
-    return {"PATH": str(path), "HOME": "/tmp", **extra}
+    return {"PATH": str(path), "HOME": "/tmp", **extra}  # noqa: S108  (a HOME that exists; nothing is written there)
 
 
 NO_TOOL = "no encryption tool found: install `age` (preferred) or `gpg`"
-HINT = (". The hiddenforge image ships no crypto tooling on purpose; run this command on the "
-        "HOST that holds your backup, not with docker exec")
+HINT = (
+    ". The hiddenforge image ships no crypto tooling on purpose; run this command on the "
+    "HOST that holds your backup, not with docker exec"
+)
 
 
 def error_of(r):
@@ -338,7 +419,10 @@ def kd(scratch):
 PAIR_CASES = [
     ("backup-no-keys-dir", ["backup", "--keys", "nokeys", "--out", "o.age"]),
     ("backup-no-tool", ["backup", "--keys", "keys", "--out", "o.age"]),
-    ("backup-no-tool-gpg", ["backup", "--keys", "keys", "--out", "o.gpg", "--passphrase-file", "pp"]),
+    (
+        "backup-no-tool-gpg",
+        ["backup", "--keys", "keys", "--out", "o.gpg", "--passphrase-file", "pp"],
+    ),
     ("restore-missing", ["restore", "--keys", "keys", "--input", "nope.age"]),
     ("restore-dir", ["restore", "--keys", "keys", "--input", "keys"]),
     ("restore-cannot-infer", ["restore", "--keys", "keys", "--input", "pp"]),
@@ -349,8 +433,9 @@ PAIR_CASES = [
 ]
 
 
-@pytest.mark.parametrize("path_has", [(), ("age",), ("gpg",), ("age", "gpg")],
-                         ids=["none", "age", "gpg", "both"])
+@pytest.mark.parametrize(
+    "path_has", [(), ("age",), ("gpg",), ("age", "gpg")], ids=["none", "age", "gpg", "both"]
+)
 @pytest.mark.parametrize("case,args", PAIR_CASES, ids=[c[0] for c in PAIR_CASES])
 def test_refusals_before_any_tool_runs_match_the_host_cli(scratch, case, args, path_has):
     """Everything that fails before a tool would be started has the host CLI's words and code."""
@@ -380,16 +465,22 @@ def test_no_tool_message_adds_the_hint_inside_the_image(kd):
     if not Path("/etc/tor/torrc").exists():
         r = rust(["backup", "--keys", "keys", "--out", "o.age"], kd, env=bare_env(kd / "empty"))
         assert error_of(r) == NO_TOOL
-    r = rust(["backup", "--keys", "keys", "--out", "o.age"], kd,
-             env=bare_env(kd / "empty", HIDDENFORGE_IN_CONTAINER="0"))
+    r = rust(
+        ["backup", "--keys", "keys", "--out", "o.age"],
+        kd,
+        env=bare_env(kd / "empty", HIDDENFORGE_IN_CONTAINER="0"),
+    )
     assert error_of(r) == (NO_TOOL + HINT if Path("/etc/tor/torrc").exists() else NO_TOOL)
 
 
 def test_a_directory_named_like_a_tool_is_not_a_tool(kd):
     (kd / "bin" / "age").mkdir(parents=True)
     write(kd / "bin" / "gpg", "", 0o644)  # present but not executable
-    r = rust(["backup", "--keys", "keys", "--out", "o.age"], kd,
-             env=bare_env(kd / "bin", HIDDENFORGE_IN_CONTAINER="1"))
+    r = rust(
+        ["backup", "--keys", "keys", "--out", "o.age"],
+        kd,
+        env=bare_env(kd / "bin", HIDDENFORGE_IN_CONTAINER="1"),
+    )
     assert error_of(r) == NO_TOOL + HINT
 
 
@@ -402,16 +493,27 @@ def backup(kd, path_has, out, *extra, stdin=None, **env):
     for f in list(bindir.glob("*")) if bindir.exists() else []:
         f.unlink()
     tools(kd, *path_has)
-    return rust(["backup", "--keys", "keys", "--out", out, *extra], kd,
-                env=bare_env(bindir, HIDDENFORGE_IN_CONTAINER="1", **env), stdin=stdin)
+    return rust(
+        ["backup", "--keys", "keys", "--out", out, *extra],
+        kd,
+        env=bare_env(bindir, HIDDENFORGE_IN_CONTAINER="1", **env),
+        stdin=stdin,
+    )
 
 
-@pytest.mark.parametrize("path_has,out,tool", [
-    (("age", "gpg"), "o.age", "age"), (("age", "gpg"), "o.gpg", "gpg"),
-    (("age", "gpg"), "o.tar", "gpg"),            # unattended: gpg is the usable default
-    (("age",), "o.tar", "age"), (("gpg",), "o.age", "gpg"), (("gpg",), "o.gpg", "gpg"),
-    (("age",), "o.gpg", "age"), (("age",), "o.age", "age"),
-])
+@pytest.mark.parametrize(
+    "path_has,out,tool",
+    [
+        (("age", "gpg"), "o.age", "age"),
+        (("age", "gpg"), "o.gpg", "gpg"),
+        (("age", "gpg"), "o.tar", "gpg"),  # unattended: gpg is the usable default
+        (("age",), "o.tar", "age"),
+        (("gpg",), "o.age", "gpg"),
+        (("gpg",), "o.gpg", "gpg"),
+        (("age",), "o.gpg", "age"),
+        (("age",), "o.age", "age"),
+    ],
+)
 def test_backup_picks_the_tool_from_the_name_and_what_is_installed(kd, path_has, out, tool):
     r = backup(kd, path_has, out, "--passphrase-file", "pp")
     assert (r.rc, error_of(r)) == (2, tool_missing(tool))
@@ -432,8 +534,11 @@ def test_backup_refuses_openssl(kd):
 def test_unattended_backup_needs_a_passphrase_file(kd):
     """/dev/null is not a terminal: age cannot prompt, gpg needs a file."""
     r = backup(kd, ("age", "gpg"), "o.age")
-    assert (r.rc, error_of(r)) == (2, "age prompts for its passphrase on a TTY and cannot run "
-                                      "unattended; use --tool gpg with --passphrase-file instead")
+    assert (r.rc, error_of(r)) == (
+        2,
+        "age prompts for its passphrase on a TTY and cannot run "
+        "unattended; use --tool gpg with --passphrase-file instead",
+    )
     r = backup(kd, ("age", "gpg"), "o.gpg")
     assert error_of(r) == "no passphrase source: pass --passphrase-file (or a TTY)"
     r = backup(kd, ("age", "gpg"), "o.tar", "--tool", "gpg")
@@ -457,9 +562,15 @@ def test_a_missing_passphrase_file_is_reported_with_the_path(kd):
 def pty_backup(kd, path_has, out, *extra):
     tools(kd, *path_has)
     master, slave = pty.openpty()
-    p = subprocess.run([str(RUST), "backup", "--keys", "keys", "--out", out, *extra], cwd=kd,
-                       env=bare_env(kd / "bin", HIDDENFORGE_IN_CONTAINER="1"), stdin=slave,
-                       capture_output=True, text=True, timeout=30)
+    p = subprocess.run(
+        [str(RUST), "backup", "--keys", "keys", "--out", out, *extra],
+        cwd=kd,
+        env=bare_env(kd / "bin", HIDDENFORGE_IN_CONTAINER="1"),
+        stdin=slave,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
     os.close(slave)
     os.close(master)
     return Result(p.returncode, p.stdout, p.stderr)
@@ -481,8 +592,11 @@ def test_on_a_terminal_age_is_preferred_and_needs_no_passphrase_file(scratch):
 
 def restore(kd, path_has, input_name, *extra, **env):
     tools(kd, *path_has)
-    return rust(["restore", "--keys", "keys", "--input", input_name, *extra], kd,
-                env=bare_env(kd / "bin", HIDDENFORGE_IN_CONTAINER="1", **env))
+    return rust(
+        ["restore", "--keys", "keys", "--input", input_name, *extra],
+        kd,
+        env=bare_env(kd / "bin", HIDDENFORGE_IN_CONTAINER="1", **env),
+    )
 
 
 def test_restore_infers_the_tool_from_the_file_name(kd):
@@ -508,8 +622,10 @@ def test_restore_refuses_a_missing_input_and_passphrase_problems(kd):
     assert error_of(r) == "backup keys does not exist"
     write(kd / "b.age", "x")
     r = restore(kd, (), "b.age")
-    assert error_of(r) == ("age prompts for its passphrase on a TTY and cannot run unattended; "
-                           "use --tool gpg with --passphrase-file instead")
+    assert error_of(r) == (
+        "age prompts for its passphrase on a TTY and cannot run unattended; "
+        "use --tool gpg with --passphrase-file instead"
+    )
     write(kd / "b.gpg", "x")
     r = restore(kd, (), "b.gpg")
     assert error_of(r) == "no passphrase source: pass --passphrase-file (or a TTY)"
@@ -524,8 +640,11 @@ def test_key_encryption_commands(kd, cmd):
         tools(kd, *path_has)
         for old in [f for f in (kd / "bin").glob("*") if f.name not in path_has]:
             old.unlink()
-        return rust([cmd, "--keys", "keys", *extra], kd,
-                    env=bare_env(kd / "bin", HIDDENFORGE_IN_CONTAINER="1"))
+        return rust(
+            [cmd, "--keys", "keys", *extra],
+            kd,
+            env=bare_env(kd / "bin", HIDDENFORGE_IN_CONTAINER="1"),
+        )
 
     r = call((), "--name", "svc")
     assert (r.rc, error_of(r)) == (2, NO_TOOL + HINT)
@@ -554,31 +673,49 @@ STRONG = "correct horse battery staple"
 
 
 def unseal(scratch, *args, stdin=None, **env):
-    return rust(["unseal-keys", *args], scratch, env=env_for(**env),
-                stdin=stdin)
+    return rust(["unseal-keys", *args], scratch, env=env_for(**env), stdin=stdin)
 
 
 def test_unseal_without_a_passphrase_source(scratch):
     r = unseal(scratch, "--name", "hftestsvc")
-    assert (r.rc, json.loads(r.out)) == (2, {
-        "ok": False, "exit_code": 2,
-        "error": "no passphrase: pass --passphrase-file or set HIDDENFORGE_KEY_PASSPHRASE_FILE"})
+    assert (r.rc, json.loads(r.out)) == (
+        2,
+        {
+            "ok": False,
+            "exit_code": 2,
+            "error": "no passphrase: pass --passphrase-file or set HIDDENFORGE_KEY_PASSPHRASE_FILE",
+        },
+    )
 
 
 def test_unseal_names_come_from_the_flag_or_the_environment(scratch):
     write(scratch / "pp", STRONG + "\n")
     r = unseal(scratch, "--passphrase-file", "pp", "--json", "--name", "hftest-one")
-    assert (r.rc, json.loads(r.out)) == (0, {
-        "ok": True, "exit_code": 0, "unsealed": [], "not_sealed": ["hftest-one"]})
-    r = unseal(scratch, "--passphrase-file", "pp", "--json",
-               HFTEST_B_TOR_SERVICE_HOSTS="80:x:80", HFTEST_A_TOR_SERVICE_HOSTS="80:x:80",
-               hftest_b_TOR_SERVICE_HOSTS="80:x:80", _LEAD_TOR_SERVICE_HOSTS="x",
-               HFTEST_9_TOR_SERVICE_HOSTS="80:x:80", OTHER_VAR="1")
-    assert json.loads(r.out)["not_sealed"] == ["hftest-9", "hftest-a", "hftest-b"], \
+    assert (r.rc, json.loads(r.out)) == (
+        0,
+        {"ok": True, "exit_code": 0, "unsealed": [], "not_sealed": ["hftest-one"]},
+    )
+    r = unseal(
+        scratch,
+        "--passphrase-file",
+        "pp",
+        "--json",
+        HFTEST_B_TOR_SERVICE_HOSTS="80:x:80",
+        HFTEST_A_TOR_SERVICE_HOSTS="80:x:80",
+        hftest_b_TOR_SERVICE_HOSTS="80:x:80",
+        _LEAD_TOR_SERVICE_HOSTS="x",
+        HFTEST_9_TOR_SERVICE_HOSTS="80:x:80",
+        OTHER_VAR="1",
+    )
+    assert json.loads(r.out)["not_sealed"] == ["hftest-9", "hftest-a", "hftest-b"], (
         "sorted, lowercased, underscores to hyphens, duplicates and invalid names dropped"
+    )
     r = unseal(scratch, "--passphrase-file", "pp", "--json")
-    assert (r.rc, json.loads(r.out)["error"]) == (2, "no service named: pass --name, or run it in "
-                                                     "the tor service, where <NAME>_TOR_SERVICE_HOSTS is set")
+    assert (r.rc, json.loads(r.out)["error"]) == (
+        2,
+        "no service named: pass --name, or run it in "
+        "the tor service, where <NAME>_TOR_SERVICE_HOSTS is set",
+    )
     r = unseal(scratch, "--passphrase-file", "pp", "--name", "Bad")
     assert r.rc == 2 and json.loads(r.out)["error"].startswith("invalid service name 'Bad'")
 
@@ -586,19 +723,28 @@ def test_unseal_names_come_from_the_flag_or_the_environment(scratch):
 def test_unseal_text_output(scratch):
     write(scratch / "pp", STRONG + "\n")
     r = unseal(scratch, "--passphrase-file", "pp", "--name", "hftest-one")
-    assert (r.rc, r.out) == (0, "hftest-one: no sealed key; nothing to do\n"
-                                "Remove HIDDENFORGE_KEY_PASSPHRASE_FILE and the passphrase secret "
-                                "from the compose file before the next start; otherwise the key is "
-                                "sealed again.\n")
+    assert (r.rc, r.out) == (
+        0,
+        "hftest-one: no sealed key; nothing to do\n"
+        "Remove HIDDENFORGE_KEY_PASSPHRASE_FILE and the passphrase secret "
+        "from the compose file before the next start; otherwise the key is "
+        "sealed again.\n",
+    )
 
 
 def test_unseal_reads_the_passphrase_from_the_environment_file_or_stdin(scratch):
     write(scratch / "pp", STRONG)
-    r = unseal(scratch, "--name", "hftest-one", "--json", HIDDENFORGE_KEY_PASSPHRASE_FILE="pp")
+    r = unseal(scratch, "--name", "hftest-one", "--json", HIDDENFORGE_KEY_PASSPHRASE_FILE="pp")  # noqa: S106  (the NAME of a file, not a secret)
     assert r.rc == 0
-    p = subprocess.run([str(RUST), "unseal-keys", "--name", "hftest-one", "--json",
-                        "--passphrase-file", "-"], input=STRONG + "\n", text=True,
-                       capture_output=True, cwd=scratch, env=env_for(), timeout=30)
+    p = subprocess.run(
+        [str(RUST), "unseal-keys", "--name", "hftest-one", "--json", "--passphrase-file", "-"],
+        input=STRONG + "\n",
+        text=True,
+        capture_output=True,
+        cwd=scratch,
+        env=env_for(),
+        timeout=30,
+    )
     assert (p.returncode, json.loads(p.stdout)["not_sealed"]) == (0, ["hftest-one"])
 
 
@@ -609,9 +755,15 @@ def test_unseal_refuses_a_short_passphrase(scratch, source):
         write(scratch / "pp", short + "\n")
         r = unseal(scratch, "--name", "hftest-one", "--passphrase-file", "pp")
     else:
-        p = subprocess.run([str(RUST), "unseal-keys", "--name", "hftest-one",
-                            "--passphrase-file", "-"], input=short + "\n", text=True,
-                           capture_output=True, cwd=scratch, env=env_for(), timeout=30)
+        p = subprocess.run(
+            [str(RUST), "unseal-keys", "--name", "hftest-one", "--passphrase-file", "-"],
+            input=short + "\n",
+            text=True,
+            capture_output=True,
+            cwd=scratch,
+            env=env_for(),
+            timeout=30,
+        )
         r = type("R", (), {"rc": p.returncode, "out": p.stdout})
     assert r.rc == 1
     assert "the passphrase is 11 characters; at least" in json.loads(r.out)["error"]
@@ -620,4 +772,5 @@ def test_unseal_refuses_a_short_passphrase(scratch, source):
 def test_unseal_a_missing_passphrase_file_is_an_error(scratch):
     r = unseal(scratch, "--name", "hftest-one", "--passphrase-file", "absent")
     assert r.rc == 1 and json.loads(r.out)["error"].startswith(
-        "cannot read the passphrase file absent: ")
+        "cannot read the passphrase file absent: "
+    )

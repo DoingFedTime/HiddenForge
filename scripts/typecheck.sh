@@ -22,7 +22,6 @@ MYPYPATH=. exec "$MYPY" \
     scripts/build_inputs.py \
     scripts/check_manifest.py \
     scripts/coverage_summary.py \
-    scripts/mutation_gate.py \
     scripts/mutation_spotcheck.py \
     tests/ \
     "$tmp"

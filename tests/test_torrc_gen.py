@@ -430,9 +430,8 @@ def test_surrogate_env_value_does_not_crash(monkeypatch):
 
     Non-UTF-8 bytes in the environment decode to surrogates, and printing or
     writing one raises UnicodeEncodeError -- which took down the whole generator
-    at the "no valid port mappings" log line. Found by libFuzzer
-    (fuzz/fuzz_parsers.py). The raw value is now escaped in every message and
-    dropped-mapping reason.
+    at the "no valid port mappings" log line. Found by libFuzzer. The raw value
+    is now escaped in every message and dropped-mapping reason.
     """
     monkeypatch.setenv("BAD_TOR_SERVICE_HOSTS", "80:\udc8a:80")
     dropped = []
