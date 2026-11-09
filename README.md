@@ -535,7 +535,7 @@ podman info --format '{{.Host.Security.Rootless}}'   # expected: true
 |---|---|
 | Minimal image | DHI `static` base, unchanged, plus Tor, its libraries and one binary. No shell, package manager or interpreter; no setuid file |
 | Syscall filtering | Engine default seccomp profile, with Tor's `Sandbox 1` stacked under it |
-| Filesystem confinement | Landlock: the supervisor confines itself after start-up; each helper gets a stricter domain with TCP denied |
+| Filesystem confinement | Landlock: the supervisor confines itself after start-up; each helper gets a stricter domain with TCP denied, and a helper whose domain cannot be built is not started |
 | Privilege drop | Tor and the guard monitors run as uid 100 with no capabilities. The supervisor keeps only what republishing the address needs: measured `CapEff 0xc2` under Docker, `0xc0` under rootless Podman, and no `CAP_KILL` |
 | No-root mode (opt-in) | `setup --no-root`: the container starts as uid 100 with no capabilities; nothing runs as root |
 | Key encryption at rest (opt-in) | `setup --encrypt-keys`: AES-256-GCM, scrypt-derived key, decrypted only into RAM |
@@ -565,12 +565,11 @@ podman info --format '{{.Host.Security.Rootless}}'   # expected: true
 | [docs/CI.md](docs/CI.md) | What each CI job checks and when it runs |
 | [docs/DEPENDENCIES.md](docs/DEPENDENCIES.md) | Every build input and how it is checked |
 | [docs/COMPLIANCE.md](docs/COMPLIANCE.md) | How it maps to NIST SP 800-190, 800-218, 800-53, 800-57, SLSA and CIS |
-| [docs/PRODUCTION-READINESS.md](docs/PRODUCTION-READINESS.md) | The release checks and the commit each was measured on |
-| [docs/IMPROVEMENTS.md](docs/IMPROVEMENTS.md) | Historical: design decisions through 2.1.0 |
+| [docs/PRODUCTION-READINESS.md](docs/PRODUCTION-READINESS.md) | The release checks, what each one showed, and what was not tested |
 | [SECURITY.md](SECURITY.md) | Supported versions and how to report a vulnerability |
 | [CHANGELOG.md](CHANGELOG.md) | Every release |
 
-Mutation testing runs on request. The input-integrity check runs nightly.
+The input-integrity check runs nightly. Mutation testing of the Rust runtime runs on request.
 
 ## License
 

@@ -205,7 +205,7 @@ count through `healthy`. The fields:
 | `running` | the container is up |
 | `healthy` | the healthcheck passes: bootstrapped, a circuit established, every service holding established introduction points with its descriptor uploaded to the network by this Tor, and Vanguards alive. Under Podman no engine healthcheck is set (rootless Podman 4.9 does not restart a container that has one when no systemd user session is reachable), so `health_status` is empty and `status` runs the same check itself |
 | `tor_bootstrapped` | Tor reports `PROGRESS=100` |
-| `hidden_service_published` | every configured service has a valid `hostname` (2.1.x under rootless Podman does not write `<name>.onion`, and this is still true) |
+| `hidden_service_published` | every configured service has a valid `hostname` (2.1.x under rootless Podman did not write the published `<name>.onion` file; 3.0 does) |
 | `vanguards` | the guard-protection addon is alive |
 
 `status --json` exits `0` when ready, `4` when not, and `2` if the container is not found. Inside the container the same

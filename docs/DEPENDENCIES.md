@@ -3,7 +3,9 @@
 3.0 is built offline from a locked set of inputs. `build-inputs.sha256` lists
 every file with its SHA-256; `scripts/build_inputs.py verify` refuses an archive
 that differs from it in any file, then checks each file against its publisher's
-signature. Versions below were current on **2026-11-07**.
+signature. Every version below was checked against its publisher on
+**2026-11-09** and is the newest available, with one exception noted after the
+table.
 
 ## In the image
 
@@ -20,6 +22,13 @@ signature. Versions below were current on **2026-11-07**.
 | `xz-libs` | 5.8.4-r0 | DHI apk | Tor's directory compression |
 | `libseccomp` | 2.6.1-r0 | DHI apk | Tor's `Sandbox 1` |
 | `libcap2` | 2.78-r0 | DHI apk | Tor's capability handling |
+
+One newer build exists: Docker rebuilt the `static` base tag after this
+digest was adopted, and the only difference is `tzdata` 2026f in place of 2026e.
+Neither build has a known vulnerability, and nothing in the image uses the time
+zone data for a security decision, so the verified digest stays until the next
+real change; adopting a new base means verifying Docker's signed provenance for
+the new digest first.
 
 That is everything. There is no shell, package manager, interpreter or
 coreutils. The names `su-exec`, `python3`, `cat`, `sh`, `test` and `true` are

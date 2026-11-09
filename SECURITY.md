@@ -77,6 +77,28 @@ OpenSSL call through `libc`, with a `SAFETY:` comment saying why the arguments
 are valid. The binary depends on no other crate, so there is no unsafe code it
 did not write itself.
 
+## Limits of this release
+
+What 3.0.0 does not have, so that nobody assumes it does:
+
+- **One signature, one signer.** The release is signed with ML-DSA-65 only. The
+  hardware-held (SSH-FIDO2) half of the hybrid signature is not present, so
+  `hiddenforge verify-image` reports `complete: false`. The signing key is a
+  file on the maintainer's workstation; anyone who copies it can sign as the
+  maintainer. The reproducible build is the second check: do not rely on the
+  signature alone, rebuild the tagged source from the published inputs and
+  compare the digest.
+- **Commits are not signed.** Only tagged, signed releases are meant to be run.
+- **Not fuzzed, fault-injected or soak-tested.** The runtime has unit tests,
+  differential tests against the 2.x reference, mutation testing, Miri over the
+  tests that need no system call, and live end-to-end tests. The supervisor
+  loop and the Landlock set-up are covered by the live tests only.
+- **A vendor in the chain.** The base image and the Tor libraries are Docker's
+  builds of Alpine packages (see [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md)).
+- **Tor's limits are Tor's limits.** A global passive adversary that can watch
+  both ends of a connection, a compromised host, and an application that gives
+  away where it lives are outside what this image can defend.
+
 ## Repository history
 
 On 2026-10-30 the repository history was rewritten to remove working files.

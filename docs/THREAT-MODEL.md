@@ -3,7 +3,10 @@
 This is the in-repo threat model. It is deliberately concrete: every control
 names where it lives in the code, and every limit says what it does not cover.
 The wiki's Security Model page is the prose companion; this is the engineering
-one. Last checked against release 2.1.6 on 2026-11-03.
+one. Last checked against release 3.0.0 on 2026-11-09. In 3.0 the runtime is the
+Rust crate `hiddenforge-rs/`; the 2.x Python sources (`entrypoint.py`,
+`healthcheck.py`, `vanity.py`) stay in the repository only as the reference the
+crate is tested against, and do not ship.
 
 ## Assets, in priority order
 
@@ -19,6 +22,7 @@ one. Last checked against release 2.1.6 on 2026-11-03.
 
 | Adversary | Capability | Primary defence |
 |---|---|---|
+| State-level network adversary | Observes much of the Internet, runs relays, can compel vendors, registries and hosting providers | Tor's own design for what it covers; vanguards-lite (L2) or full vanguards (L2 and L3), bandguards and rendguard detectors; no vendor or registry is trusted without a digest or signature. **Not defended:** a global passive adversary correlating traffic at both ends, or a compromised host. See "What this cannot protect against" |
 | Network adversary | Runs or observes relays; can force circuit rebuilds | Vanguards-lite (L2), bandguards and rendguard detectors, 6 intro points |
 | Backend application | Fully controls the thing behind the onion | **Nothing in this image.** See "What this cannot protect" |
 | Local unprivileged process | Runs in the container or on the host | 0700/0600 keys, minimal caps, read-only rootfs, symlink-safe startup, Landlock, no core dumps |
@@ -33,19 +37,24 @@ one. Last checked against release 2.1.6 on 2026-11-03.
 ## Trust boundaries and the control at each one
 
 **Environment variables to torrc.** Every value that reaches the config goes
-through `validate_service_name` / `validate_port` / `validate_hostname` /
-`resolve_to_ip` (`entrypoint.py`). `resolve_to_ip` re-parses the resolver's answer
-through `ipaddress.IPv4Address`, so the one value this module does not construct
-itself cannot smuggle a newline into a directive. A property test asserts that no
+through `validate_service_name`, `validate_port`, `validate_hostname` and
+`resolve_to_ip` (`hiddenforge-rs/src/torrc.rs`). `resolve_to_ip` re-parses the
+resolver's answer through `parse_ipv4_strict`, so the one value the code does not
+construct itself cannot smuggle a newline into a directive. The generated torrc
+is byte-identical to the 2.x reference's for the same environment:
+`tests/rust/test_torrc_diff.py` compares fixed and generated environments, and
+the reference's own property test (`tests/test_torrc_gen.py`) asserts that no
 environment value can emit a line outside the known-directive whitelist.
 
 **The key volume (untrusted) to root.** `./tor-keys` is a bind mount and is
 assumed hostile: restored from a backup, written by another host user, or
-tampered. `_open_dir_nofollow`, `_chmod_dir_nofollow` and `_chown_r` refuse to
-follow symlinks (`O_NOFOLLOW`, `fstat`+`fchmod` on one fd, `lchown`,
-`os.walk(followlinks=False)`), and the chmod runs **before** the chown, which is
-pinned by a regression test because the ordering is what makes the rejection
-effective.
+tampered. `open_dir_nofollow`, `chmod_dir_nofollow`, `chown_r` and `chown_one`
+(`hiddenforge-rs/src/fsops.rs`) refuse to follow symlinks (`O_NOFOLLOW`, `fstat`
+and `fchmod` on one descriptor, `lchown`, no link-following walk), and
+`prepare_hs_dir` runs the chmod **before** the chown, the order that makes the
+rejection effective. A symlinked or non-directory service directory stops the
+container with an error naming the path. The refusals are pinned by the
+`prepare_hs_dir_*` tests.
 
 **DNS (the container to the host's resolver).** Backend names are resolved by
 the engine's resolver (Docker's embedded DNS, Podman's aardvark-dns), which
@@ -70,8 +79,9 @@ read without entering the `0700` service directory.
 
 **The control socket.** A Unix socket inside the `0700` DataDirectory, with no
 password: file permissions are the boundary, not an authentication secret. Its
-clients all run as `tor`: Vanguards, the healthcheck, and the upload watcher
-(`healthcheck.py --watch-uploads`), which subscribes to `HS_DESC` events and
+clients all run as `tor`: the guard monitors, the healthcheck, and the upload
+watcher (`healthcheck --watch-uploads`, `hiddenforge-rs/src/health.rs`), which
+subscribes to `HS_DESC` events and
 records, in the tmpfs DataDirectory, each address whose descriptor this Tor
 uploaded. It accepts only a 56-character base32 address from an `UPLOADED`
 event and never writes anything else; the record only ever gates readiness in
@@ -102,8 +112,11 @@ obtained another way.
 because it must chown the operator's key mount before starting Tor and the
 monitors as `tor`. It probes the drop first and fails with a named error if it
 cannot, rather than looping. It then drops every capability it does not need,
-confines itself with Landlock and gives up `CAP_KILL`. No-root mode (below)
-removes root entirely.
+confines itself with Landlock and gives up `CAP_KILL`
+(`hiddenforge-rs/src/supervisor.rs`, `privs.rs`). Each helper it starts runs
+under a stricter Landlock domain of its own with TCP denied; if that domain
+cannot be built, the helper is not started, rather than started under the
+supervisor's wider one. No-root mode (below) removes root entirely.
 
 **The build.** Base and builder images pinned by digest. Every other input
 (packages, the Tor tarball, the vendored crate) comes from an archive locked by
@@ -156,7 +169,12 @@ identity. The README has the operational version of this list.
   CPU) the shipped compose file brought it healthy in 62 seconds with Tor at uid
   100, no capabilities and both seccomp filters loaded, and it served HTTP 200
   over Tor. It has not run on real ARM hardware.
-  See `docs/PRODUCTION-READINESS.md` R1 and R6.
+  See `docs/PRODUCTION-READINESS.md`.
+- **Testing limits.** The Rust runtime has unit tests, differential tests against
+  the 2.x reference, mutation testing and live end-to-end tests. It has not been
+  fuzzed, fault-injected or soak-tested over long periods. The parts that only
+  run inside a container (the supervisor loop, the Landlock set-up) are covered
+  by the live end-to-end tests, not by unit tests.
 - **Host-mode CI runner.** Jobs run as the operator on the workstation, so the
   workflow guards against fork pull requests (fail-closed). A compromised
   collaborator with push rights could still run code on the host.
@@ -360,6 +378,8 @@ commands use (`sh`, `cat`, `su-exec`, `python3`, `test`, `true`) are the
 ## How to check these claims
 
 ```bash
+( cd hiddenforge-rs && cargo test --release )   # the Rust unit tests
+( cd hiddenforge-rs && HIDDENFORGE_DIFF_REPO="$(git rev-parse --show-toplevel)" cargo test --release )  # plus the differential tests against the 2.x reference
 hiddenforge doctor --json                 # caps, read-only, modes, torrc directives
 hiddenforge status --json                 # readiness + dropped_mappings
 hiddenforge verify-image --json           # both signatures, against the PINNED keys

@@ -9,7 +9,7 @@ image of its own: its changes ship with 2.1.0.
 
 ---
 
-## [3.0.0] - 2026-11-07
+## [3.0.0] - 2026-11-09
 
 A new image from the ground up. Same compose files, same keys, same address,
 same commands. What is inside the container is different, and much smaller.
@@ -52,7 +52,9 @@ inputs this project archives and verifies.
 ### Hardening
 
 - **Landlock.** The supervisor confines itself after start-up, and every helper
-  it starts gets a stricter domain of its own, with TCP denied.
+  it starts gets a stricter domain of its own, with TCP denied. A helper whose
+  domain cannot be built is not started: it does not fall back to the
+  supervisor's wider one.
 - **No core dumps and no ptrace attach** for any HiddenForge process
   (`RLIMIT_CORE` 0, not dumpable). A crash cannot write key material to disk.
 - **The supervisor holds no `CAP_KILL`.** It signals the tor user's processes
@@ -70,6 +72,9 @@ inputs this project archives and verifies.
   an scrypt-derived key. At every start the key is decrypted into RAM for Tor.
   An existing plaintext key is sealed on first start: the sealed copy is proven
   to decrypt to the same bytes before the plaintext is overwritten and removed.
+  If the container stops between those two steps, the next start finishes the
+  job; a leftover plaintext key that differs from the sealed one stops the
+  container with an error rather than leaving two identities on the volume.
   A container that has only the sealed key and no passphrase refuses to start
   rather than generate a new address. This protects a volume, disk or backup
   taken while the service is stopped. It does not protect a running host, or a
@@ -100,6 +105,25 @@ inputs this project archives and verifies.
   key volume, and `podman exec <container> hiddenforge show` and `doctor` work
   as root (2.1.6 printed a Python traceback). Root there cannot enter the tor
   user's directory, so the read is done as tor.
+
+### How it was tested
+
+- Unit tests for the Rust runtime, and differential tests that run the same
+  inputs through the runtime and through the 2.x Python reference and compare
+  the output: the torrc, `setup`, the guard monitors' decisions, and the
+  operator commands (`show`, `doctor`, `rotate`, `backup`, `vanity`, the
+  command-line parser and the compatibility names).
+- Mutation testing of the runtime with cargo-mutants. Every mutant that
+  survived was reviewed: it is equivalent to the original, lives in code that
+  only runs inside the container, or is recorded with the reason it is not worth
+  a test. The tests the review asked for found real defects, which are fixed.
+- The tests that need no system call also run under Miri, which found no
+  undefined behaviour.
+- Live end-to-end tests on a freshly built image: the onion is published, `show`
+  agrees with it, the key and container posture are as documented, a vanity
+  search runs inside the image, and upgrading from 2.1.6 and rolling back keep the
+  address.
+- Not done: fuzzing, fault injection, and long-duration soak testing.
 
 ### Compatibility
 
