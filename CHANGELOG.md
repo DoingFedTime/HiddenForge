@@ -110,6 +110,11 @@ inputs this project archives and verifies.
   and refuses anything else, so the image gains no general-purpose tool.
   Replaying 18 such commands against 2.1.6 and 3.0 gave the same exit codes and
   output.
+- One difference: run inside the image, `hiddenforge backup` and `restore` now
+  exit 2 (2.x: 1) when the encryption tool or the passphrase file is missing,
+  and the wording of those two error messages differs. The JSON document is
+  unchanged in shape (`ok: false` and an `error` string). Scripts that test for
+  exit code 1 specifically should test for non-zero.
 - `TOR_SANDBOX`, `*_TOR_SERVICE_HOSTS` and every documented variable behave as
   in 2.1.6.
 
