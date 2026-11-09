@@ -41,7 +41,7 @@ services:
     security_opt:
       - no-new-privileges:true     # prevent privilege escalation via setuid
       # NO seccomp=unconfined. Tor's Sandbox 1 is an IN-PROCESS filter covering
-      # Tor alone, so running unconfined left the root Python supervisor with no
+      # Tor alone, so running unconfined left the root supervisor with no
       # syscall filter for the container's whole life. Docker's default profile
       # stacks underneath Tor's (measured: two filters on the Tor process), and
       # a discovery run with the profile in SCMP_ACT_LOG mode recorded ZERO
@@ -58,8 +58,8 @@ services:
       # Note: the bind mount below overlays /var/lib/tor/hidden_service so keys persist.
 
     # ── Resource limits (DoS / fork-bomb / fd-exhaustion containment) ──────
-    # Tor + a Python supervisor + Vanguards is a low-process, modest-memory
-    # workload. memswap_limit == mem_limit disables swap so key material is
+    # Tor, the supervisor, the upload watcher and the guard monitor are a
+    # low-process, modest-memory workload. memswap_limit == mem_limit disables swap so key material is
     # never paged to disk (consistent with AvoidDiskWrites 1 in the torrc).
     mem_limit: 512m
     memswap_limit: 512m
@@ -83,7 +83,7 @@ services:
     # extension to the image config; the OCI image format has no such field, and
     # Podman ignores it on OCI images. Measured: `podman inspect` showed no
     # healthcheck at all for the published image, so a wedged Tor or a dead
-    # Vanguards was never reported. Compose-level healthchecks work on both.
+    # guard monitor was never reported. Compose-level healthchecks work on both.
     healthcheck:
       test: ["CMD", "su-exec", "tor", "python3", "/usr/local/bin/healthcheck.py"]
       interval: 60s

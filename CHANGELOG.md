@@ -30,7 +30,7 @@ inputs this project archives and verifies.
   shell, no package manager and no Python in it. 40 MB, down from 107 MB.
 - **Zero known vulnerabilities at every severity**, from two scanners (trivy and
   grype), on both architectures. CI fails a build on any finding, negligible
-  included, and the nightly watchdog alerts on any severity.
+  included, and a daily scheduled run scans again so a later advisory is caught.
 - **Tor 0.4.9.16, compiled from Tor Project's release tarball.** The tarball's
   SHA-256 file carries signatures from Tor's release keys; both are checked
   against the fingerprints Tor publishes before the tarball is archived, and the

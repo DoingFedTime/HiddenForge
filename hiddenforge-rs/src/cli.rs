@@ -2839,6 +2839,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg_attr(miri, ignore = "needs a syscall or libc function miri cannot emulate")]
     fn create_new_refuses_an_existing_file_or_link_and_writes_nothing_through_it() {
         let d = scratch("cnew");
         let victim = format!("{d}/victim");

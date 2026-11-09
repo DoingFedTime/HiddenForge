@@ -73,7 +73,7 @@ from relay IPs). `doctor` warns when a running container lacks it.
 **Key files on disk.** Service directories are `0700`, the secret key `0600`, and
 the parent volume `0751` (traverse, not list). `doctor` verifies the modes.
 
-**The address file.** `<keys>/<name>.onion` is published atomically (`os.replace`)
+**The address file.** `<keys>/<name>.onion` is published atomically (written to a temporary file, then renamed)
 at `0644`, contains only the public address, and is the one file a host user can
 read without entering the `0700` service directory.
 
@@ -260,9 +260,11 @@ which mode it decrypted. Use `--require-aead` for a production key.
 - A compromised host, a malicious gpg/age binary, or an attacker who already has
   the passphrase.
 - An attacker who can read process memory as the same user.
-- `hiddenforge` does **not** decrypt at boot. Tor needs the plaintext secret key
-  in `HiddenServiceDir`, which is the mount, so runtime encryption would be
-  theatre. The envelope tools are offline and manual.
+- A key wrapped with `encrypt-key` stays wrapped: the envelope tools are offline
+  and manual, and the container cannot use that key until `decrypt-key` restores
+  it. Keeping the key encrypted on the volume while the service runs is a
+  different, opt-in feature (`setup --encrypt-keys`, see "Key encryption at rest"
+  below).
 
 What the script does with the secret key's *contents*, precisely: `backup` and
 `encrypt-key` read it into an in-memory tar and encrypt that; `backup` reports

@@ -102,8 +102,8 @@ or later, standard library only, nothing to `pip install`. Install it where
 `sudo install -m 0755 scripts/hiddenforge /usr/local/bin/hiddenforge`.
 
 Subcommands: `setup`, `info`, `version`, `show`, `status`, `doctor`, `vanity`,
-`backup`, `restore`, `rotate`, `encrypt-key`, `decrypt-key`, `verify-image`,
-`sbom`. Every one supports `--json`, never prompts off a TTY, and uses stable
+`backup`, `restore`, `rotate`, `encrypt-key`, `decrypt-key`, `client-auth`,
+`unseal-keys`, `verify-image`, `sbom`. Every one supports `--json`, never prompts off a TTY, and uses stable
 exit codes. `vanity --bench` prints the time estimate for a prefix on your
 machine before you start.
 

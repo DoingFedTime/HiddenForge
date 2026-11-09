@@ -1,7 +1,8 @@
 # Forgejo Actions CI for HiddenForge.
 #
 # Runs on the project's Forgejo instance (sambent.dev). Actions are fetched from
-# github.com and code.forgejo.org by full URL; scanner images from Docker Hub.
+# github.com and code.forgejo.org by full URL; scanner images from the project's
+# own registry, by digest (see below).
 # Workflows live in .forgejo/ (the Forgejo-native path; Forgejo also reads
 # .github/workflows for compatibility).
 #

@@ -1,8 +1,8 @@
 # Publish any app as a `.onion`
 
 hiddenforge is a sidecar. You keep your application exactly as it is, attach it to
-one network, and hiddenforge gives it a Tor v3 address. There is no wizard and no
-`.onion` toolchain to install: the address generator ships in the image. The
+one network, and hiddenforge gives it a Tor v3 address. There is no `.onion`
+toolchain to install: the address generator ships in the image. The
 `hiddenforge` CLI used below is one file, `scripts/hiddenforge` (Python 3.10 or
 later, standard library only); put it on your PATH.
 
@@ -299,10 +299,10 @@ hiddenforge rotate  --keys ./tor-keys --confirm ROTATE --json     # DESTRUCTIVE
 - `encrypt-key` / `decrypt-key` wrap a single service key directory using the
   same tools. `decrypt-key` refuses to write into a directory that already holds
   a key set; with `--force` it moves that directory aside whole
-  (`<name>.replaced-<epoch>`) and extracts into a fresh one. hiddenforge does
-  **not** decrypt at boot: Tor needs the plaintext secret key in
-  `HiddenServiceDir`, which is the mount, so at-rest encryption is an
-  offline/manual step, not runtime.
+  (`<name>.replaced-<epoch>`) and extracts into a fresh one. A key wrapped
+  this way stays wrapped until `decrypt-key` restores it; the container cannot use
+  it before then. To keep the key encrypted on the volume while the service runs,
+  use `setup --encrypt-keys` instead (see the README).
 - `restore`, `decrypt-key` and `vanity --force` remove the published
   `<name>.onion` for every key they replace: until the container republishes it
   from the new key, that file names the old address. `show` then reports "not
