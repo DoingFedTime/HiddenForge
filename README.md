@@ -158,12 +158,13 @@ The only two edits you need to make are flagged with `<-- EDIT`.
 > no longer include the old IP, it exits and the restart policy starts the
 > container again with a fresh lookup. The `.onion` address does not change.
 >
-> Measured: the onion followed a moved backend within about a minute, and a
-> backend that was simply down caused no restart at all. A backend whose name does
-> not resolve when the container starts (after a host reboot the runtime starts
-> containers in no particular order) is watched the same way. Its service is left
-> out, and once the name resolves the container restarts and configures it. In one
-> measurement that took 39 seconds after the backend came up.
+> Measured on 3.0.0: after the backend moved to a new IP the container restarted
+> 61 seconds later and served the same address again at 72 seconds, and a backend
+> that was simply down for two and a half minutes caused no restart at all. A
+> backend whose name does not resolve when the container starts (after a host
+> reboot the runtime starts containers in no particular order) is watched the same
+> way. Its service is left out, and once the name resolves the container restarts
+> and configures it: 46 seconds after the backend came up in that measurement.
 >
 > Until then `hiddenforge status` lists the mapping in `dropped_mappings`. `ready`
 > means every service Tor is configured with is reachable, and a dropped mapping
