@@ -3224,7 +3224,14 @@ def _encrypt_or_decrypt_dir(args, encrypt: bool) -> int:
         if not blob.is_file():
             raise ValueError(f"{blob} does not exist")
         import io
-        plaintext = _decrypt_bytes(tool, blob.read_bytes(), passphrase)
+        plaintext, envelope_mode = _decrypt_with_mode(tool, blob.read_bytes(), passphrase)
+        # --require-aead was accepted here and ignored, so a CFB+MDC envelope
+        # decrypted while the operator believed authenticated encryption was
+        # enforced. age is always authenticated (mode None); gpg says which.
+        if getattr(args, "require_aead", False) and tool == "gpg" and envelope_mode != "aead":
+            raise ValueError(
+                f"{blob} is a gpg {envelope_mode or 'unknown'} envelope, not AEAD, and "
+                "--require-aead was given; nothing was written")
         with tarfile.open(fileobj=io.BytesIO(plaintext), mode="r") as tar:
             members = tar.getmembers()
             _check_archive_members(tar, members, accept_envelope=False)
@@ -3264,6 +3271,7 @@ def _encrypt_or_decrypt_dir(args, encrypt: bool) -> int:
         stale = _drop_stale_published(keys, [name])
         if args.json:
             return emit_json(EXIT_OK, name=name, key_dir=str(d), tool=tool,
+                             cipher_mode=envelope_mode,
                              archived=str(archived) if archived else None,
                              stale_address_files=stale)
         print(f"Restored {d}" + (f" (previous key set moved to {archived})"

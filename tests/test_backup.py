@@ -1097,24 +1097,24 @@ def test_a_backup_made_under_sudo_belongs_to_the_invoking_user(hf, monkeypatch):
     assert hf._sudo_owner() is None, "only root hands a file to someone else"
 
 
-def _key_tar() -> bytes:
+def _key_tar(member: str = "app/hs_ed25519_secret_key") -> bytes:
     import io
     import tarfile
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w") as tar:
-        info = tarfile.TarInfo("app/hs_ed25519_secret_key")
+        info = tarfile.TarInfo(member)
         data = _sk(0x33)
         info.size = len(data)
         tar.addfile(info, io.BytesIO(data))
     return buf.getvalue()
 
 
-def _gpg(tmp_path, out, *args):
+def _gpg(tmp_path, out, *args, member: str = "app/hs_ed25519_secret_key"):
     import subprocess
     home = tmp_path / "gnupg"
     home.mkdir(mode=0o700, exist_ok=True)
     subprocess.run(["gpg", "--homedir", str(home), "--batch", "--yes", "-o", str(out), *args],
-                   input=_key_tar(), check=True, capture_output=True)
+                   input=_key_tar(member), check=True, capture_output=True)
     return out
 
 
@@ -1266,3 +1266,27 @@ def test_restore_refuses_an_archive_member_named_like_a_sealed_key_that_is_not_o
     doc = json.loads(capsys.readouterr().out)
     assert rc != 0 and "named like a sealed key" in doc["error"]
     assert not dest.exists() or not any(dest.iterdir())
+
+
+@pytest.mark.parametrize("mode_args, refused", [(["--force-mdc"], True),
+                                                (["--force-aead"], False)])
+def test_decrypt_key_honours_require_aead(hf, tmp_path, capsys, mode_args, refused):
+    """decrypt-key accepted --require-aead and ignored it: a CFB+MDC envelope
+    decrypted while the operator believed authenticated encryption was enforced."""
+    pp = tmp_path / "pp"
+    pp.write_text(TEST_PASSPHRASE + "\n")
+    keys = tmp_path / "tor-keys"
+    keys.mkdir(mode=0o700)
+    # An encrypt-key envelope holds paths relative to the service directory.
+    _gpg(tmp_path, keys / "app.keys.tar.gpg", "--symmetric", "--cipher-algo", "AES256",
+         *mode_args, "--pinentry-mode", "loopback", "--passphrase", TEST_PASSPHRASE,
+         member="hs_ed25519_secret_key")
+    rc, doc = _run(hf, capsys, ["decrypt-key", "--keys", str(keys), "--name", "app",
+                                "--tool", "gpg", "--passphrase-file", str(pp),
+                                "--require-aead", "--json"])
+    if refused:
+        assert rc != 0 and doc["ok"] is False and "--require-aead" in doc["error"]
+        assert not (keys / "app" / "hs_ed25519_secret_key").exists()
+    else:
+        assert rc == 0 and doc["cipher_mode"] == "aead", doc
+        assert (keys / "app" / "hs_ed25519_secret_key").read_bytes() == _sk(0x33)

@@ -128,6 +128,10 @@ inputs this project archives and verifies.
   volume holding just the sealed `hs_ed25519_secret_key.enc` was refused, and
   `restore` would have refused its archive. A well-formed sealed key now counts;
   a file of that name that is not one is refused by name.
+- **`decrypt-key --require-aead` accepted the flag and ignored it.** A CFB+MDC
+  envelope decrypted while the operator believed authenticated encryption was
+  enforced. It now refuses any gpg envelope that is not AEAD, and its `--json`
+  output reports `cipher_mode`.
 - **`setup --json` (and the wizard) reported `onion_port` from `--onion-port`**
   even when a `--service` mapping carried its own port; it now reports the
   mapping's port.
@@ -171,8 +175,8 @@ inputs this project archives and verifies.
 ### Build and supply chain
 
 - **The build is offline.** Every package, the Tor tarball and the vendored
-  crate come from an input archive passed as a build context; nothing is fetched
-  while building. `scripts/build_inputs.py verify` checks the archive first: every
+  crate come from an input archive passed as a build context; no build step
+  fetches anything, and the only images pulled are the pinned base and builders. `scripts/build_inputs.py verify` checks the archive first: every
   file against its manifest, each package index against a signing key pinned in
   `signatures/` (Docker's DHI apk key, Alpine's keys), every package against its
   signed index, and the Tor signatures against Tor's release keys.
