@@ -119,6 +119,16 @@ SECRET_TAG = b"== ed25519v1-secret: type0 =="
 TAG_LEN = 32
 PUBKEY_LEN = 32
 SECRET_KEY_FILE_LEN = TAG_LEN + 64   # tag + 64-byte expanded Ed25519 secret
+# Key encryption at rest (3.0, `setup --encrypt-keys`): the runtime keeps only
+# this sealed envelope on the volume (hiddenforge-rs/src/keycrypt.rs: "HFKEY1",
+# a 49-byte header, the ciphertext and a 16-byte GCM tag).
+SEALED_FILE = SECRET_FILE + ".enc"
+SEALED_MAGIC = b"HFKEY1"
+SEALED_MIN_LEN = 49 + 16
+
+
+def _is_sealed_key(data: bytes) -> bool:
+    return len(data) >= SEALED_MIN_LEN and data.startswith(SEALED_MAGIC)
 
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9\-]{0,62}$")
 ONION_RE = re.compile(r"^[a-z2-7]{56}\.onion$")
@@ -2520,6 +2530,15 @@ def _tar_keys(keys: Path, max_bytes: int = 512 * 1024 * 1024) -> bytes:
             data = _read_nofollow(path, max_bytes)
             if path.name == SECRET_FILE or ".keys.tar." in path.name:
                 has_identity = True
+            elif path.name == SEALED_FILE:
+                # A volume under key encryption at rest holds only the sealed key;
+                # it is the identity. A file of that name that is not one is not.
+                if not _is_sealed_key(data):
+                    raise ValueError(
+                        f"{path} is named like a sealed key but is not one (it does "
+                        f"not start with {SEALED_MAGIC.decode()} or is too short); "
+                        "nothing was written")
+                has_identity = True
             info = tarfile.TarInfo(name=str(rel))
             info.size = len(data)
             info.mtime = 0
@@ -2533,7 +2552,8 @@ def _tar_keys(keys: Path, max_bytes: int = 512 * 1024 * 1024) -> bytes:
         # not a backup, whatever else it holds.
         if not has_identity:
             raise ValueError(
-                f"no {SECRET_FILE} and no encrypted key envelope under {keys}, so "
+                f"no {SECRET_FILE}, no {SEALED_FILE} and no encrypted key envelope "
+                f"under {keys}, so "
                 "there is no identity to back up; nothing was written")
     return buf.getvalue()
 
@@ -2838,11 +2858,20 @@ def _check_archive_members(tar, members, accept_envelope: bool) -> None:
                     + f", not the {SECRET_KEY_FILE_LEN}-byte key Tor writes. The "
                       "archive is truncated or is not a hiddenforge backup.")
             has_identity = True
+        elif m.isfile() and name.name == SEALED_FILE:
+            fh = tar.extractfile(m)
+            head = fh.read(len(SEALED_MAGIC)) if fh is not None else b""
+            if m.size < SEALED_MIN_LEN or head != SEALED_MAGIC:
+                raise ValueError(
+                    f"refusing archive member {m.name!r}: it is named like a sealed "
+                    "key but is not one. The archive is truncated or is not a "
+                    "hiddenforge backup.")
+            has_identity = True
         elif m.isfile() and accept_envelope and ".keys.tar." in name.name:
             has_identity = True
     if not has_identity:
         raise ValueError(
-            f"this archive contains no {SECRET_FILE}"
+            f"this archive contains no {SECRET_FILE}, no {SEALED_FILE}"
             + (" and no encrypted key envelope" if accept_envelope else "")
             + ", so there is no identity in it to restore. Check that the input "
               "is a hiddenforge archive and that it is not truncated.")

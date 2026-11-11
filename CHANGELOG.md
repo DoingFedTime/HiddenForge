@@ -123,6 +123,11 @@ inputs this project archives and verifies.
 - **`backup` and `encrypt-key` left out a key that was a symbolic link and still
   answered `ok`.** Links in the key volume are not followed; they are now refused
   by name instead of skipped, so an archive never silently misses a service.
+- **A volume under key encryption at rest could not be backed up.** `backup`
+  counted only a plaintext key or an `encrypt-key` envelope as an identity, so a
+  volume holding just the sealed `hs_ed25519_secret_key.enc` was refused, and
+  `restore` would have refused its archive. A well-formed sealed key now counts;
+  a file of that name that is not one is refused by name.
 - **`setup --json` (and the wizard) reported `onion_port` from `--onion-port`**
   even when a `--service` mapping carried its own port; it now reports the
   mapping's port.

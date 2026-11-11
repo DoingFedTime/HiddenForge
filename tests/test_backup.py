@@ -692,7 +692,8 @@ def test_restore_refuses_an_archive_that_carries_no_identity(hf, tmp_path, capsy
                   "--tool", "gpg", "--passphrase-file", str(pp), "--json"])
     out = capsys.readouterr().out
     assert rc != 0, "an archive with no secret key must not report success"
-    assert "no hs_ed25519_secret_key and no encrypted key envelope" in out
+    assert ("no hs_ed25519_secret_key, no hs_ed25519_secret_key.enc and no encrypted "
+            "key envelope") in out
     # And it must fail closed: nothing at all written into the volume, not even
     # the directories the archive names (the old conflict scan created those).
     assert not dest.exists() or not any(dest.iterdir())
@@ -1202,3 +1203,66 @@ def test_backup_refuses_a_link_rather_than_silently_leaving_a_service_out(
     assert rc != 0 and doc["ok"] is False
     assert "symbolic link" in doc["error"] and "second" in doc["error"]
     assert not out.exists()
+
+
+def _sealed_volume(tmp_path, body: bytes = b"HFKEY1" + b"\x00" * 120):
+    keys = tmp_path / "tor-keys"
+    d = keys / "app"
+    d.mkdir(parents=True)
+    (d / "hs_ed25519_public_key").write_bytes(PUBLIC_TAG.ljust(32, b"\x00") + b"\x11" * 32)
+    (d / "hs_ed25519_secret_key.enc").write_bytes(body)
+    (d / "hostname").write_text("a" * 56 + ".onion\n")
+    for p in d.iterdir():
+        os.chmod(p, 0o600)
+    os.chmod(d, 0o700)
+    return keys
+
+
+def test_a_volume_under_key_encryption_backs_up_and_restores(hf, tmp_path, capsys):
+    """`setup --encrypt-keys` leaves only the sealed key on the volume. backup used
+    to refuse that volume ("no identity") and restore to refuse its archive, so
+    the one feature meant for protecting backups could not be backed up."""
+    keys = _sealed_volume(tmp_path)
+    pp = tmp_path / "pp"
+    pp.write_text(TEST_PASSPHRASE + "\n")
+    out = tmp_path / "keys.tar.gpg"
+    rc, doc = _run(hf, capsys, ["backup", "--keys", str(keys), "--out", str(out),
+                                "--tool", "gpg", "--passphrase-file", str(pp), "--json"])
+    assert rc == 0 and doc["ok"], doc
+    dest = tmp_path / "restored"
+    rc, doc = _run(hf, capsys, ["restore", "--keys", str(dest), "--input", str(out),
+                                "--tool", "gpg", "--passphrase-file", str(pp), "--json"])
+    assert rc == 0 and doc["ok"], doc
+    sealed = dest / "app" / "hs_ed25519_secret_key.enc"
+    assert sealed.read_bytes() == (keys / "app" / "hs_ed25519_secret_key.enc").read_bytes()
+    assert (os.stat(sealed).st_mode & 0o777) == 0o600
+
+
+@pytest.mark.parametrize("body", [b"", b"HFKEY1", b"NOTKEY" + b"\x00" * 120])
+def test_backup_refuses_a_file_named_like_a_sealed_key_that_is_not_one(hf, tmp_path,
+                                                                      capsys, body):
+    keys = _sealed_volume(tmp_path, body)
+    pp = tmp_path / "pp"
+    pp.write_text(TEST_PASSPHRASE + "\n")
+    out = tmp_path / "keys.tar.gpg"
+    rc, doc = _run(hf, capsys, ["backup", "--keys", str(keys), "--out", str(out),
+                                "--tool", "gpg", "--passphrase-file", str(pp), "--json"])
+    assert rc != 0 and doc["ok"] is False
+    assert "named like a sealed key" in doc["error"]
+    assert not out.exists()
+
+
+def test_restore_refuses_an_archive_member_named_like_a_sealed_key_that_is_not_one(
+        hf, tmp_path, capsys):
+    def build(tar, io):
+        info = tar.tarinfo("app/hs_ed25519_secret_key.enc")
+        info.size = 3
+        tar.addfile(info, io.BytesIO(b"xyz"))
+
+    blob, pp = _sealed(hf, tmp_path, build)
+    dest = tmp_path / "dest"
+    rc = hf.main(["restore", "--keys", str(dest), "--input", str(blob),
+                  "--tool", "gpg", "--passphrase-file", str(pp), "--json"])
+    doc = json.loads(capsys.readouterr().out)
+    assert rc != 0 and "named like a sealed key" in doc["error"]
+    assert not dest.exists() or not any(dest.iterdir())
