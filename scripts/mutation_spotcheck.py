@@ -468,9 +468,9 @@ MUTATIONS = [
         "backup writes an archive with no identity in it",
         "scripts/hiddenforge",
         "        if not has_identity:\n            raise ValueError(\n"
-        "                f\"no {SECRET_FILE} and no encrypted key envelope under {keys}",
+        "                f\"no {SECRET_FILE}, no {SEALED_FILE} and no encrypted key envelope \"",
         "        if False:\n            raise ValueError(\n"
-        "                f\"no {SECRET_FILE} and no encrypted key envelope under {keys}",
+        "                f\"no {SECRET_FILE}, no {SEALED_FILE} and no encrypted key envelope \"",
         "tests/test_backup.py -k no_identity_is_not_backed_up",
     ),
     (

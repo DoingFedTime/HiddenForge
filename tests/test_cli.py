@@ -2179,3 +2179,14 @@ def test_client_auth_runs_confined_and_shows_the_key_once(hf, tmp_path, capsys, 
     assert cmd[cmd.index("client-auth"):] == ["client-auth", "add", "--name", "myapp",
                                               "--json", "--client", "alice"]
     assert list(tmp_path.iterdir()) == [], "the host wrote something itself"
+
+
+def test_podman_deploy_script_points_at_the_published_address_file(hf, tmp_path, capsys):
+    """3.0 writes <name>.onion under rootless Podman too; deploy.sh used to say
+    the address could only be read with the exec command."""
+    rc = hf.main(["setup", "--runtime", "podman", "--backend", "web:80", "--name", "app",
+                  "-o", str(tmp_path), "--json"])
+    assert rc == 0
+    capsys.readouterr()
+    script = (tmp_path / "deploy.sh").read_text()
+    assert "/$svc.onion, and " in script and "$svc/hostname (read it with the exec" in script

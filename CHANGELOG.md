@@ -105,6 +105,7 @@ inputs this project archives and verifies.
   key volume, and `podman exec <container> hiddenforge show` and `doctor` work
   as root (2.1.6 printed a Python traceback). Root there cannot enter the tor
   user's directory, so the read is done as tor.
+  The `deploy.sh` that `setup --runtime podman` writes now names that file.
 - **`verify-image --skip-registry` ignored the digest in the image reference.**
   `hiddenforge verify-image <repo>@sha256:<any digest> --skip-registry` checked
   the signature set and answered `ok`, whatever digest followed the `@`, and that
@@ -175,6 +176,9 @@ inputs this project archives and verifies.
 
 ### Build and supply chain
 
+- **The example backend is re-pinned.** The placeholder `nginx:alpine` in the
+  shipped compose files and the demo was pinned to a build with 58 known
+  vulnerabilities (1 critical, 8 high); it now names the current build.
 - **The build is offline.** Every package, the Tor tarball and the vendored
   crate come from an input archive passed as a build context. Every build step
   runs with `--network=none`, so nothing can be fetched while building; the only

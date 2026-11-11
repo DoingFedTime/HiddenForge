@@ -1886,16 +1886,18 @@ fi"""
                          f"if [ \"$(stat -c %u:%g {pp_q})\" != \"100:101\" ]; then\n"
                          f"    sudo chown 100:101 {pp_q}\n"
                          "fi\n")
-    # Where the address is kept on the host. Under rootless Podman the published
-    # <name>.onion is never written (the supervisor cannot read `hostname`), so
-    # saying it was would send the operator looking for a file that never comes.
+    # Where the address is kept on the host. Under rootless Podman the service
+    # directory belongs to the tor user's subuid, so the host can read only the
+    # published <name>.onion (3.0 writes it there too); `hostname` is read with
+    # the exec command printed above.
     # A whole line of output, shell-quoted as ONE printf argument, so nothing in
     # the key path can end a string: it is printed, never parsed. The first form
     # of this line put the shell-quoted path inside an echo's double quotes, and
     # a path holding `"` closed them -- measured, `--keys 'k"; touch X; echo "'`
     # made deploy.sh run `touch X`. Found by the key-path property test's structure check.
     status_line = shlex.quote(f"  hiddenforge status --container {container} --keys {keys_q}")
-    persisted = (f"{keys_dir_display}/$svc/hostname (read it with the exec command above)"
+    persisted = (f"{keys_dir_display}/$svc.onion, and {keys_dir_display}/$svc/hostname "
+                 "(read it with the exec command above)"
                  if runtime == "podman" else
                  f"{keys_dir_display}/$svc/hostname and {keys_dir_display}/$svc.onion")
     return f"""#!/usr/bin/env bash

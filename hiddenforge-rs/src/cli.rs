@@ -1310,7 +1310,7 @@ fi"#
         o.container
     ));
     let persisted = if o.runtime == "podman" {
-        format!("{disp}/$svc/hostname (read it with the exec command above)")
+        format!("{disp}/$svc.onion, and {disp}/$svc/hostname (read it with the exec command above)")
     } else {
         format!("{disp}/$svc/hostname and {disp}/$svc.onion")
     };

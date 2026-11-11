@@ -170,7 +170,7 @@ services:
     #   b) Configure your backend to listen on port >= 1024 (e.g. 8080) and
     #      update the *_TOR_SERVICE_HOSTS mapping accordingly: "80:web:8080"
     # Example backend, pinned by digest; use your own pinned image.
-    image: docker.io/library/nginx:alpine@sha256:a3554c0d0b48177b1413c26e01f695334428020d9df01243fbae3e11cfd17417
+    image: docker.io/library/nginx:alpine@sha256:713fc2ebfd92e8217db451477182ee91944b123d2b1ee9fd5a8c6e91ca6c3a11
     restart: always                  # see the tor service: Podman reboots
     cap_drop:
       - ALL
