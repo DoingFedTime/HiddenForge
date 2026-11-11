@@ -127,7 +127,8 @@ inputs this project archives and verifies.
   counted only a plaintext key or an `encrypt-key` envelope as an identity, so a
   volume holding just the sealed `hs_ed25519_secret_key.enc` was refused, and
   `restore` would have refused its archive. A well-formed sealed key now counts;
-  a file of that name that is not one is refused by name.
+  a file of that name that is not one is refused by name. Restoring one also
+  removes that service's published `<name>.onion`, as a plaintext key always did.
 - **`decrypt-key --require-aead` accepted the flag and ignored it.** A CFB+MDC
   envelope decrypted while the operator believed authenticated encryption was
   enforced. It now refuses any gpg envelope that is not AEAD, and its `--json`
@@ -176,7 +177,8 @@ inputs this project archives and verifies.
 
 - **The build is offline.** Every package, the Tor tarball and the vendored
   crate come from an input archive passed as a build context; no build step
-  fetches anything, and the only images pulled are the pinned base and builders. `scripts/build_inputs.py verify` checks the archive first: every
+  fetches anything, and the only images pulled are the pinned base and builder
+  images and BuildKit. `scripts/build_inputs.py verify` checks the archive first: every
   file against its manifest, each package index against a signing key pinned in
   `signatures/` (Docker's DHI apk key, Alpine's keys), every package against its
   signed index, and the Tor signatures against Tor's release keys.

@@ -1290,3 +1290,23 @@ def test_decrypt_key_honours_require_aead(hf, tmp_path, capsys, mode_args, refus
     else:
         assert rc == 0 and doc["cipher_mode"] == "aead", doc
         assert (keys / "app" / "hs_ed25519_secret_key").read_bytes() == _sk(0x33)
+
+
+def test_restoring_a_sealed_key_removes_the_stale_published_address(hf, tmp_path, capsys):
+    """The published <name>.onion was dropped only for services restored with a
+    plaintext key, so restoring a sealed key left a file naming the old address."""
+    keys = _sealed_volume(tmp_path)
+    pp = tmp_path / "pp"
+    pp.write_text(TEST_PASSPHRASE + "\n")
+    out = tmp_path / "keys.tar.gpg"
+    rc, _ = _run(hf, capsys, ["backup", "--keys", str(keys), "--out", str(out),
+                              "--tool", "gpg", "--passphrase-file", str(pp), "--json"])
+    assert rc == 0
+    dest = tmp_path / "restored"
+    dest.mkdir()
+    (dest / "app.onion").write_text("b" * 56 + ".onion\n")   # a previous identity
+    rc, doc = _run(hf, capsys, ["restore", "--keys", str(dest), "--input", str(out),
+                                "--tool", "gpg", "--passphrase-file", str(pp), "--json"])
+    assert rc == 0, doc
+    assert not (dest / "app.onion").exists()
+    assert doc["stale_address_files"] == []   # the files it could NOT remove

@@ -3022,7 +3022,7 @@ def cmd_restore(args) -> int:
                     os.close(root_fd)
             restored = sorted({Path(m.name).parts[0] for m in members
                                if m.isfile() and len(Path(m.name).parts) == 2
-                               and Path(m.name).name == SECRET_FILE})
+                               and Path(m.name).name in (SECRET_FILE, SEALED_FILE)})
         stale = _drop_stale_published(keys, restored)
         if args.json:
             return emit_json(EXIT_OK, input=str(src), keys=str(keys), tool=tool,
