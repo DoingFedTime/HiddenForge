@@ -118,13 +118,17 @@ docker buildx imagetools inspect sambent.dev/sam/hiddenforge:3.0.0 | head -3
 
 ## Reproducing the build
 
-This release is bit-for-bit reproducible, and the build is offline: it reads
-nothing but the source tree and the release's input archive. **Build from a
-fresh clone**; this is not optional, see the warning below. The release was built
+This release is bit-for-bit reproducible. Every package, the Tor tarball and the
+vendored crate come from the release's input archive; the only other things
+the build pulls are the three Docker Hardened Images (base and builders) and
+the BuildKit image, each by digest. `dhi.io` refuses anonymous pulls, so log in
+first with any Docker account (`docker login dhi.io`). **Build from a fresh
+clone**; this is not optional, see the warning below. The release was built
 with a `docker-container` builder running **BuildKit v0.30.0**; arm64 needs
 qemu's `binfmt_misc` handler for aarch64 on the host.
 
 ```
+docker login dhi.io
 git clone --branch v3.0.0 https://sambent.dev/sam/HiddenForge.git /tmp/hf && cd /tmp/hf
 python3 scripts/build_inputs.py fetch \
   https://sambent.dev/api/packages/sam/generic/hiddenforge-inputs/3.0.0/hiddenforge-inputs-3.0.0.tar /tmp/hf-inputs

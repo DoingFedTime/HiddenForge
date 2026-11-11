@@ -4,8 +4,10 @@
 every file with its SHA-256; `scripts/build_inputs.py verify` refuses an archive
 that differs from it in any file, then checks each file against its publisher's
 signature. Every version below was checked against its publisher on
-**2026-11-09** and is the newest available, with one exception noted after the
-table.
+**2026-11-11** and is the newest available: Tor's release directory, the live
+DHI and Alpine 3.23 package indexes for both architectures (all 54 locked
+packages), crates.io and mkp224o's repository. The exceptions are the base and
+builder images, noted after each table.
 
 ## In the image
 
@@ -24,11 +26,13 @@ table.
 | `libcap2` | 2.78-r0 | DHI apk | Tor's capability handling |
 
 One newer build exists: Docker rebuilt the `static` base tag after this
-digest was adopted, and the only difference is `tzdata` 2026f in place of 2026e.
-Neither build has a known vulnerability, and nothing in the image uses the time
-zone data for a security decision, so the verified digest stays until the next
-real change; adopting a new base means verifying Docker's signed provenance for
-the new digest first.
+digest was adopted. Compared file by file, two things differ: `tzdata` 2026f in
+place of 2026e, and a rebuild of the same `musl` 1.2.5-r24 whose code and data
+(`.text`, `.rodata`, `.data`) are byte-identical; only its ELF note order and
+build ID changed. Neither build has a known vulnerability, and nothing in the
+image uses the time zone data for a security decision, so the verified digest
+stays until the next real change; adopting a new base means verifying Docker's
+signed provenance for the new digest first.
 
 That is everything. There is no shell, package manager, interpreter or
 coreutils. The names `su-exec`, `python3`, `cat`, `sh`, `test` and `true` are
@@ -43,6 +47,13 @@ the `hiddenforge` binary answering the exact commands 2.x ran, nothing else
 | Rust builder | `dhi.io/rust` 1.91.1 dev (by digest) | DHI | Compiles `hiddenforge` |
 | `libc` crate | 0.2.191 | crates.io, vendored | The Rust binary's only dependency; checked against `Cargo.lock` |
 | headers and tools | see `build-inputs.sha256` | DHI apk (zlib from Alpine) | `-dev` packages, `fortify-headers`, `make`, `autoconf`, `automake`, `m4`, `perl`, `pkgconf`, `libsodium` (mkp224o, linked statically) |
+
+Both builder tags have newer digests than the pinned ones. The Rust builder's
+packages are identical to the pinned build's. The C builder's update moves
+`expat`, `krb5-libs`, `python` and its own `zlib`; none of them reaches the
+image: Tor is compiled and runs against the locked `zlib` 1.4-r0 from the input
+archive, and nothing built here links expat, krb5 or Python. A builder change
+also changes the release digest, so it is adopted with the next real change.
 
 ## How each kind of input is checked
 
