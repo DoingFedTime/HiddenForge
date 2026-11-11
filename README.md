@@ -285,8 +285,10 @@ just starts Tor. The full list of changes is in the [CHANGELOG](CHANGELOG.md).
 ## Supply Chain Security
 
 Supply chain attacks (xz-utils, PyPI package hijacks, compromised npm packages)
-are why the build trusts nothing it has not checked. 3.0 is built **offline**
-from a locked set of inputs; nothing is downloaded while the image builds.
+are why the build trusts nothing it has not checked. 3.0 is built from a locked
+set of inputs. Every build step runs with no network at all (`RUN
+--network=none`), and the only images pulled are the base, the two builders and
+BuildKit, each by digest.
 
 | Input | Where it comes from | How it is checked |
 |---|---|---|

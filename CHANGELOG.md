@@ -176,9 +176,9 @@ inputs this project archives and verifies.
 ### Build and supply chain
 
 - **The build is offline.** Every package, the Tor tarball and the vendored
-  crate come from an input archive passed as a build context; no build step
-  fetches anything, and the only images pulled are the pinned base and builder
-  images and BuildKit. `scripts/build_inputs.py verify` checks the archive first: every
+  crate come from an input archive passed as a build context. Every build step
+  runs with `--network=none`, so nothing can be fetched while building; the only
+  images pulled are the pinned base and builder images and BuildKit. `scripts/build_inputs.py verify` checks the archive first: every
   file against its manifest, each package index against a signing key pinned in
   `signatures/` (Docker's DHI apk key, Alpine's keys), every package against its
   signed index, and the Tor signatures against Tor's release keys.

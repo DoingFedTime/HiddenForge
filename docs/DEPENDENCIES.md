@@ -1,12 +1,13 @@
 # Dependencies: what the image is built from
 
-3.0 is built offline from a locked set of inputs. `build-inputs.sha256` lists
+3.0 is built from a locked set of inputs, and every build step runs with no
+network (`RUN --network=none`; the base and builder images are pulled by digest). `build-inputs.sha256` lists
 every file with its SHA-256; `scripts/build_inputs.py verify` refuses an archive
 that differs from it in any file, then checks each file against its publisher's
 signature. Every version below was checked against its publisher on
 **2026-11-11** and is the newest available: Tor's release directory, the live
-DHI and Alpine 3.23 package indexes for both architectures (all 54 locked
-packages), crates.io and mkp224o's repository. The exceptions are the base and
+DHI and Alpine 3.23 package indexes (all 27 locked packages, for each of the two
+architectures), crates.io and mkp224o's repository. The exceptions are the base and
 builder images, noted after each table.
 
 ## In the image

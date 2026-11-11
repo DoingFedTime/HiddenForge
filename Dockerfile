@@ -7,7 +7,8 @@
 #     package manager, no Python.
 #   * packages: the exact .apk files, verified against Docker's signed APKINDEX
 #     (and, for zlib, Alpine's), installed with --no-network from the
-#     `inputs` build context. Nothing is fetched while building.
+#     `inputs` build context. Every RUN step has --network=none, so nothing
+#     can be fetched while building, whatever a tool inside it tries.
 #   * Tor: compiled here from Tor Project's release tarball (signature checked
 #     against Tor's release keys before archiving; SHA-256 pinned below).
 #   * the runtime: one Rust binary (hiddenforge-rs/), whose only crate is libc
@@ -38,7 +39,7 @@ COPY --from=inputs index/APKINDEX-alpine-main-aarch64.tar.gz /repo-alpine/aarch6
 COPY --from=inputs tor/tor-0.4.9.16.tar.gz /src/tor.tar.gz
 COPY --chmod=0644 vendor/mkp224o-5172c0fd.tar.gz /src/mkp224o.tar.gz
 # Offline, from the verified local repositories only.
-RUN printf '/repo\n/repo-alpine\n' > /etc/apk/repositories; \
+RUN --network=none printf '/repo\n/repo-alpine\n' > /etc/apk/repositories; \
     apk add --no-cache --no-network \
         make fortify-headers libevent-dev openssl-dev zlib-dev=1.4-r0 zlib=1.4-r0 zstd-dev xz-dev \
         libseccomp-dev libcap-dev autoconf automake libsodium-dev libsodium-static; \
@@ -48,7 +49,7 @@ RUN printf '/repo\n/repo-alpine\n' > /etc/apk/repositories; \
 # (`cd` inside RUN: the SHELL has -e, so a failed cd stops the build. DL4006:
 # hadolint accepts pipefail only for bash/ash/zsh by name; this sh honours it.)
 # hadolint ignore=DL3003,DL4006,SC2164
-RUN echo "6180e193152f4525bdca5475168419b2a2035b963c3c60162a187f86e6160e48  /src/tor.tar.gz" | sha256sum -c -; \
+RUN --network=none echo "6180e193152f4525bdca5475168419b2a2035b963c3c60162a187f86e6160e48  /src/tor.tar.gz" | sha256sum -c -; \
     mkdir /src/tor && tar -xzf /src/tor.tar.gz -C /src/tor --strip-components=1; \
     cd /src/tor; \
     CFLAGS="-O2 -D_FORTIFY_SOURCE=3 -fstack-clash-protection -ffile-prefix-map=/src/tor=. -fno-ident" \
@@ -64,7 +65,7 @@ RUN echo "6180e193152f4525bdca5475168419b2a2035b963c3c60162a187f86e6160e48  /src
     /out/usr/bin/tor --list-modules
 # mkp224o: the vanity-address generator, one static binary (CC0-1.0).
 # hadolint ignore=DL3003,DL4006,SC2164
-RUN echo "1f951ed82577436fe2c160c01f7754170010137c2182eae7e47fce65f000dc8d  /src/mkp224o.tar.gz" | sha256sum -c -; \
+RUN --network=none echo "1f951ed82577436fe2c160c01f7754170010137c2182eae7e47fce65f000dc8d  /src/mkp224o.tar.gz" | sha256sum -c -; \
     mkdir /src/mkp && tar -xzf /src/mkp224o.tar.gz -C /src/mkp --strip-components=1; \
     cd /src/mkp; ./autogen.sh; \
     CFLAGS="-O3 -ffile-prefix-map=/src/mkp=. -fno-ident" ./configure LDFLAGS="-static -Wl,--build-id=none" >/dev/null; \
@@ -86,7 +87,7 @@ COPY --chmod=0644 hiddenforge-rs/src /build/src
 # Linked against the image's own libcrypto (the one Tor uses, from the same
 # verified package), so there is one OpenSSL in the image and a CVE scan of
 # the libcrypto3 package covers the key-encryption code too.
-RUN echo /repo > /etc/apk/repositories; \
+RUN --network=none echo /repo > /etc/apk/repositories; \
     apk add --no-cache --no-network openssl-dev; \
     RUSTFLAGS="--remap-path-prefix=/build=. --remap-path-prefix=/cargo/vendor=vendor -C link-arg=-Wl,--build-id=none" \
       cargo build --release --locked --offline; \
@@ -101,11 +102,11 @@ COPY --from=rbuild /out/ /stage/
 # The directories first: a COPY --chmod=0644 that creates its destination
 # directory gives the directory 0644 too, and nobody but root can enter it
 # (2.1.1 shipped exactly that).
-RUN mkdir -p /stage/opt/hiddenforge /stage/usr/share/licenses/hiddenforge
+RUN --network=none mkdir -p /stage/opt/hiddenforge /stage/usr/share/licenses/hiddenforge
 COPY --chmod=0644 manifest.json /stage/opt/hiddenforge/manifest.json
 COPY --chmod=0644 LICENSE /stage/usr/share/licenses/hiddenforge/LICENSE
 # hadolint ignore=DL3003,DL4006,SC2164
-RUN cp -a /out/. /stage/; \
+RUN --network=none cp -a /out/. /stage/; \
     # Installed through apk into the copy, so the base's package database
     # records them and every scanner sees exactly what the image holds.
     apk --root /rt --keys-dir /etc/apk/keys --repositories-file /etc/apk/repositories \
