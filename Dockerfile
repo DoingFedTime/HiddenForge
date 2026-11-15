@@ -36,7 +36,7 @@ COPY --from=inputs index/APKINDEX-x86_64.tar.gz /repo/x86_64/APKINDEX.tar.gz
 COPY --from=inputs index/APKINDEX-aarch64.tar.gz /repo/aarch64/APKINDEX.tar.gz
 COPY --from=inputs index/APKINDEX-alpine-main-x86_64.tar.gz /repo-alpine/x86_64/APKINDEX.tar.gz
 COPY --from=inputs index/APKINDEX-alpine-main-aarch64.tar.gz /repo-alpine/aarch64/APKINDEX.tar.gz
-COPY --from=inputs tor/tor-0.4.9.16.tar.gz /src/tor.tar.gz
+COPY --from=inputs tor/tor-0.4.9.17.tar.gz /src/tor.tar.gz
 COPY --chmod=0644 vendor/mkp224o-5172c0fd.tar.gz /src/mkp224o.tar.gz
 # Offline, from the verified local repositories only.
 RUN --network=none printf '/repo\n/repo-alpine\n' > /etc/apk/repositories; \
@@ -49,7 +49,7 @@ RUN --network=none printf '/repo\n/repo-alpine\n' > /etc/apk/repositories; \
 # (`cd` inside RUN: the SHELL has -e, so a failed cd stops the build. DL4006:
 # hadolint accepts pipefail only for bash/ash/zsh by name; this sh honours it.)
 # hadolint ignore=DL3003,DL4006,SC2164
-RUN --network=none echo "6180e193152f4525bdca5475168419b2a2035b963c3c60162a187f86e6160e48  /src/tor.tar.gz" | sha256sum -c -; \
+RUN --network=none echo "ff372c41ee7013557fe5b7acd96c909950b27a7959c59fcb87c02591682fabe2  /src/tor.tar.gz" | sha256sum -c -; \
     mkdir /src/tor && tar -xzf /src/tor.tar.gz -C /src/tor --strip-components=1; \
     cd /src/tor; \
     CFLAGS="-O2 -D_FORTIFY_SOURCE=3 -fstack-clash-protection -ffile-prefix-map=/src/tor=. -fno-ident" \

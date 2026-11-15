@@ -119,10 +119,28 @@ def _image_digest(image: str | None, out: pathlib.Path) -> str | None:
     return None
 
 
+def _archive_digest(archive: str, out: pathlib.Path) -> str:
+    """The OCI index digest of a built archive (`--output type=oci`), read from
+    its index.json. A release is signed before it is pushed, so the registry
+    cannot answer yet; the archive that was built and signed can."""
+    import tarfile
+    with tarfile.open(archive) as tar:
+        member = tar.extractfile("index.json")
+        if member is None:
+            raise SystemExit(f"{archive}: no index.json; not an OCI archive")
+        index = json.load(member)
+    digest = index["manifests"][0]["digest"]
+    (out / "image-digest.txt").write_text(
+        _scrub(f"OCI index digest of {pathlib.Path(archive).name}: {digest}\n"))
+    return str(digest)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--out", default="evidence")
     ap.add_argument("--image", default=os.environ.get("HIDDENFORGE_IMAGE", ""))
+    ap.add_argument("--oci-archive", default="",
+                    help="the built OCI archive; its index digest is recorded")
     ap.add_argument("--inputs", default=os.environ.get("HIDDENFORGE_INPUTS", ""),
                     help="the build-input archive directory, verified into the bundle")
     args = ap.parse_args()
@@ -185,7 +203,8 @@ def main() -> int:
         if src.exists():
             shutil.copy(src, out / extra)
 
-    meta["image_digest"] = _image_digest(args.image or None, out)
+    meta["image_digest"] = (_archive_digest(args.oci_archive, out) if args.oci_archive
+                            else _image_digest(args.image or None, out))
     meta["gates_exit_code"] = rc_total
     (out / "build.json").write_text(_scrub(json.dumps(meta, indent=2)) + "\n")
 

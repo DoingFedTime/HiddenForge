@@ -5,7 +5,7 @@ network (`RUN --network=none`; the base and builder images are pulled by digest)
 every file with its SHA-256; `scripts/build_inputs.py verify` refuses an archive
 that differs from it in any file, then checks each file against its publisher's
 signature. Every version below was checked against its publisher on
-**2026-11-11** and is the newest available: Tor's release directory, the live
+**2026-11-15** and is the newest available: Tor's release directory, the live
 DHI and Alpine 3.23 package indexes (all 27 locked packages, for each of the two
 architectures), crates.io and mkp224o's repository. The exceptions are the base and
 builder images, noted after each table.
@@ -15,7 +15,7 @@ builder images, noted after each table.
 | Component | Version | From | Why it is there |
 |---|---|---|---|
 | Base | `dhi.io/static:20261020-musl-alpine3.23` (by digest) | Docker Hardened Images | musl, CA bundle, tzdata, `/etc/passwd`. Used unchanged |
-| Tor | 0.4.9.16 | Tor Project release tarball, compiled in the build | The whole point. Relay and directory-authority code compiled out |
+| Tor | 0.4.9.17 | Tor Project release tarball, compiled in the build | The whole point. Relay and directory-authority code compiled out |
 | `hiddenforge` | 3.0.0 | `hiddenforge-rs/` in this repository | Entrypoint, supervisor, in-image CLI, healthcheck, guard monitors, 2.x compatibility names |
 | mkp224o | commit `5172c0fd` | vendored source, `vendor/` | Vanity address generator. Static binary, CC0-1.0 |
 | `libcrypto3`, `libssl3` | 3.5.9-r1 | DHI apk | Tor's OpenSSL; also the key-sealing cipher |

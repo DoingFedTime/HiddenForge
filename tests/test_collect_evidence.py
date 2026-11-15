@@ -49,3 +49,22 @@ def test_the_host_name_is_replaced(ce):
 def test_text_without_any_of_it_is_unchanged(ce):
     text = "tests/test_cli.py::test_x PASSED [100%]\n$ cargo test --release --locked\n"
     assert ce._scrub(text) == text
+
+
+def test_the_bundle_records_the_index_digest_of_the_built_archive(ce, tmp_path):
+    """A release is signed before it is pushed, so the registry lookup returned
+    None and build.json carried no digest at all."""
+    import io
+    import json
+    import tarfile
+    mod = ce
+    archive = tmp_path / "out.tar"
+    index = json.dumps({"manifests": [{"digest": "sha256:" + "ab" * 32}]}).encode()
+    with tarfile.open(archive, "w") as tar:
+        info = tarfile.TarInfo("index.json")
+        info.size = len(index)
+        tar.addfile(info, io.BytesIO(index))
+    out = tmp_path / "ev"
+    out.mkdir()
+    assert mod._archive_digest(str(archive), out) == "sha256:" + "ab" * 32
+    assert "sha256:" + "ab" * 32 in (out / "image-digest.txt").read_text()

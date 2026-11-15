@@ -52,7 +52,7 @@ network-isolated and never exposed to the internet.
 The compose file pulls `:latest`. Run `hiddenforge verify-image` before you
 deploy, and pin the verified digest if you want a deployment that never moves.
 
-**What it is:** a hardened Tor onion service container. Tor 0.4.9.16, compiled
+**What it is:** a hardened Tor onion service container. Tor 0.4.9.17, compiled
 from Tor Project's signed source, on Docker Hardened Images' minimal `static`
 base, with Tor's vanguards-lite pinned on and native bandguards and rendguard
 attack detectors. The image holds Tor, its libraries and one small Rust binary:
@@ -294,7 +294,7 @@ BuildKit, each by digest.
 |---|---|---|
 | Base image | `dhi.io/static` (Docker Hardened Images), by digest | Docker's signed provenance verified when the digest was adopted. Used unchanged: the image is that base plus one layer |
 | Builder images | DHI python dev and DHI rust dev, by digest | Same |
-| Tor 0.4.9.16 | Tor Project's release tarball | Its SHA-256 file is signed by Tor's release keys, pinned in `signatures/tor-release-keys.gpg`; the build checks the hash again |
+| Tor 0.4.9.17 | Tor Project's release tarball | Its SHA-256 file is signed by Tor's release keys, pinned in `signatures/tor-release-keys.gpg`; the build checks the hash again |
 | Tor's libraries and the build tools | DHI's apk repository (zlib from Alpine's) | Each package index is RSA-signed by a key pinned in `signatures/`; each package must match the checksum its signed index lists |
 | `libc` crate (the Rust binary's only dependency) | crates.io, vendored | The checksum `Cargo.lock` pins |
 | mkp224o | vendored source | SHA-256 in the `Dockerfile` |
@@ -359,8 +359,13 @@ tag they sign.
 one archive. Fetch and verify it, then build from the release tag; the digest
 must match the signed one:
 
+Build from a fresh clone, not an existing checkout (file times in a working
+tree reach the image), and log in to `dhi.io` with any Docker account first: it
+serves the base and builder images and refuses anonymous pulls.
+
 ```bash
-git checkout v3.0.0
+docker login dhi.io
+git clone --branch v3.0.0 https://sambent.dev/sam/HiddenForge.git hf && cd hf
 python3 scripts/build_inputs.py fetch \
   https://sambent.dev/api/packages/sam/generic/hiddenforge-inputs/3.0.0/hiddenforge-inputs-3.0.0.tar ./inputs
 docker buildx create --name hf-repro --driver docker-container \
@@ -556,7 +561,7 @@ podman info --format '{{.Host.Security.Rootless}}'   # expected: true
 | Supply chain | Offline build from locked, signature-checked inputs; reproducible; zero known vulnerabilities from two scanners |
 | Host isolation (optional) | Rootless Podman: a container escape lands in an unprivileged host user |
 
-**Tor version: 0.4.9.16** (3.0; 2.1.6 runs 0.4.9.15)
+**Tor version: 0.4.9.17** (3.0; 2.1.6 runs 0.4.9.15)
 
 ## Documentation
 

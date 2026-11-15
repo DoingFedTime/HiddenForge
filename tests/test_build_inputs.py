@@ -117,7 +117,23 @@ class _Resp(io.BytesIO):
 def _serve(mod, monkeypatch, blob, landed_at=None):
     # landed_at: where redirects ended up (urlopen follows them silently).
     monkeypatch.setattr(mod.urllib.request, "urlopen",
-                        lambda url, timeout: _Resp(blob, landed_at or url))
+                        lambda req, timeout: _Resp(blob, landed_at or req.full_url))
+
+
+def test_fetch_names_itself_so_the_forge_does_not_refuse_it(bi, tmp_path, monkeypatch):
+    """sambent.dev is behind Cloudflare, which answers Python's default
+    User-Agent with 403 (error 1010), so the documented fetch failed."""
+    mod, src = bi
+    blob = _pack(mod, src, tmp_path / "a.tar", monkeypatch)
+    seen = []
+
+    def urlopen(req, timeout):
+        seen.append(req.get_header("User-agent"))
+        return _Resp(blob, req.full_url)
+    monkeypatch.setattr(mod.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(mod, "verify", lambda d: 0)
+    assert mod.fetch("https://example.invalid/a.tar", tmp_path / "dest") == 0
+    assert seen and seen[0] and not seen[0].startswith("Python-urllib")
 
 
 def test_fetch_roundtrip(bi, tmp_path, monkeypatch):

@@ -42,7 +42,7 @@ REPO = Path(__file__).resolve().parents[1]
 SIG = REPO / "signatures"
 LOCK = REPO / "build-inputs.sha256"
 FETCH_MAX = 256 * 1024 * 1024
-TOR_TARBALL = "tor-0.4.9.16.tar.gz"
+TOR_TARBALL = "tor-0.4.9.17.tar.gz"
 # Tor release-signing keys accepted (primary fingerprints, from Tor's own
 # verification page): David Goulet, Alexander Faeroy, Nick Mathewson.
 TOR_FPRS = {
@@ -244,7 +244,11 @@ def fetch(url: str, dest: Path) -> int:
     dest.mkdir(parents=True, exist_ok=True)
     if any(dest.iterdir()):
         raise SystemExit(f"FAIL fetch: {dest} is not empty")
-    with urllib.request.urlopen(url, timeout=60) as r:  # noqa: S310 (https checked above)
+    # A named User-Agent: sambent.dev sits behind Cloudflare, which refuses
+    # Python's default one (403, error 1010), so the fetch failed outright.
+    req = urllib.request.Request(  # noqa: S310 (https checked above)
+        url, headers={"User-Agent": "hiddenforge-build-inputs/3.0"})
+    with urllib.request.urlopen(req, timeout=60) as r:  # noqa: S310 (https checked above)
         # urlopen follows redirects, including from https to plain http.
         if not r.geturl().startswith("https://"):
             raise SystemExit("FAIL fetch: https only (redirected to a non-https URL)")

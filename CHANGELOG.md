@@ -31,7 +31,10 @@ inputs this project archives and verifies.
 - **Zero known vulnerabilities at every severity**, from two scanners (trivy and
   grype), on both architectures. CI fails a build on any finding, negligible
   included, and a daily scheduled run scans again so a later advisory is caught.
-- **Tor 0.4.9.16, compiled from Tor Project's release tarball.** The tarball's
+- **Tor 0.4.9.17, compiled from Tor Project's release tarball.** 0.4.9.17
+  removes the keys of the `bastet` directory authority after a possible
+  compromise, so this Tor no longer trusts a consensus signature made with them,
+  and it rejects malformed hostnames in RESOLVED cells (TROVE-2026-075). The tarball's
   SHA-256 file carries signatures from Tor's release keys; both are checked
   against the fingerprints Tor publishes before the tarball is archived, and the
   build checks the hash again. The relay and directory-authority code is compiled
@@ -106,6 +109,8 @@ inputs this project archives and verifies.
   as root (2.1.6 printed a Python traceback). Root there cannot enter the tor
   user's directory, so the read is done as tor.
   The `deploy.sh` that `setup --runtime podman` writes now names that file.
+- `scripts/build_inputs.py fetch` sends a named User-Agent. sambent.dev refused
+  Python's default one, so fetching a release's input archive failed with 403.
 - **`verify-image --skip-registry` ignored the digest in the image reference.**
   `hiddenforge verify-image <repo>@sha256:<any digest> --skip-registry` checked
   the signature set and answered `ok`, whatever digest followed the `@`, and that
