@@ -114,7 +114,7 @@ RUN --network=none cp -a /out/. /stage/; \
         libevent libssl3 libcrypto3 zlib=1.4-r0 zstd-libs xz-libs libseccomp libcap2; \
     mkdir /delta; \
     for p in libevent libssl3 libcrypto3 zlib zstd-libs xz-libs libseccomp libcap2; do \
-      apk --root /rt info -q -L "$p" | grep -v '^$' | while read -r f; do \
+      apk --root /rt --no-network info -q -L "$p" | grep -v '^$' | while read -r f; do \
         mkdir -p "/delta/$(dirname "$f")"; cp -a "/rt/$f" "/delta/$f"; \
       done; \
     done; \
