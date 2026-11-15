@@ -338,7 +338,7 @@ drives a digest-pinned syft container through the Docker socket, which the image
 deliberately does not have.
 
 The signed digest for 3.0.0 is
-`sha256:RELEASE-DIGEST`. Signature
+`sha256:5024c341017525b404882e4501c0181eeaddefa3ebab791129a4bb8c893b895b`. Signature
 files verify against whatever public key sits beside them, so the keys are the
 trust anchor. They must match these values, which are also pinned in
 `scripts/hiddenforge`:

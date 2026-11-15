@@ -1,8 +1,8 @@
 # Signatures for HiddenForge 3.0.0
 
-Image digest: `sambent.dev/sam/hiddenforge@sha256:RELEASE-DIGEST`
+Image digest: `sambent.dev/sam/hiddenforge@sha256:5024c341017525b404882e4501c0181eeaddefa3ebab791129a4bb8c893b895b`
 
-The same index is served as `doingfedtime/hiddenforge@sha256:RELEASE-DIGEST`
+The same index is served as `doingfedtime/hiddenforge@sha256:5024c341017525b404882e4501c0181eeaddefa3ebab791129a4bb8c893b895b`
 on Docker Hub. It covers `linux/amd64` and `linux/arm64`.
 
 **What is signed:** 3.0.0 carries the **ML-DSA-65** signature
