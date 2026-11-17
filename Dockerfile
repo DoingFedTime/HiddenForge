@@ -20,9 +20,14 @@
 #     --build-arg SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) \
 #     --output type=oci,dest=hf.tar,rewrite-timestamp=true .
 
-ARG C_BUILDER=dhi.io/python@sha256:11c956fbc326c0aab95d9b913e77d25280855a494029bc63dac1824101b48766
-ARG RUST_BUILDER=dhi.io/rust@sha256:cd4666a1b76c2a8a9c9e01282183e25703fe8c81a42e208be1a44f50467362b6
-ARG RUNTIME=dhi.io/static@sha256:36ef09f98be60351289f3aaf36a4328e2121821dce7f8f85ba099efef43bd329
+# Where the three images come from. By default Docker's registry; our own
+# builds pass --build-arg BASES=sambent.dev/sambent/dhi- to take the same
+# digests from the copies on sambent.dev. A digest names fixed bytes, so the
+# image built is the same either way.
+ARG BASES=dhi.io/
+ARG C_BUILDER=${BASES}python@sha256:11c956fbc326c0aab95d9b913e77d25280855a494029bc63dac1824101b48766
+ARG RUST_BUILDER=${BASES}rust@sha256:cd4666a1b76c2a8a9c9e01282183e25703fe8c81a42e208be1a44f50467362b6
+ARG RUNTIME=${BASES}static@sha256:36ef09f98be60351289f3aaf36a4328e2121821dce7f8f85ba099efef43bd329
 
 FROM ${RUNTIME} AS runtime
 
