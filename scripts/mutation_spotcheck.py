@@ -422,10 +422,10 @@ MUTATIONS = [
         "tests/test_backup.py -k planted_after_the_scan",
     ),
     (
-        "status runs the in-container healthcheck as root again (rootless: never ready)",
+        "status stops asking the in-image healthcheck (rootless: never ready)",
         "scripts/hiddenforge",
-        '    hc = (_docker_exec_json(resolved, ["su-exec", "tor", "python3",',
-        '    hc = (_docker_exec_json(resolved, ["python3",',
+        '    hc = (_docker_exec_json(resolved, [HF_IN_IMAGE, "healthcheck", "--json"])',
+        '    hc = (_docker_exec_json(resolved, [HF_IN_IMAGE, "doctor", "--json"])',
         "tests/test_cli.py -k rootless_podman",
     ),
     (
