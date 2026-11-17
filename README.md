@@ -356,8 +356,8 @@ from the root of this repository or pass `--sigdir`. `sbom` runs on the host: it
 drives a digest-pinned syft container through the Docker socket, which the image
 deliberately does not have.
 
-The signed digest for 3.0.0 is
-`sha256:5024c341017525b404882e4501c0181eeaddefa3ebab791129a4bb8c893b895b`. Signature
+The signed digest for 3.0.1 is
+`sha256:a267ae01f604b0c5a6a125972cb6d92ccfdb9a9f8e9240ab709108baafc09b76`. Signature
 files verify against whatever public key sits beside them, so the keys are the
 trust anchor. They must match these values, which are also pinned in
 `scripts/hiddenforge`:
