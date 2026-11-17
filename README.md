@@ -19,7 +19,8 @@ one. Verify what you pulled with the
 The full guide is in the [wiki](https://sambent.dev/sam/HiddenForge/wiki).
 
 > **Upgrading from 2.1.x?** Nothing to do: same compose file, same keys, same
-> address, same commands. See [Upgrading to 3.0](#upgrading-to-30).
+> address. Inside the container every command is now `hiddenforge <command>`.
+> See [Upgrading](#upgrading).
 > **From 2.0.4?** Your keys carry over, but read
 > [Upgrading from 2.0.4](#upgrading-from-204) first.
 
