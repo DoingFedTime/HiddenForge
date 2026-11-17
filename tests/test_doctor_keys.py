@@ -57,14 +57,14 @@ def _doctor(hf, monkeypatch, capsys, keys, in_container, torrc_services=("app",)
     monkeypatch.setattr(hf, "_engine", lambda: "docker")
     monkeypatch.setattr(hf, "_is_rootless", lambda: False)
     monkeypatch.setattr(hf, "_docker_exec_json", exec_json)
-    monkeypatch.setattr(hf, "_docker_exec_text",
-                        lambda c, a: "ClientOnly 1\nExitPolicy reject *:*\nSafeLogging 1\n"
+    monkeypatch.setattr(hf, "_inspect", lambda c: {
+                        "torrc": "ClientOnly 1\nExitPolicy reject *:*\nSafeLogging 1\n"
                         "AvoidDiskWrites 1\nDisableDebuggerAttachment 1\n"
                         "FetchUselessDescriptors 0\nVanguardsLiteEnabled 1\n"
                         "HiddenServicePoWDefensesEnabled 1\n"
                         "HiddenServiceEnableIntroDoSDefense 1\nHiddenServiceVersion 3\n"
                         + "".join(f"HiddenServiceDir /var/lib/tor/hidden_service/{n}\n"
-                                  for n in torrc_services))
+                                  for n in torrc_services)})
     monkeypatch.setattr(hf, "_run", lambda cmd, **kw: subprocess.CompletedProcess(
         cmd, 1, "", ""))
     rc = hf.main(["doctor", "--container", "tor", "--keys", str(keys), "--json"])
@@ -89,9 +89,10 @@ def test_a_tor_owned_service_directory_is_not_a_failure(hf, monkeypatch, capsys,
     assert "key modes for app" not in checks
     assert rc == 0, doc["failures"]
     assert checks["secret key app is 0600 (checked in container)"]["ok"] is True
-    # Asked as the tor user, who owns the directory; and only about key checks
-    # for the service the host could not see, not the whole in-container report.
-    assert asked and asked[0][1][:2] == ["su-exec", "tor"]
+    # Asked through the in-image doctor, which reads as the tor user who owns
+    # the directory; and only about key checks for the service the host could
+    # not see, not the whole in-container report.
+    assert asked and asked[0][1] == [hf.HF_IN_IMAGE, "doctor", "--keys-only", "--json"]
     assert not any("(checked in container)" in k and "volume" in k for k in checks)
 
 
@@ -167,23 +168,23 @@ def test_show_with_container_reads_what_the_host_cannot(hf, monkeypatch, capsys,
     onion = "atdorl67o6q7anir2qm3sly4expi3ywvs2ltw3wl53zezgycohzi2zqd.onion"
     asked = []
 
-    def exec_text(container, argv):
-        asked.append((container, argv))
-        return onion + "\n"
+    def inspect(container):
+        asked.append(container)
+        return {"hostnames": {"app": onion}}
 
     monkeypatch.setattr(hf, "_resolve_container", lambda c: "cid")
-    monkeypatch.setattr(hf, "_docker_exec_text", exec_text)
+    monkeypatch.setattr(hf, "_inspect", inspect)
     rc = hf.main(["show", "--keys", str(closed_keys), "--name", "app",
                   "--container", "tor", "--json"])
     doc = json.loads(capsys.readouterr().out)
     assert rc == 0 and doc["onion"] == onion and doc["source"] == "container"
-    assert asked == [("cid", ["cat", "/var/lib/tor/hidden_service/app/hostname"])]
+    assert asked == ["cid"]
 
 
 def test_show_container_output_is_validated_not_trusted(hf, monkeypatch, capsys,
                                                         closed_keys):
     monkeypatch.setattr(hf, "_resolve_container", lambda c: "cid")
-    monkeypatch.setattr(hf, "_docker_exec_text", lambda c, a: "not-an-onion\n")
+    monkeypatch.setattr(hf, "_inspect", lambda c: {"hostnames": {"app": "not-an-onion"}})
     rc = hf.main(["show", "--keys", str(closed_keys), "--name", "app",
                   "--container", "tor", "--json"])
     doc = json.loads(capsys.readouterr().out)
@@ -201,7 +202,7 @@ def test_show_container_never_overrules_an_inconsistent_key_set(hf, monkeypatch,
     (keys / "app" / "hostname").write_text("b" * 56 + ".onion\n")
     called = []
     monkeypatch.setattr(hf, "_resolve_container", lambda c: "cid")
-    monkeypatch.setattr(hf, "_docker_exec_text", lambda c, a: called.append(a))
+    monkeypatch.setattr(hf, "_inspect", lambda c: called.append(c) or {})
     rc = hf.main(["show", "--keys", str(keys), "--name", "app", "--container", "tor",
                   "--json"])
     assert rc == hf.EXIT_FAIL and not called
@@ -219,15 +220,17 @@ def _runtime_doctor(hf, monkeypatch, capsys, keys, runtime_text, cap_add, cap_dr
                            "Memory": 1, "MemorySwap": 2, "LogConfig": {"Type": "none"}},
             "NetworkSettings": {"Ports": {}}, "State": {"Running": True}}
 
-    def exec_text(container, argv):
-        return runtime_text if argv[:2] == ["sh", "-c"] else None
+    # `hiddenforge inspect --json` carries what the container measures itself.
+    fields = dict(line.split("=", 1) for line in runtime_text.splitlines())
+    measured = {"swap_max": fields["swap"], "pids_max": fields["pids"],
+                "capbnd": fields["capbnd"], "host_swaps": int(fields["hostswap"])}
 
     monkeypatch.setattr(hf, "_docker_inspect", lambda c: (info, None))
     monkeypatch.setattr(hf, "_resolve_container", lambda c: "cid")
     monkeypatch.setattr(hf, "_engine", lambda: "podman")
     monkeypatch.setattr(hf, "_is_rootless", lambda: True)
     monkeypatch.setattr(hf, "_docker_exec_json", lambda c, a: None)
-    monkeypatch.setattr(hf, "_docker_exec_text", exec_text)
+    monkeypatch.setattr(hf, "_inspect", lambda c: measured)
     monkeypatch.setattr(hf, "_run", lambda cmd, **kw: subprocess.CompletedProcess(
         cmd, 1, "", ""))
     hf.main(["doctor", "--container", "tor", "--keys", str(keys), "--json"])
