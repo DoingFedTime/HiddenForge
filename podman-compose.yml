@@ -13,12 +13,11 @@
 #        /usr/libexec/docker/cli-plugins/docker-compose -p hiddenforge -f podman-compose.yml up -d
 #      or podman-compose (skips pids_limit before 1.1 and memswap_limit always):
 #        podman-compose -f podman-compose.yml up -d
-#   4. <compose command> exec tor su-exec tor cat /var/lib/tor/hidden_service/myapp/hostname
+#   4. <compose command> exec tor hiddenforge show --name myapp
 #      (replace "myapp" with whatever you used in step 1)
-#      The `su-exec tor` is REQUIRED here and is not a typo: this file drops
-#      DAC_OVERRIDE, so the exec'd root cannot traverse the 0700 tor-owned
-#      DataDirectory. Read it as the tor user. If you hit "Permission denied",
-#      do NOT re-add DAC_OVERRIDE or relax the key directory to work around it.
+#      This file drops DAC_OVERRIDE, so root in the container cannot enter the
+#      0700 tor-owned key directory; `hiddenforge show` reads it as the tor user
+#      by itself. Do NOT re-add DAC_OVERRIDE or relax the key directory.
 #
 # WHY THIS FILE EXISTS (rootless security model):
 #   Running Podman rootless means container uid 0 maps to your host user (e.g.
@@ -59,8 +58,8 @@ services:
       - ALL                        # drop every Linux capability
     cap_add:
       - CHOWN        # transfer ownership of hidden_service dir to the tor user
-      - SETUID       # su-exec: drop from root to tor to run the Tor daemon
-      - SETGID       # su-exec: drop from root to the tor group to run the Tor daemon
+      - SETUID       # drop from root to the tor user to run the Tor daemon
+      - SETGID       # drop from root to the tor group to run the Tor daemon
       # NOTE: DAC_OVERRIDE and FOWNER are NOT listed here.
       # In rootless Podman, container root (uid 0) maps to your host user via
       # user namespaces, so the ./tor-keys bind mount appears root-owned inside
@@ -77,7 +76,7 @@ services:
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=64m
       - /etc/tor:rw,noexec,nosuid,nodev,size=8m
-      # uid=100,gid=101: Tor process runs as the tor user (uid 100) after su-exec drops
+      # uid=100,gid=101: Tor process runs as the tor user (uid 100) after the supervisor drops
       # privileges; the DataDirectory must be owned by that user or Tor refuses to start.
       # NOTE: uid=/gid=/mode= tmpfs options are Docker-specific and not supported
       # by Podman.  The entrypoint explicitly chowns /var/lib/tor to the tor user
@@ -106,7 +105,7 @@ services:
       # NOTE: `nproc` is deliberately NOT set here. RLIMIT_NPROC is counted per
       # HOST uid, and the tor user is uid 100, which other containers share
       # (i2pforge's i2pd is also uid 100). On a host already running >= the
-      # limit as uid 100, su-exec's setuid() fails with EAGAIN and Tor never
+      # limit as uid 100, the drop to the tor user (setuid) fails with EAGAIN and Tor never
       # starts. `pids_limit` is the per-container cap that actually works.
 
     # ── Health: deliberately NO healthcheck under Podman ───────────────────

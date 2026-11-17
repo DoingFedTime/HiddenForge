@@ -63,14 +63,13 @@ itself with Landlock and never touches the network. If you can hand the key
 directory to uid 100 yourself, `hiddenforge setup --no-root` starts the container
 as uid 100 with no capabilities, and nothing ever runs as root.
 
-**Names like `sh`, `cat`, `python3` and `su-exec` exist in an image with no
-shell, no coreutils and no Python.** They are the `hiddenforge` binary. Compose
-files, scripts and older CLIs run those exact commands inside the container
-(the healthcheck is `su-exec tor python3 /usr/local/bin/healthcheck.py`), so each
-name answers only the forms 2.x documented and refuses everything else
-(`hiddenforge-rs/src/compat.rs`). `sh -c` accepts exactly one script, the 2.1.x
-`doctor` probe, byte for byte. A scanner that sees `/bin/sh` is not seeing a
-shell.
+**The image has no shell, no coreutils and no Python.** Every command it runs
+is `hiddenforge <command>`. One other name exists, `/sbin/su-exec`, a link to the
+same binary: compose files already on operators' hosts declare the healthcheck
+as `su-exec tor python3 /usr/local/bin/healthcheck.py`, and an image update
+cannot change them. That exact command (with or without `--json`) runs the
+native healthcheck as the tor user; anything else under that name is refused
+(`hiddenforge-rs/src/compat.rs`).
 
 **`unsafe` in the Rust binary.** Every `unsafe` block in the shipped code is a
 system call or an OpenSSL call through `libc`, with a `SAFETY:` comment (or, for

@@ -292,9 +292,8 @@ def test_show_says_why_there_is_no_address(scratch):
     assert err["empty"] == "address not generated yet (Tor has not written hostname)"
     assert err["closed"] == (
         "address not published yet: keys/closed exists but is not readable by this user, "
-        "and keys/closed.onion does not exist. Under Docker it appears once the service is "
-        "reachable. Under rootless Podman, 2.1.x never writes it (3.0 does); pass "
-        "--container <name> to read the address from inside the container."
+        "and keys/closed.onion does not exist. It appears once the service is reachable; "
+        "pass --container <name> to read the address from inside the container sooner."
     )
     assert rust(["show", *K, "--name", "closed"], d).rc == 4
 

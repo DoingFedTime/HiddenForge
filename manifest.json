@@ -56,10 +56,8 @@
     "command": "hiddenforge status --json",
     "docker_healthcheck": [
       "CMD",
-      "su-exec",
-      "tor",
-      "python3",
-      "/usr/local/bin/healthcheck.py"
+      "hiddenforge",
+      "healthcheck"
     ],
     "dropped_mappings_field": "dropped_mappings",
     "dropped_mappings_file": "/var/lib/tor/dropped-mappings",
@@ -123,7 +121,7 @@
     }
   ],
   "tor_version": "0.4.9.17",
-  "version": "3.0.0",
+  "version": "3.0.1",
   "volumes": [
     {
       "back_up": true,

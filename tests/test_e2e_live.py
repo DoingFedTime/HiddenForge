@@ -270,9 +270,15 @@ def test_the_running_container_has_the_posture_the_fragment_promises(workdir):
         assert _proc_field(tor_pid, "Uid") == "100"
         assert _proc_field(tor_pid, "CapEff") == "0" * 16
         assert _proc_field(tor_pid, "CapPrm") == "0" * 16
-        # The guard monitors run as tor with nothing, too.
-        for pid in pids.get("hiddenforge", []):
-            assert _proc_field(pid, "Uid") == "100"
+        # The guard monitors, the upload watcher and every helper run as tor
+        # with nothing, too. They are the same binary as the supervisor (the
+        # kernel truncates their names to 15 characters), so the supervisor
+        # itself is left out by PID.
+        helpers = [pid for comm, ps in pids.items() if comm.startswith("hiddenforge")
+                   for pid in ps if pid != sup_pid]
+        assert helpers, f"no guard monitor or watcher in the container: {pids}"
+        for pid in helpers:
+            assert _proc_field(pid, "Uid") == "100", (pid, pids)
             assert _proc_field(pid, "CapEff") == "0" * 16
 
         # The supervisor stays root for the container's life, so what bounds it
@@ -458,3 +464,158 @@ def test_upgrading_and_rolling_back_keep_the_address(workdir):
 
     assert _run_for(PREVIOUS_IMAGE, keys) == "running", "rollback did not stay up"
     assert _identity(keys) == before, "rolling back changed the identity"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# an existing compose file keeps working; Tor keeps its guards across restarts
+# ─────────────────────────────────────────────────────────────────────────────
+
+# The healthcheck every compose file written before 3.0.1 declares. Those files
+# live on operators' hosts; an image update cannot change them.
+LEGACY_HEALTHCHECK = ["CMD", "su-exec", "tor", "python3", "/usr/local/bin/healthcheck.py"]
+
+
+def _health(cid: str) -> str:
+    return subprocess.run(["docker", "inspect", "-f", "{{.State.Health.Status}}", cid],
+                          capture_output=True, text=True, check=False).stdout.strip()
+
+
+def _wait_healthy(cid: str, deadline_s: int = PUBLISH_DEADLINE_S) -> None:
+    deadline = time.time() + deadline_s
+    while time.time() < deadline:
+        if _health(cid) == "healthy":
+            return
+        time.sleep(5)
+    raise AssertionError(f"the container never became healthy (last: {_health(cid)})")
+
+
+def _read_as_root(path: Path) -> str:
+    """A tor-owned 0600 file in the key volume, read in a throwaway container."""
+    return subprocess.run(
+        ["docker", "run", "--rm", "-v", f"{path.parent}:/d:ro", "alpine:3.23.5",
+         "cat", f"/d/{path.name}"],
+        capture_output=True, text=True, check=False).stdout
+
+
+def _guards(state: str) -> set[str]:
+    return set(re.findall(r"^Guard .*\brsa_id=([0-9A-F]{40})\b", state, re.M))
+
+
+def _demo_stack(workdir: Path, extra: str) -> list[str]:
+    """`setup` output for the demo, plus one more merge layer (`extra`)."""
+    subprocess.run([str(CLI), "setup", "--backend", "web:80", "--name", "demo",
+                    "--keys", "./tor-keys", "--out", str(workdir)],
+                   check=True, capture_output=True)
+    shutil.copy(DEMO / "app.yml", workdir / "app.yml")
+    shutil.copytree(DEMO / "site", workdir / "site")
+    (workdir / "extra.yml").write_text(extra)
+    return [*_compose(workdir, override=True), "-f", str(workdir / "extra.yml")]
+
+
+@requires_image
+def test_an_older_compose_file_stays_healthy_and_tor_keeps_its_guards(workdir):
+    """Update in place with a compose file from an earlier release: the stack
+    must become healthy through the healthcheck that file declares, every other
+    old command must be refused, and a restart must hand Tor back the guards it
+    had chosen instead of making it choose new ones."""
+    hc = json.dumps(LEGACY_HEALTHCHECK)
+    compose = _demo_stack(workdir, (
+        "services:\n  tor:\n    healthcheck:\n"
+        f"      test: {hc}\n      interval: 10s\n      start_period: 0s\n"))
+    state = workdir / "tor-keys" / "demo" / "tor-state"
+    try:
+        proc = subprocess.run([*compose, "up", "-d"], capture_output=True, text=True,
+                              timeout=300)
+        _assert_stack_up(proc)
+        cid = _container_id(workdir)
+        _wait_healthy(cid)
+        replay = subprocess.run(["bash", str(REPO / "tests" / "rust" / "compat_replay.sh"),
+                                 cid, "demo"], capture_output=True, text=True, timeout=300)
+        assert replay.returncode == 0, replay.stdout + replay.stderr
+
+        subprocess.run([*compose, "stop", "tor"], check=True, capture_output=True,
+                       timeout=120)
+        before = _read_as_root(state)
+        assert before.startswith("# Tor state file"), "no Tor state was saved at shutdown"
+        assert _guards(before), "the saved state holds no entry guards"
+
+        subprocess.run([*compose, "start", "tor"], check=True, capture_output=True,
+                       timeout=120)
+        _wait_healthy(cid)
+        logs = subprocess.run(["docker", "logs", cid], capture_output=True, text=True).stdout
+        assert "Restored Tor's saved state" in logs, logs[-2000:]
+        subprocess.run([*compose, "stop", "tor"], check=True, capture_output=True,
+                       timeout=120)
+        after = _read_as_root(state)
+        assert _guards(before) <= _guards(after), (
+            "Tor chose new guards after the restart\n"
+            f"before: {sorted(_guards(before))}\nafter: {sorted(_guards(after))}")
+    finally:
+        subprocess.run([*compose, "down", "-v"], capture_output=True, timeout=120)
+
+
+@requires_image
+def test_a_fresh_setup_uses_no_old_command(workdir):
+    """What `setup` writes for a new install names only `hiddenforge` commands."""
+    subprocess.run([str(CLI), "setup", "--backend", "web:80", "--name", "demo",
+                    "--keys", "./tor-keys", "--out", str(workdir)],
+                   check=True, capture_output=True)
+    for name in ("compose.service.yml", "deploy.sh", "README.txt"):
+        text = (workdir / name).read_text()
+        for old in ("su-exec", "python3", "healthcheck.py", "entrypoint.py", " cat ",
+                    "sh -c"):
+            assert old not in text, f"{name} still uses {old!r}"
+
+
+@requires_image
+def test_the_backend_can_tell_circuits_apart_when_it_asks_to(workdir):
+    """`<NAME>_TOR_EXPORT_CIRCUIT_ID=haproxy`: fetched through Tor on two
+    isolated circuits, the backend sees two different circuit addresses in the
+    PROXY header."""
+    (workdir / "nginx.conf").write_text(
+        "server {\n  listen 80 proxy_protocol;\n"
+        "  location / { default_type text/plain; return 200 \"$proxy_protocol_addr\\n\"; }\n}\n")
+    compose = _demo_stack(workdir, (
+        "services:\n  tor:\n    environment:\n      DEMO_TOR_EXPORT_CIRCUIT_ID: haproxy\n"
+        "  web:\n    volumes:\n"
+        "      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro\n"))
+    port = 10000 + int.from_bytes(os.urandom(2), "big") % 50000
+    client = f"hf-e2e-client-{os.getpid()}"
+    try:
+        proc = subprocess.run([*compose, "up", "-d"], capture_output=True, text=True,
+                              timeout=300)
+        _assert_stack_up(proc)
+        published = workdir / "tor-keys" / "demo.onion"
+        deadline = time.time() + PUBLISH_DEADLINE_S
+        while time.time() < deadline and not published.exists():
+            time.sleep(3)
+        assert published.exists(), "address file was never published"
+        onion = published.read_text().strip()
+        # A Tor client: the image's own tor, with only a SOCKS port.
+        subprocess.run(
+            ["docker", "run", "-d", "--rm", "--name", client, "--user", "100:101",
+             "--tmpfs", "/var/lib/tor:uid=100,gid=101,mode=0700",
+             "-p", f"127.0.0.1:{port}:9050",
+             "--entrypoint", "/usr/bin/tor", IMAGE,
+             "--SocksPort", "0.0.0.0:9050", "--DataDirectory", "/var/lib/tor/c"],
+            check=True, capture_output=True)
+        seen = {}
+        deadline = time.time() + PUBLISH_DEADLINE_S
+        while time.time() < deadline and len(seen) < 2:
+            for user in ("a", "b"):
+                if user in seen:
+                    continue
+                r = subprocess.run(
+                    ["curl", "-sS", "-m", "60", "--socks5-hostname",
+                     f"{user}:x@127.0.0.1:{port}", f"http://{onion}/"],
+                    capture_output=True, text=True, check=False)
+                if r.returncode == 0 and r.stdout.strip():
+                    seen[user] = r.stdout.strip()
+            time.sleep(5)
+        assert len(seen) == 2, f"the onion was not reachable on two circuits: {seen}"
+        for addr in seen.values():
+            assert re.fullmatch(r"fc00:dead:beef:4dad::[0-9a-f:]+", addr), addr
+        assert seen["a"] != seen["b"], "two isolated circuits reached the backend as one"
+    finally:
+        subprocess.run(["docker", "rm", "-f", client], capture_output=True, check=False)
+        subprocess.run([*compose, "down", "-v"], capture_output=True, timeout=120)

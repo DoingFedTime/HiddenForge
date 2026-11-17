@@ -7,7 +7,7 @@
 (function (root) {
   "use strict";
 
-  var VERSION = "3.0.0";
+  var VERSION = "3.0.1";
   var CONTRACT_VERSION = 1;
   var SECRET_FILE = "hs_ed25519_secret_key";
 
@@ -162,7 +162,7 @@
     var composeCmd = o.runtime === "podman" ? "podman-compose" : "docker compose";
     var restart = o.runtime === "podman" ? "always" : "unless-stopped";
     var healthcheck = o.runtime === "podman" ? "" :
-      '    healthcheck:\n      test: ["CMD", "su-exec", "tor", "python3", "/usr/local/bin/healthcheck.py"]\n' +
+      '    healthcheck:\n      test: ["CMD", "hiddenforge", "healthcheck"]\n' +
       "      interval: 60s\n      timeout: 10s\n      start_period: 120s\n      retries: 3\n";
     var header = "# hiddenforge compose fragment (hiddenforge v" + VERSION + ", contract " + CONTRACT_VERSION + ").";
     if (o.noRoot) header += "\n# No-root mode: the container runs as the tor user (100:101) with no capabilities at all.";
@@ -255,7 +255,7 @@
       "for svc in " + names + "; do\n" +
       '    onion=""\n    for _ in $(seq 1 180); do\n' +
       "        onion=$(" + up + ' -f "$BASE" -f compose.service.yml exec -T ' + containerQ + " \\\n" +
-      "            su-exec tor cat /var/lib/tor/hidden_service/$svc/hostname 2>/dev/null || true)\n" +
+      "            hiddenforge show --name \"$svc\" 2>/dev/null | awk '/\\.onion$/{print $2}' || true)\n" +
       '        if [ -n "$onion" ]; then break; fi\n        sleep 1\n    done\n    echo\n' +
       '    echo "================================================================="\n' +
       '    if [ -n "$onion" ]; then\n        echo "$svc .onion: $onion"\n' +

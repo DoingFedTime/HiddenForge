@@ -2,10 +2,70 @@
 
 All notable changes to HiddenForge are documented here.
 
-The latest release is **3.0.0**; its image digest and signatures are in
+The latest release is **3.0.1**; its image digest and signatures are in
 `signatures/` on master (a release's signatures are committed after its tag).
-3.0.0 is signed with ML-DSA-65 only, as 2.1.x is. `v2.0.5` is a git tag with no
+3.0.1 is signed with ML-DSA-65 only, as 3.0.0 and 2.1.x are. `v2.0.5` is a git tag with no
 image of its own: its changes ship with 2.1.0.
+
+---
+
+## [3.0.1] - unreleased
+
+Two Tor settings that should have been there from the start, and every command
+inside the container is now `hiddenforge <command>`. Pull and recreate: compose
+files, keys and the address stay as they are.
+
+### Tor
+
+- **Entry guards survive a restart.** The DataDirectory is in memory, so Tor's
+  `state` file, where it records its chosen entry guards, was lost at every
+  restart and Tor chose new guards each time. Each new choice is another chance
+  of picking a hostile relay, and HiddenForge restarts on purpose (a moved
+  backend, Tor exiting, a host reboot). The file is now saved as `tor-state`
+  (0600, tor-owned) in the key directory of the service whose name sorts first,
+  every 10 minutes and at shutdown, and restored before Tor starts. It is plain
+  text even with key encryption at rest; `backup` and `restore` carry it.
+- **Per-visitor circuit ID, opt-in per service.**
+  `{NAME}_TOR_EXPORT_CIRCUIT_ID=haproxy` sets Tor's
+  `HiddenServiceExportCircuitID haproxy` for that service: each connection to
+  the backend starts with a PROXY protocol v1 header carrying the circuit ID, so
+  the backend can rate-limit or block one circuit. Off by default, because a
+  backend that does not expect the header fails every request (nginx:
+  `listen 80 proxy_protocol;`). Any other value is refused with an error in the
+  log and the setting stays off.
+
+### Commands in the container
+
+- **One command set.** The image no longer answers `cat`, `sh -c`, `test`,
+  `true`, `python3 ...`, `entrypoint.py`, `vanity.py`, or `su-exec` followed by
+  anything else; they exit 127 with a message naming `hiddenforge <command>`.
+  Read the address with `hiddenforge show --name <service>` (or
+  `<service>.onion` in the key folder on the host).
+- **The healthcheck in existing compose files keeps working.**
+  `su-exec tor python3 /usr/local/bin/healthcheck.py [--json]` is the one old
+  command kept, because compose files on operators' hosts declare it and an
+  image update cannot change them. It runs the native healthcheck as the tor
+  user.
+- **New:** `hiddenforge healthcheck [--json]` (what the image's HEALTHCHECK and
+  the generated compose files now run) and `hiddenforge inspect --json` (the
+  torrc Tor runs with, dropped mappings, the service addresses and the
+  container's limits, read as the tor user). The ENTRYPOINT is
+  `hiddenforge run`; `docker run <image> show ...` works as before.
+- `setup`, `deploy.sh`, the wizard, the shipped compose files and
+  `manifest.json` use only native commands. The host CLI's `status` and
+  `doctor` read the container through `hiddenforge inspect`, which 3.0.0 images
+  do not have: update the image along with the CLI.
+- `hiddenforge vanity` names itself `hiddenforge vanity` in usage and error
+  messages.
+- A mapping whose backend name has an empty or over-long label (such as `.`) is
+  reported as invalid and dropped, instead of being retried as a backend that
+  has not started yet.
+
+### Build
+
+- `--build-arg BASES=<prefix>` takes the three base and builder images from a
+  copy (ours: `sambent.dev/sambent/dhi-`) at the Dockerfile's digests; the
+  image built is the same. CI and the release build take them from our copies.
 
 ---
 

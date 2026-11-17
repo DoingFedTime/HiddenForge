@@ -57,7 +57,7 @@ if sys.version_info < (3, 10):  # noqa: UP036
 # tests/test_manifest.py asserts they agree).
 # ---------------------------------------------------------------------------
 
-HIDDENFORGE_VERSION = "3.0.0"
+HIDDENFORGE_VERSION = "3.0.1"
 CONTRACT_VERSION = 1
 DEFAULT_IMAGE = os.environ.get("HIDDENFORGE_IMAGE", "sambent.dev/sam/hiddenforge:latest")
 DEFAULT_IMAGE_REPOSITORY = "sambent.dev/sam/hiddenforge"
@@ -600,8 +600,7 @@ def build_manifest() -> dict:
         ],
         "secrets": [],
         "health": {
-            "docker_healthcheck": ["CMD", "su-exec", "tor", "python3",
-                                   "/usr/local/bin/healthcheck.py"],
+            "docker_healthcheck": ["CMD", "hiddenforge", "healthcheck"],
             "podman_healthcheck": None,
             "podman_note": "No healthcheck under Podman: rootless Podman 4.9 never "
                            "restarts a container that has one when no systemd user "
@@ -697,9 +696,7 @@ def _fill_from_container(entry: dict, container: str | None) -> dict:
     if container is None or entry["onion"] is not None or entry["source"] is not None:
         return entry
     resolved = _resolve_container(container)
-    text = (_docker_exec_text(resolved, ["cat", f"{KEYS_IN_IMAGE}/{entry['name']}/hostname"])
-            if resolved else None)
-    onion = (text or "").strip()
+    onion = str((_inspect(resolved).get("hostnames") or {}).get(entry["name"]) or "")
     if ONION_RE.fullmatch(onion):
         entry = {**entry, "onion": onion, "source": "container"}
     return entry
@@ -779,10 +776,9 @@ def _not_ready_error(keys: Path, name: str) -> str:
         return "address not generated yet (no key directory for this service)"
     if not os.access(d, os.R_OK | os.X_OK):
         return (f"address not published yet: {d} exists but is not readable by this "
-                f"user, and {keys / (name + '.onion')} does not exist. Under Docker it "
-                "appears once the service is reachable. Under rootless Podman, 2.1.x "
-                "never writes it (3.0 does); pass --container <name> to read the "
-                "address from inside the container.")
+                f"user, and {keys / (name + '.onion')} does not exist. It appears once the "
+                "service is reachable; pass --container <name> to read the address "
+                "from inside the container sooner.")
     return "address not generated yet (Tor has not written hostname)"
 
 
@@ -865,20 +861,25 @@ def _docker_exec_json(container: str, argv: list[str]) -> dict | None:
     eng = _engine()
     if eng is None or container is None:
         return None
-    candidates = [
-        [eng, "exec", container, *argv],
-        [eng, "exec", container, "su-exec", "tor", *argv],
-    ]
-    for cmd in candidates:
-        proc = _run(cmd)
-        # Accept the doc even on a non-zero exit: healthcheck exits 1 when the
-        # service is not ready yet, but still prints the granular state we want.
-        if proc.stdout.strip():
-            try:
-                return json.loads(proc.stdout)
-            except json.JSONDecodeError:
-                continue
+    proc = _run([eng, "exec", container, *argv])
+    # Accept the doc even on a non-zero exit: healthcheck exits 1 when the
+    # service is not ready yet, but still prints the granular state we want.
+    if proc.stdout.strip():
+        try:
+            doc = json.loads(proc.stdout)
+        except json.JSONDecodeError:
+            return None
+        return doc if isinstance(doc, dict) else None
     return None
+
+
+def _inspect(container: str | None) -> dict:
+    """`hiddenforge inspect --json` in the container: its torrc, dropped
+    mappings, service addresses and resource limits, read as the tor user.
+    Empty when the container cannot be asked."""
+    if container is None:
+        return {}
+    return _docker_exec_json(container, [HF_IN_IMAGE, "inspect", "--json"]) or {}
 
 
 def cmd_status(args) -> int:
@@ -901,12 +902,10 @@ def cmd_status(args) -> int:
 
     # Granular readiness from the in-container healthcheck, if reachable.
     resolved = _resolve_container(container)
-    # As the tor user, exactly as the image's own HEALTHCHECK runs it. Run as
-    # root it cannot reach the control socket in the tor-owned 0700 DataDirectory
-    # wherever root lacks DAC_OVERRIDE (rootless Podman), and its "cannot reach
-    # control socket" answer was accepted as the state of a working service.
-    hc = (_docker_exec_json(resolved, ["su-exec", "tor", "python3",
-                                       "/usr/local/bin/healthcheck.py", "--json"])
+    # The in-image healthcheck switches to the tor user itself: as root it could
+    # not reach the control socket in the tor-owned DataDirectory wherever root
+    # lacks DAC_OVERRIDE (rootless Podman).
+    hc = (_docker_exec_json(resolved, [HF_IN_IMAGE, "healthcheck", "--json"])
           if resolved else None)
     if hc is not None:
         bootstrapped = hc.get("tor_bootstrapped")
@@ -942,8 +941,7 @@ def cmd_status(args) -> int:
         published = bool(addresses) and all(a["onion"] for a in addresses)
 
     # Skipped/dropped mappings recorded by the entrypoint (i2pforge parity).
-    dropped_raw = (_docker_exec_text(resolved, ["cat", "/var/lib/tor/dropped-mappings"])
-                   if resolved else None)
+    dropped_raw = _inspect(resolved).get("dropped_mappings")
     dropped_mappings = [ln for ln in (dropped_raw or "").splitlines() if ln.strip()]
 
     # No engine health status at all means no healthcheck ran -- Podman runs them
@@ -1096,18 +1094,18 @@ def _runtime_state(container: str | None) -> dict:
     set, and the cgroup's pids.max and memory.swap.max. Empty values mean the
     file does not exist (a cgroup-v1 host) and the caller falls back.
     """
-    script = ('echo "swap=$(cat /sys/fs/cgroup/memory.swap.max 2>/dev/null)"; '
-              'echo "pids=$(cat /sys/fs/cgroup/pids.max 2>/dev/null)"; '
-              'echo "capbnd=$(sed -n "s/^CapBnd:[[:space:]]*//p" /proc/1/status)"; '
-              'echo "hostswap=$(tail -n +2 /proc/swaps 2>/dev/null | wc -l)"')
-    text = _docker_exec_text(container, ["sh", "-c", script]) if container else None
+    doc = _inspect(container)
+    if not doc:
+        return {}
     state: dict = {}
-    for line in (text or "").splitlines():
-        key, _, value = line.partition("=")
-        state[key.strip()] = value.strip()
-    if "capbnd" in state:
+    for key, field in (("swap", "swap_max"), ("pids", "pids_max")):
+        if doc.get(field) is not None:
+            state[key] = str(doc[field])
+    if doc.get("host_swaps") is not None:
+        state["hostswap"] = str(doc["host_swaps"])
+    if "capbnd" in doc:
         try:
-            state["capbnd"] = int(state["capbnd"], 16)
+            state["capbnd"] = int(str(doc["capbnd"]), 16)
         except ValueError:
             state["capbnd"] = None
     return state
@@ -1118,19 +1116,6 @@ def _caps_ok(caps) -> set[str]:
     for c in caps or []:
         out.add(str(c).upper().removeprefix("CAP_"))
     return out
-
-
-def _docker_exec_text(container: str, argv: list[str]) -> str | None:
-    """Best-effort in-container command capturing stdout; None if unavailable."""
-    eng = _engine()
-    if eng is None or container is None:
-        return None
-    for prefix in ([eng, "exec", container, "su-exec", "tor"],
-                   [eng, "exec", container]):
-        proc = _run([*prefix, *argv])
-        if proc.returncode == 0:
-            return proc.stdout
-    return None
 
 
 def _append_key_checks(checks: list[dict], keys: Path) -> list[str]:
@@ -1200,16 +1185,15 @@ def _append_in_container_key_checks(checks: list[dict], container: str | None,
     those directories, so it can see the modes the host cannot. Only its checks
     for the services the host could not inspect are taken.
     """
-    doc = (_docker_exec_json(container, ["su-exec", "tor", HF_IN_IMAGE, "doctor",
-                                         "--keys-only", "--json"])
+    doc = (_docker_exec_json(container, [HF_IN_IMAGE, "doctor", "--keys-only", "--json"])
            if container else None)
     inner = doc.get("checks") if isinstance(doc, dict) else None
     if not isinstance(inner, list):
         checks.extend(_check(
             False, f"key modes for {name}",
             "the service directory belongs to the container's tor user and the "
-            "container could not be asked; run `docker exec <container> su-exec "
-            "tor hiddenforge doctor --keys-only`", severity="warn") for name in closed)
+            "container could not be asked; run `docker exec <container> "
+            "hiddenforge doctor --keys-only`", severity="warn") for name in closed)
         return
     covered: set[str] = set()
     for c in inner:
@@ -1607,7 +1591,7 @@ def cmd_doctor(args) -> int:
     # The generated torrc must still carry every hardening directive. Docker
     # flags do not prove the Tor config was not weakened, and a compromised or
     # reconstructed /etc/tor/torrc would otherwise pass doctor silently.
-    torrc = _docker_exec_text(resolved, ["cat", "/etc/tor/torrc"]) if resolved else None
+    torrc = _inspect(resolved).get("torrc") if resolved else None
     if torrc is None:
         checks.append(_check(True, "generated torrc is readable",
                              "could not read /etc/tor/torrc (container stopping?)",
@@ -1740,8 +1724,7 @@ def render_compose_fragment(services: dict[str, list[str]], image: str, keys: st
     # restart is how this container recovers (see podman-compose.yml).
     healthcheck = ("" if runtime == "podman" else
                    '    healthcheck:\n'
-                   '      test: ["CMD", "su-exec", "tor", "python3", '
-                   '"/usr/local/bin/healthcheck.py"]\n'
+                   '      test: ["CMD", "hiddenforge", "healthcheck"]\n'
                    '      interval: 60s\n'
                    '      timeout: 10s\n'
                    '      start_period: 120s\n'
@@ -1921,7 +1904,7 @@ for svc in {names}; do
     onion=""
     for _ in $(seq 1 180); do
         onion=$({up} -f "$BASE" -f compose.service.yml exec -T {container_q} \\
-            su-exec tor cat /var/lib/tor/hidden_service/$svc/hostname 2>/dev/null || true)
+            hiddenforge show --name "$svc" 2>/dev/null | awk '/\\.onion$/{{print $2}}' || true)
         if [ -n "$onion" ]; then break; fi
         sleep 1
     done

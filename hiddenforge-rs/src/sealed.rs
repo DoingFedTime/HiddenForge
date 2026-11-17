@@ -41,7 +41,7 @@ fn read(path: &str, max: usize) -> Option<Vec<u8>> {
 }
 
 /// Write a file atomically (new O_EXCL temp, fsync, rename), mode `mode`.
-fn write_atomic(dir: &str, name: &str, data: &[u8], mode: u32) -> Result<(), String> {
+pub fn write_atomic(dir: &str, name: &str, data: &[u8], mode: u32) -> Result<(), String> {
     let tmp = format!("{dir}/.{name}.{}.tmp", std::process::id());
     let _ = std::fs::remove_file(&tmp);
     let r = (|| -> std::io::Result<()> {

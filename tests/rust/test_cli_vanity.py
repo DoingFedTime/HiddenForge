@@ -1,4 +1,4 @@
-"""The Rust vanity generator (argv0 vanity.py) against vanity.py, on the fake generator.
+"""The Rust vanity generator (`hiddenforge vanity`) against vanity.py, on the fake generator.
 
 Both run the same arguments, the same fake mkp224o and an identical output
 directory; exit code, stdout, stderr and the files left behind must agree.
@@ -35,6 +35,7 @@ ADDR = "atdorl67o6q7anir2qm3sly4expi3ywvs2ltw3wl53zezgycohzi2zqd.onion"
 sys.path.insert(0, str(REPO))
 import vanity
 
+PROG = "hiddenforge vanity"
 GEN = ["--prefix", "a", "--name", "svc", "--threads", "2", "--seconds", "1"]
 
 
@@ -77,11 +78,13 @@ class Lab:
                 stdin=subprocess.DEVNULL,
                 timeout=90,
             )
-            return Result(p.returncode, p.stdout, p.stderr)
+            # the reference names itself vanity.py; the image's command is `hiddenforge vanity`
+            out, err = (t.replace("vanity.py", PROG) for t in (p.stdout, p.stderr))
+            return Result(p.returncode, out, err)
 
         with ThreadPoolExecutor(1) as ex:
             fut = ex.submit(run_py)
-            r = rust(args, rd, env=self.env(mode, **extra), argv0="vanity.py", timeout=90)
+            r = rust(["vanity", *args], rd, env=self.env(mode, **extra), timeout=90)
             p = fut.result()
         return r, p, rd, pd
 
@@ -339,20 +342,23 @@ def test_valid_name_edges(lab, name):
 @pytest.mark.parametrize(
     "argv,message",
     [
-        ([], "vanity.py: error: the following arguments are required: --prefix"),
-        (["--prefix"], "vanity.py: error: argument --prefix: expected one argument"),
+        ([], "hiddenforge vanity: error: the following arguments are required: --prefix"),
+        (["--prefix"], "hiddenforge vanity: error: argument --prefix: expected one argument"),
         (
             ["--prefix", "a", "--threads", "x"],
-            "vanity.py: error: argument --threads: invalid int value: 'x'",
+            "hiddenforge vanity: error: argument --threads: invalid int value: 'x'",
         ),
         (
             ["--prefix", "a", "--seconds", "1.5"],
-            "vanity.py: error: argument --seconds: invalid int value: '1.5'",
+            "hiddenforge vanity: error: argument --seconds: invalid int value: '1.5'",
         ),
-        (["--prefix", "a", "--bogus"], "vanity.py: error: unrecognized arguments: --bogus"),
+        (
+            ["--prefix", "a", "--bogus"],
+            "hiddenforge vanity: error: unrecognized arguments: --bogus",
+        ),
         (
             ["--prefix", "a", "--json=1"],
-            "vanity.py: error: argument --json: ignored explicit argument '1'",
+            "hiddenforge vanity: error: argument --json: ignored explicit argument '1'",
         ),
     ],
 )
@@ -556,7 +562,7 @@ def test_losing_the_race_exits_three_and_touches_nothing(lab):
     rd, pd = lab.twins(build)
     outs = []
     for d, run in (
-        (rd, lambda args, env: rust(args, rd, env=env, argv0="vanity.py")),
+        (rd, lambda args, env: rust(["vanity", *args], rd, env=env)),
         (
             pd,
             lambda args, env: Result(
@@ -587,7 +593,7 @@ def test_losing_the_race_exits_three_and_touches_nothing(lab):
 
 def test_a_missing_generator_is_a_clean_error(lab, scratch):
     env = env_for(MKP224O=str(scratch / "absent"))
-    r = rust([*GEN, "--out", "out", "--json"], scratch, env=env, argv0="vanity.py")
+    r = rust(["vanity", *GEN, "--out", "out", "--json"], scratch, env=env)
     # Neither /usr/local/bin/mkp224o nor /usr/bin/mkp224o exists on a test host.
     if not (Path("/usr/local/bin/mkp224o").exists() or Path("/usr/bin/mkp224o").exists()):
         assert r.rc == 2
@@ -603,8 +609,8 @@ def test_mkp224o_must_be_an_executable_regular_file(lab, scratch):
         pytest.skip("a real mkp224o is installed")
     plain = write(scratch / "plain", "#!/bin/sh\nexit 0\n", 0o644)
     for bad in (scratch, plain):
-        r = rust([*GEN, "--json"], scratch, env=env_for(MKP224O=str(bad)), argv0="vanity.py")
+        r = rust(["vanity", *GEN, "--json"], scratch, env=env_for(MKP224O=str(bad)))
         assert r.rc == 2 and "mkp224o not found" in doc(r)["error"], bad
     good = write(scratch / "good", "#!/bin/sh\nsleep 0.1\n", 0o755)
-    r = rust([*GEN, "--json"], scratch, env=env_for(MKP224O=str(good)), argv0="vanity.py")
+    r = rust(["vanity", *GEN, "--json"], scratch, env=env_for(MKP224O=str(good)))
     assert doc(r)["error"] == "benchmark failed: mkp224o produced no statistics; cannot benchmark"

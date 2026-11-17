@@ -652,7 +652,7 @@ def test_doctor_tolerates_bad_engine_values(hf, tmp_path, capsys, monkeypatch, p
         info["HostConfig"]["PidsLimit"] = pids_limit
     monkeypatch.setattr(hf, "_docker_inspect", lambda c: (info, None))
     monkeypatch.setattr(hf, "_resolve_container", lambda c: "cid")
-    monkeypatch.setattr(hf, "_docker_exec_text", lambda c, a: None)
+    monkeypatch.setattr(hf, "_inspect", lambda c: {})
 
     rc = hf.main(["doctor", "--container", "tor", "--keys", str(tmp_path), "--json"])
     assert rc in (0, 1)
@@ -676,7 +676,7 @@ def test_doctor_warns_when_dns_can_leave_the_container(hf, tmp_path, capsys,
     info["HostConfig"]["Dns"] = dns
     monkeypatch.setattr(hf, "_docker_inspect", lambda c: (info, None))
     monkeypatch.setattr(hf, "_resolve_container", lambda c: "cid")
-    monkeypatch.setattr(hf, "_docker_exec_text", lambda c, a: None)
+    monkeypatch.setattr(hf, "_inspect", lambda c: {})
     hf.main(["doctor", "--container", "tor", "--keys", str(tmp_path), "--json"])
     doc = json.loads(capsys.readouterr().out)
     check = next(c for c in doc["checks"] if c["check"] == "no DNS query leaves the container")
@@ -691,7 +691,7 @@ def _restart_checks(hf, monkeypatch, capsys, tmp_path, policy, engine,
     info["HostConfig"]["RestartPolicy"] = {"Name": policy} if policy is not None else None
     monkeypatch.setattr(hf, "_docker_inspect", lambda c: (info, None))
     monkeypatch.setattr(hf, "_resolve_container", lambda c: "cid")
-    monkeypatch.setattr(hf, "_docker_exec_text", lambda c, a: None)
+    monkeypatch.setattr(hf, "_inspect", lambda c: {})
     monkeypatch.setattr(hf, "_engine", lambda: engine)
     monkeypatch.setattr(hf, "_is_rootless", lambda: engine == "podman")
     monkeypatch.setenv("USER", "someone")
@@ -770,7 +770,7 @@ def _systemd_doctor(hf, monkeypatch, capsys, tmp_path, label, show_out, engine="
         info["State"]["ConmonPid"] = conmon_pid
     monkeypatch.setattr(hf, "_docker_inspect", lambda c: (info, None))
     monkeypatch.setattr(hf, "_resolve_container", lambda c: "cid")
-    monkeypatch.setattr(hf, "_docker_exec_text", lambda c, a: None)
+    monkeypatch.setattr(hf, "_inspect", lambda c: {})
     monkeypatch.setattr(hf, "_engine", lambda: engine)
     monkeypatch.setattr(hf, "_is_rootless", lambda: engine == "podman")
     monkeypatch.setenv("USER", "someone")
@@ -958,7 +958,7 @@ def test_host_network_dns_check_looks_at_backend_names(hf, tmp_path, capsys, mon
     info["Config"] = {"Env": env}
     monkeypatch.setattr(hf, "_docker_inspect", lambda c: (info, None))
     monkeypatch.setattr(hf, "_resolve_container", lambda c: "cid")
-    monkeypatch.setattr(hf, "_docker_exec_text", lambda c, a: None)
+    monkeypatch.setattr(hf, "_inspect", lambda c: {})
     hf.main(["doctor", "--container", "tor", "--keys", str(tmp_path), "--json"])
     doc = json.loads(capsys.readouterr().out)
     check = next(c for c in doc["checks"] if c["check"] == "no DNS query leaves the container")
@@ -972,7 +972,7 @@ def test_doctor_flags_missing_torrc_directive(hf, tmp_path, capsys, monkeypatch)
     os.chmod(tmp_path, 0o700)
     monkeypatch.setattr(hf, "_docker_inspect", lambda c: (_fake_inspect(), None))
     monkeypatch.setattr(hf, "_resolve_container", lambda c: "cid")
-    monkeypatch.setattr(hf, "_docker_exec_text", lambda c, a: "ClientOnly 1\n")
+    monkeypatch.setattr(hf, "_inspect", lambda c: {"torrc": "ClientOnly 1\n"})
     rc = hf.main(["doctor", "--container", "tor", "--keys", str(tmp_path), "--json"])
     assert rc == hf.EXIT_FAIL
     doc = json.loads(capsys.readouterr().out)
@@ -984,7 +984,7 @@ def test_doctor_passes_when_torrc_is_complete(hf, tmp_path, capsys, monkeypatch)
     torrc = "\n".join(hf.HARDENING_DIRECTIVES)
     monkeypatch.setattr(hf, "_docker_inspect", lambda c: (_fake_inspect(), None))
     monkeypatch.setattr(hf, "_resolve_container", lambda c: "cid")
-    monkeypatch.setattr(hf, "_docker_exec_text", lambda c, a: torrc)
+    monkeypatch.setattr(hf, "_inspect", lambda c: {"torrc": torrc})
     rc = hf.main(["doctor", "--container", "tor", "--keys", str(tmp_path), "--json"])
     assert rc == 0
     doc = json.loads(capsys.readouterr().out)
@@ -1029,7 +1029,7 @@ def test_status_ready_maps_healthcheck_fields(hf, tmp_path, capsys, monkeypatch)
         "tor_bootstrapped": True, "hidden_service_published": True,
         "vanguards": True, "reason": None,
         "services": [{"name": "app", "address": VECTOR_ONION, "published": True}]})
-    monkeypatch.setattr(hf, "_docker_exec_text", lambda c, a: None)
+    monkeypatch.setattr(hf, "_inspect", lambda c: {})
     rc = hf.main(["status", "--container", "tor", "--keys", str(tmp_path), "--json"])
     assert rc == 0
     doc = json.loads(capsys.readouterr().out)
@@ -1048,7 +1048,7 @@ def test_status_not_ready_exits_4(hf, tmp_path, capsys, monkeypatch):
                    "StartedAt": "2026-01-01T00:00:00Z"}, "RestartCount": 0}, None))
     monkeypatch.setattr(hf, "_resolve_container", lambda c: "cid")
     monkeypatch.setattr(hf, "_docker_exec_json", lambda c, a: None)
-    monkeypatch.setattr(hf, "_docker_exec_text", lambda c, a: None)
+    monkeypatch.setattr(hf, "_inspect", lambda c: {})
     rc = hf.main(["status", "--container", "tor", "--keys", str(tmp_path), "--json"])
     assert rc == hf.EXIT_NOT_READY
     assert json.loads(capsys.readouterr().out)["ready"] is False
@@ -1071,7 +1071,7 @@ def test_a_starting_engine_does_not_hold_back_a_ready_service(
         "tor_bootstrapped": True, "hidden_service_published": True,
         "vanguards": True, "reason": None, "ready": True,
         "services": [{"name": "app", "address": VECTOR_ONION, "published": True}]})
-    monkeypatch.setattr(hf, "_docker_exec_text", lambda c, a: None)
+    monkeypatch.setattr(hf, "_inspect", lambda c: {})
     rc = hf.main(["status", "--container", "tor", "--keys", str(tmp_path), "--json"])
     doc = json.loads(capsys.readouterr().out)
     assert rc == 0 and doc["ready"] is True, doc
@@ -1088,7 +1088,7 @@ def test_a_starting_engine_and_a_failing_probe_is_not_ready_and_says_why(
     monkeypatch.setattr(hf, "_docker_exec_json", lambda c, a: {
         "ready": False, "reason": "bootstrap not at 100%",
         "services": [{"name": "app", "address": VECTOR_ONION, "published": True}]})
-    monkeypatch.setattr(hf, "_docker_exec_text", lambda c, a: None)
+    monkeypatch.setattr(hf, "_inspect", lambda c: {})
     rc = hf.main(["status", "--container", "tor", "--keys", str(tmp_path), "--json"])
     doc = json.loads(capsys.readouterr().out)
     assert rc == hf.EXIT_NOT_READY and doc["reason"] == "bootstrap not at 100%"
@@ -1104,7 +1104,7 @@ def test_status_names_an_inconsistent_key_set_as_the_reason(hf, tmp_path, capsys
          "RestartCount": 0}, None))
     monkeypatch.setattr(hf, "_resolve_container", lambda c: "cid")
     monkeypatch.setattr(hf, "_docker_exec_json", lambda c, a: None)
-    monkeypatch.setattr(hf, "_docker_exec_text", lambda c, a: None)
+    monkeypatch.setattr(hf, "_inspect", lambda c: {})
     rc = hf.main(["status", "--container", "tor", "--keys", str(keys), "--json"])
     doc = json.loads(capsys.readouterr().out)
     assert rc == hf.EXIT_NOT_READY
@@ -1114,8 +1114,9 @@ def test_status_names_an_inconsistent_key_set_as_the_reason(hf, tmp_path, capsys
 def test_status_is_ready_under_rootless_podman(hf, tmp_path, capsys, monkeypatch):
     """Measured live with podman-compose.yml: the service was up with 11
     established introduction points, and `status` could never say ready.
-    Three causes, all reproduced here: the healthcheck was run as root (who
-    cannot reach the socket without DAC_OVERRIDE), the host cannot read the
+    Three causes, all reproduced here: the healthcheck must run as the tor user
+    (`hiddenforge healthcheck` drops to it; root cannot reach the socket
+    without DAC_OVERRIDE), the host cannot read the
     subuid-owned key directory so every address was None, and Podman had no
     health status because no healthcheck had run."""
     keys = tmp_path / "tor-keys"
@@ -1125,8 +1126,10 @@ def test_status_is_ready_under_rootless_podman(hf, tmp_path, capsys, monkeypatch
 
     def exec_json(container, argv):
         asked.append(argv)
-        if argv[:2] != ["su-exec", "tor"]:
-            return {"ready": False, "reason": "cannot reach control socket: [Errno 13]"}
+        if argv == [hf.HF_IN_IMAGE, "inspect", "--json"]:
+            return {"ok": True, "hostnames": {"app": VECTOR_ONION}}
+        if argv != [hf.HF_IN_IMAGE, "healthcheck", "--json"]:
+            return None
         return {"ready": True, "reason": None, "tor_bootstrapped": True,
                 "hidden_service_published": True, "vanguards": True,
                 "services": [{"name": "app", "address": VECTOR_ONION,
@@ -1136,13 +1139,13 @@ def test_status_is_ready_under_rootless_podman(hf, tmp_path, capsys, monkeypatch
         {"State": {"Running": True}, "RestartCount": 0}, None))    # no Health at all
     monkeypatch.setattr(hf, "_resolve_container", lambda c: "cid")
     monkeypatch.setattr(hf, "_docker_exec_json", exec_json)
-    monkeypatch.setattr(hf, "_docker_exec_text", lambda c, a: None)
+    monkeypatch.setattr(hf, "_inspect", lambda c: {})
     try:
         rc = hf.main(["status", "--container", "tor", "--keys", str(keys), "--json"])
     finally:
         os.chmod(keys / "app", 0o700)
     doc = json.loads(capsys.readouterr().out)
-    assert asked[0][:2] == ["su-exec", "tor"]
+    assert [hf.HF_IN_IMAGE, "healthcheck", "--json"] in asked
     assert doc["address"] == VECTOR_ONION
     assert rc == 0 and doc["ready"] is True, doc
 
@@ -1159,7 +1162,7 @@ def test_an_engine_health_status_is_still_believed_over_the_probe(hf, tmp_path,
     monkeypatch.setattr(hf, "_docker_exec_json", lambda c, a: {
         "ready": True, "reason": None, "hidden_service_published": True,
         "services": [{"name": "app", "address": VECTOR_ONION, "published": True}]})
-    monkeypatch.setattr(hf, "_docker_exec_text", lambda c, a: None)
+    monkeypatch.setattr(hf, "_inspect", lambda c: {})
     rc = hf.main(["status", "--container", "tor", "--keys", str(tmp_path), "--json"])
     doc = json.loads(capsys.readouterr().out)
     assert rc == hf.EXIT_NOT_READY and doc["ready"] is False
@@ -1180,7 +1183,7 @@ def test_a_stale_healthy_engine_does_not_outvote_a_failing_probe(hf, tmp_path, c
         "ready": False, "vanguards": False, "hidden_service_published": True,
         "reason": "Tor is serving but the Vanguards addon is NOT running",
         "services": [{"name": "app", "address": VECTOR_ONION, "published": True}]})
-    monkeypatch.setattr(hf, "_docker_exec_text", lambda c, a: None)
+    monkeypatch.setattr(hf, "_inspect", lambda c: {})
     rc = hf.main(["status", "--container", "tor", "--keys", str(tmp_path), "--json"])
     doc = json.loads(capsys.readouterr().out)
     assert rc == hf.EXIT_NOT_READY and doc["ready"] is False
@@ -1193,7 +1196,7 @@ def test_no_opinion_at_all_is_not_ready(hf, tmp_path, capsys, monkeypatch):
         {"State": {"Running": True}, "RestartCount": 0}, None))
     monkeypatch.setattr(hf, "_resolve_container", lambda c: "cid")
     monkeypatch.setattr(hf, "_docker_exec_json", lambda c, a: None)
-    monkeypatch.setattr(hf, "_docker_exec_text", lambda c, a: None)
+    monkeypatch.setattr(hf, "_inspect", lambda c: {})
     rc = hf.main(["status", "--container", "tor", "--keys", str(tmp_path), "--json"])
     assert rc == hf.EXIT_NOT_READY
 
@@ -1206,8 +1209,8 @@ def test_status_surfaces_dropped_mappings(hf, tmp_path, capsys, monkeypatch):
                    "StartedAt": "x"}, "RestartCount": 0}, None))
     monkeypatch.setattr(hf, "_resolve_container", lambda c: "cid")
     monkeypatch.setattr(hf, "_docker_exec_json", lambda c, a: None)
-    monkeypatch.setattr(hf, "_docker_exec_text", lambda c, a:
-                        "BAD_TOR_SERVICE_HOSTS: no valid port mappings; service dropped\n")
+    monkeypatch.setattr(hf, "_inspect", lambda c: {"dropped_mappings":
+                        "BAD_TOR_SERVICE_HOSTS: no valid port mappings; service dropped\n"})
     rc = hf.main(["status", "--container", "tor", "--keys", str(tmp_path), "--json"])
     assert rc == hf.EXIT_NOT_READY
     doc = json.loads(capsys.readouterr().out)
@@ -1665,7 +1668,7 @@ def _doctor_checks(hf, monkeypatch, capsys, cap_add, rootless):
     monkeypatch.setattr(hf, "_engine", lambda: "podman" if rootless else "docker")
     monkeypatch.setattr(hf, "_is_rootless", lambda: rootless)
     monkeypatch.setattr(hf, "_docker_exec_json", lambda c, a: None)
-    monkeypatch.setattr(hf, "_docker_exec_text", lambda c, a: None)
+    monkeypatch.setattr(hf, "_inspect", lambda c: {})
     monkeypatch.setattr(hf, "_run", lambda cmd, **kw: subprocess.CompletedProcess(
         cmd, 1, "", ""))
     hf.main(["doctor", "--container", "tor", "--keys", "/nonexistent", "--json"])

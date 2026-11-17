@@ -43,7 +43,7 @@ docker compose up -d
 
 # Your .onion address appears here once Tor bootstraps (first boot: a few minutes, up to ~6):
 # Replace "myapp" with whatever you named your service in step 2
-docker compose exec tor cat /var/lib/tor/hidden_service/myapp/hostname
+docker compose exec tor hiddenforge show --name myapp
 ```
 
 All security flags are set in the compose file. The backend service is
@@ -151,6 +151,25 @@ The only two edits you need to make are flagged with `<-- EDIT`.
   `TOR_SANDBOX=0`. See [Full vanguards](#full-vanguards).
 - `HIDDENFORGE_KEY_PASSPHRASE_FILE` turns on key encryption at rest (written for
   you by `hiddenforge setup --encrypt-keys`)
+- `{NAME}_TOR_EXPORT_CIRCUIT_ID` set to `haproxy` gives that service's backend a
+  way to tell visitors apart (default: off). Tor then starts every connection to
+  the backend with a PROXY protocol v1 header whose source address carries the
+  Tor circuit ID (`fc00:dead:beef:4dad::<id>`), so the backend can rate-limit or
+  block one circuit without blocking every visitor. The backend must expect the
+  header, or every request to it fails: for nginx, `listen 80 proxy_protocol;`
+  and use `$proxy_protocol_addr` as the visitor's key.
+
+> **Tor keeps its entry guards across restarts.** Tor records the entry guards
+> it has chosen in its state file, and the DataDirectory is in memory, so each
+> restart used to make Tor choose new ones. Every new choice is another chance of
+> picking a hostile relay, and HiddenForge restarts itself on purpose (a moved
+> backend, Tor exiting, a host reboot). The state file is now saved as
+> `tor-state` (mode 0600, owned by the tor user) in the key directory of the
+> service whose name sorts first, every 10 minutes and at shutdown, and restored
+> before Tor starts. It is not encrypted by `--encrypt-keys`. `backup` and
+> `restore` carry it with the keys, and `rotate` moves it out with the old key,
+> so a new address never inherits the old one's guards. Deleting it only means
+> Tor chooses guards once more.
 
 > **A recreated backend is followed automatically.** Tor accepts only IPs, so the
 > service name is resolved at startup and the IP is written into the torrc. The
@@ -176,18 +195,18 @@ The only two edits you need to make are flagged with `<-- EDIT`.
 
 ---
 
-## Upgrading to 3.0
+## Upgrading
 
-From any 2.1.x release: pull the new image and recreate the container. The
-compose files, the key volume, the `*_TOR_SERVICE_HOSTS` lines, the onion
-address and every command you run (`cat` of the hostname, `su-exec tor ...`,
-`hiddenforge ...`) work as before. Upgrading a 2.1.6 volume to 3.0 and rolling
-it back were both tested with the same key.
+From any 2.1.x or 3.0.x release: pull the new image and recreate the
+container. The compose files, the key volume, the `*_TOR_SERVICE_HOSTS` lines
+and the onion address stay as they are, and the healthcheck your compose file
+already declares keeps working. Upgrading a 2.1.6 volume and rolling it back
+were both tested with the same key.
 
-What changed is inside the image: there is no shell or Python any more, so a
-command that is not one 2.x documented, such as `docker exec tor sh`, is
-refused with a message naming the 3.0 command. The full list is in the
-[CHANGELOG](CHANGELOG.md).
+Inside the container every command is `hiddenforge <command>`; the image has
+no shell, no Python and no `cat`. Read the address with
+`hiddenforge show --name myapp`, or from `./tor-keys/myapp.onion` on the host.
+The full list is in the [CHANGELOG](CHANGELOG.md).
 
 Four hardening options are new in 3.0, all off by default:
 
@@ -508,7 +527,7 @@ COMPOSE=/usr/libexec/docker/cli-plugins/docker-compose
 
 mkdir -p ./tor-keys
 $COMPOSE -p hiddenforge -f podman-compose.yml up -d
-$COMPOSE -p hiddenforge -f podman-compose.yml exec tor su-exec tor cat /var/lib/tor/hidden_service/myapp/hostname
+$COMPOSE -p hiddenforge -f podman-compose.yml exec tor hiddenforge show --name myapp
 ```
 
 What to know before you rely on it:
@@ -516,11 +535,11 @@ What to know before you rely on it:
 - **Use Docker Compose v2 on the Podman socket.** `podman-compose` skips
   `memswap_limit` in every version and `pids_limit` before 1.1.
 - **The Podman file drops `DAC_OVERRIDE` and `FOWNER`**, so a root exec cannot
-  traverse the tor-owned key directory. `hiddenforge show` and `doctor` switch
-  to the tor user for the read by themselves; for `cat`, use `su-exec tor` as
-  above. Do not add the capabilities back to make a permission error go away.
+  traverse the tor-owned key directory. `hiddenforge show`, `doctor` and
+  `healthcheck` switch to the tor user for the read by themselves. Do not add
+  the capabilities back to make a permission error go away.
 - **The `<name>.onion` file is written** to the key volume under the Podman
-  file too (2.1.x could not).
+  file too.
 - **There is no healthcheck under Podman.** Rootless Podman 4.9 never restarts a
   container that has one when no systemd user manager is reachable, and this
   container heals itself by exiting and being restarted.

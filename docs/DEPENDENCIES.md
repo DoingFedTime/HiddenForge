@@ -16,7 +16,7 @@ builder images, noted after each table.
 |---|---|---|---|
 | Base | `dhi.io/static:20261020-musl-alpine3.23` (by digest) | Docker Hardened Images | musl, CA bundle, tzdata, `/etc/passwd`. Used unchanged |
 | Tor | 0.4.9.17 | Tor Project release tarball, compiled in the build | The whole point. Relay and directory-authority code compiled out |
-| `hiddenforge` | 3.0.0 | `hiddenforge-rs/` in this repository | Entrypoint, supervisor, in-image CLI, healthcheck, guard monitors, 2.x compatibility names |
+| `hiddenforge` | 3.0.1 | `hiddenforge-rs/` in this repository | Entrypoint, supervisor, in-image CLI, healthcheck, guard monitors |
 | mkp224o | commit `5172c0fd` | vendored source, `vendor/` | Vanity address generator. Static binary, CC0-1.0 |
 | `libcrypto3`, `libssl3` | 3.5.9-r1 | DHI apk | Tor's OpenSSL; also the key-sealing cipher |
 | `libevent` | 2.1.13-r0 | DHI apk | Tor's event loop |
@@ -36,8 +36,8 @@ stays until the next real change; adopting a new base means verifying Docker's
 signed provenance for the new digest first.
 
 That is everything. There is no shell, package manager, interpreter or
-coreutils. The names `su-exec`, `python3`, `cat`, `sh`, `test` and `true` are
-the `hiddenforge` binary answering the exact commands 2.x ran, nothing else
+coreutils. `/sbin/su-exec` is a link to the `hiddenforge` binary that answers
+one command only, the healthcheck older compose files declare
 (`hiddenforge-rs/src/compat.rs`).
 
 ## Build only

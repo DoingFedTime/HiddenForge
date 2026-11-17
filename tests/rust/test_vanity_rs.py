@@ -21,13 +21,10 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.fixture
 def vanity(tmp_path):
-    """Return a runner for the binary invoked as vanity.py with the fake generator."""
+    """Return a runner for `hiddenforge vanity` with the fake generator."""
     wrapper = tmp_path / "mkp224o"
     wrapper.write_text(f'#!/bin/sh\nexec {sys.executable} {FAKE} "$@"\n')
     wrapper.chmod(0o755)
-    link = tmp_path / "vanity.py"
-    link.symlink_to(RUST)
-
     def run(args, mode, timeout, **env):
         full = {
             **os.environ,
@@ -36,7 +33,7 @@ def vanity(tmp_path):
             **{k: str(v) for k, v in env.items()},
         }
         return subprocess.run(
-            [str(link), *args], env=full, capture_output=True, text=True, timeout=timeout
+            [str(RUST), "vanity", *args], env=full, capture_output=True, text=True, timeout=timeout
         )
 
     return run
@@ -108,11 +105,9 @@ def test_a_benchmark_that_cannot_start_leaves_no_temp_dir(tmp_path, generator):
     if generator == "unspawnable":
         gen.write_text("#!/nonexistent/interpreter\n")
         gen.chmod(0o755)
-    link = tmp_path / "vanity.py"
-    link.symlink_to(RUST)
     before = _bench_dirs()
     r = subprocess.run(
-        [str(link), "--prefix", "a", "--bench", "--seconds", "1"],
+        [str(RUST), "vanity", "--prefix", "a", "--bench", "--seconds", "1"],
         env={**os.environ, "MKP224O": str(gen)},
         capture_output=True,
         text=True,

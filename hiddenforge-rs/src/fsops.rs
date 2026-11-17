@@ -522,14 +522,7 @@ pub struct PublishState {
 }
 
 impl PublishState {
-    fn warn_once(
-        &mut self,
-        name: &str,
-        action: &str,
-        e: &PyErr,
-        keys_root: &str,
-        log: &mut Vec<String>,
-    ) {
+    fn warn_once(&mut self, name: &str, action: &str, e: &PyErr, log: &mut Vec<String>) {
         let errno = e.errno.unwrap_or(0);
         if errno == libc::ENOENT {
             return;
@@ -545,7 +538,7 @@ impl PublishState {
         self.warned.push(key);
         log.push(format!(
             "Warning: cannot publish the .onion address for {name}: {action} failed: {}. The service itself is \
-             unaffected -- read the address with 'su-exec tor cat {keys_root}/{name}/hostname' instead. (Reported \
+             unaffected -- read the address with 'hiddenforge show --name {name}' in the container instead. (Reported \
              once; further identical failures are not repeated.)",
             py::strerror(errno)
         ));
@@ -591,12 +584,12 @@ pub fn publish_addresses(
             Err(e) if e.is_permission() => match read_as_owner(&path) {
                 Some(r) => r,
                 None => {
-                    state.warn_once(&name, "read hostname", &e, keys_root, log);
+                    state.warn_once(&name, "read hostname", &e, log);
                     continue;
                 }
             },
             Err(e) => {
-                state.warn_once(&name, "read hostname", &e, keys_root, log);
+                state.warn_once(&name, "read hostname", &e, log);
                 continue;
             }
         };
@@ -655,7 +648,7 @@ pub fn publish_addresses(
                 // SAFETY: relative to the held directory; failure is ignored as in 2.x.
                 unsafe { libc::unlinkat(keys_fd.0, c.as_ptr(), 0) };
             }
-            state.warn_once(&name, &format!("write {target}"), &e, keys_root, log);
+            state.warn_once(&name, &format!("write {target}"), &e, log);
             continue;
         }
         log.push(format!("Published address for {name}: {onion}"));
@@ -1972,9 +1965,7 @@ mod tests {
         }
         assert_eq!(
             log,
-            [format!(
-                "Warning: cannot publish the .onion address for locked: read hostname failed: Permission denied. The service itself is unaffected -- read the address with 'su-exec tor cat {d}/locked/hostname' instead. (Reported once; further identical failures are not repeated.)"
-            )]
+            ["Warning: cannot publish the .onion address for locked: read hostname failed: Permission denied. The service itself is unaffected -- read the address with 'hiddenforge show --name locked' in the container instead. (Reported once; further identical failures are not repeated.)".to_string()]
         );
         assert!(!std::path::Path::new(&format!("{d}/locked.onion")).exists());
     }
@@ -2001,7 +1992,7 @@ mod tests {
         assert_eq!(
             log,
             [format!(
-                "Warning: cannot publish the .onion address for a: write {d}/a.onion failed: Is a directory. The service itself is unaffected -- read the address with 'su-exec tor cat {d}/a/hostname' instead. (Reported once; further identical failures are not repeated.)"
+                "Warning: cannot publish the .onion address for a: write {d}/a.onion failed: Is a directory. The service itself is unaffected -- read the address with 'hiddenforge show --name a' in the container instead. (Reported once; further identical failures are not repeated.)"
             )]
         );
         assert_eq!(
@@ -2016,62 +2007,20 @@ mod tests {
     fn warn_once_is_per_service_action_and_errno_and_ignores_enoent() {
         let mut st = PublishState::default();
         let mut log = vec![];
-        st.warn_once(
-            "a",
-            "read hostname",
-            &PyErr::os(libc::ENOENT),
-            "/k",
-            &mut log,
-        );
+        st.warn_once("a", "read hostname", &PyErr::os(libc::ENOENT), &mut log);
         assert!(log.is_empty());
-        st.warn_once(
-            "a",
-            "read hostname",
-            &PyErr::os(libc::EACCES),
-            "/k",
-            &mut log,
-        );
-        st.warn_once(
-            "a",
-            "read hostname",
-            &PyErr::os(libc::EACCES),
-            "/k",
-            &mut log,
-        );
+        st.warn_once("a", "read hostname", &PyErr::os(libc::EACCES), &mut log);
+        st.warn_once("a", "read hostname", &PyErr::os(libc::EACCES), &mut log);
         assert_eq!(log.len(), 1);
         // another service, another action word, another errno: each reported once; the
         // path after the action word does not count (Python keys on action.split()[0])
-        st.warn_once(
-            "b",
-            "read hostname",
-            &PyErr::os(libc::EACCES),
-            "/k",
-            &mut log,
-        );
-        st.warn_once(
-            "a",
-            "write /k/a.onion",
-            &PyErr::os(libc::EACCES),
-            "/k",
-            &mut log,
-        );
-        st.warn_once(
-            "a",
-            "write /k/other",
-            &PyErr::os(libc::EACCES),
-            "/k",
-            &mut log,
-        );
-        st.warn_once("a", "read hostname", &PyErr::os(libc::EIO), "/k", &mut log);
+        st.warn_once("b", "read hostname", &PyErr::os(libc::EACCES), &mut log);
+        st.warn_once("a", "write /k/a.onion", &PyErr::os(libc::EACCES), &mut log);
+        st.warn_once("a", "write /k/other", &PyErr::os(libc::EACCES), &mut log);
+        st.warn_once("a", "read hostname", &PyErr::os(libc::EIO), &mut log);
         assert_eq!(log.len(), 4, "{log:?}");
         // an error without an errno counts as errno 0, and is reported
-        st.warn_once(
-            "c",
-            "read hostname",
-            &PyErr::runtime("x".into()),
-            "/k",
-            &mut log,
-        );
+        st.warn_once("c", "read hostname", &PyErr::runtime("x".into()), &mut log);
         assert_eq!(log.len(), 5);
         assert!(log[4].contains("failed: Success."), "{}", log[4]);
     }

@@ -195,6 +195,22 @@ fn looks_dotted(s: &str) -> bool {
             .all(|p| (1..=3).contains(&p.len()) && p.bytes().all(|b| b.is_ascii_digit()))
 }
 
+/// A name no lookup can answer: an ASCII hostname with an empty label (`.`,
+/// `a..b`) or a label over 63 bytes. Such a mapping is invalid, not a backend
+/// that has yet to start, so it is not retried. The rule and the wording are
+/// the IDNA encoding step that 2.x's resolver applied before any lookup.
+fn idna_label_error(host: &str) -> Option<&'static str> {
+    if host.is_empty() || !host.is_ascii() {
+        return None;
+    }
+    let labels: Vec<&str> = host.split('.').collect();
+    let (last, rest) = labels.split_last()?;
+    if rest.iter().any(|l| l.is_empty() || l.len() > 63) {
+        return Some("label empty or too long");
+    }
+    (last.len() > 63).then_some("label too long")
+}
+
 fn resolve_to_ip(
     host: &str,
     label: &[PyChar],
@@ -210,6 +226,9 @@ fn resolve_to_ip(
                 py::safe(label)
             ))
         });
+    }
+    if let Some(e) = idna_label_error(stripped) {
+        return Err(MapErr::Invalid(e.to_string()));
     }
     let answer = match resolver(stripped) {
         Ok(addrs) => addrs.into_iter().next(),
@@ -366,6 +385,31 @@ pub fn build(env: &[(PyStr, PyStr)], resolver: Resolver) -> Torrc {
         block += "HiddenServiceEnableIntroDoSDefense 1\n";
         block += "HiddenServiceEnableIntroDoSRatePerSec 25\n";
         block += "HiddenServiceEnableIntroDoSBurstPerSec 200\n";
+
+        // Opt-in, per service: `<PREFIX>_TOR_EXPORT_CIRCUIT_ID=haproxy` makes Tor
+        // send a PROXY-protocol header with a per-circuit address
+        // (fc00:dead:beef:4dad::<circuit id>) before each connection, so the
+        // backend can tell visitors apart. Off by default: a backend that does
+        // not expect the header cannot read the connection.
+        let export_var = {
+            let mut v = remove_all(env_var, SUFFIX);
+            v.extend(py::from_str("_TOR_EXPORT_CIRCUIT_ID"));
+            v
+        };
+        if let Some((_, value)) = env.iter().find(|(k, _)| *k == export_var) {
+            if *value == py::from_str("haproxy") {
+                block += "HiddenServiceExportCircuitID haproxy\n";
+                out.log.push(format!(
+                    "{service_name}: each connection to the backend starts with a PROXY header carrying a per-circuit address."
+                ));
+            } else if !value.is_empty() {
+                out.log.push(format!(
+                    "ERROR: {} is {}; the only supported value is haproxy. Not enabled for {service_name}.",
+                    py::safe(&export_var),
+                    py::safe(value)
+                ));
+            }
+        }
 
         let mut port_lines: Vec<String> = Vec::new();
         for mapping in split_on(service_hosts, ',') {
@@ -541,6 +585,44 @@ mod tests {
     }
 
     #[test]
+    fn the_per_visitor_circuit_id_is_off_unless_a_service_asks_for_it() {
+        let off = build(&env(&[("A_TOR_SERVICE_HOSTS", "80:10.0.0.2:80")]), &dns);
+        assert!(!off.content.contains("HiddenServiceExportCircuitID"));
+        let on = build(
+            &env(&[
+                ("A_TOR_SERVICE_HOSTS", "80:10.0.0.2:80"),
+                ("A_TOR_EXPORT_CIRCUIT_ID", "haproxy"),
+                ("B_TOR_SERVICE_HOSTS", "80:10.0.0.3:80"),
+            ]),
+            &dns,
+        );
+        let blocks: Vec<&str> = on.content.split("# ── Service: ").collect();
+        let a = blocks.iter().find(|b| b.starts_with("a ")).unwrap();
+        let b = blocks.iter().find(|b| b.starts_with("b ")).unwrap();
+        assert!(a.contains("HiddenServiceExportCircuitID haproxy\n"), "{a}");
+        assert!(
+            !b.contains("HiddenServiceExportCircuitID"),
+            "only the service that asked"
+        );
+        let bad = build(
+            &env(&[
+                ("A_TOR_SERVICE_HOSTS", "80:10.0.0.2:80"),
+                ("A_TOR_EXPORT_CIRCUIT_ID", "haproxy\nSocksPort 9050"),
+            ]),
+            &dns,
+        );
+        assert!(!bad.content.contains("HiddenServiceExportCircuitID"));
+        assert!(
+            !bad.content.contains("SocksPort 9050"),
+            "a value never reaches the torrc"
+        );
+        assert!(bad
+            .log
+            .iter()
+            .any(|l| l.contains("the only supported value is haproxy")));
+    }
+
+    #[test]
     fn single_and_twopart() {
         let t = build(
             &env(&[("MYAPP_TOR_SERVICE_HOSTS", "80:10.0.0.2:8080,443:8443")]),
@@ -550,6 +632,24 @@ mod tests {
             "HiddenServicePort 80 10.0.0.2:8080\nHiddenServicePort 443 127.0.0.1:8443\n"
         ));
         assert_eq!(t.hs_dirs, vec!["/var/lib/tor/hidden_service/myapp"]);
+    }
+
+    #[test]
+    fn a_name_with_an_empty_or_overlong_label_is_invalid_not_pending() {
+        let long = "a".repeat(64);
+        for (host, want) in [
+            (".", Some("label empty or too long")),
+            ("a..b", Some("label empty or too long")),
+            (".web", Some("label empty or too long")),
+            (&*format!("{long}.web"), Some("label empty or too long")),
+            (&*long, Some("label too long")),
+            ("web.", None),
+            ("web", None),
+            (&*"a".repeat(63), None),
+            ("wéb", None),
+        ] {
+            assert_eq!(idna_label_error(host), want, "{host}");
+        }
     }
 
     #[test]

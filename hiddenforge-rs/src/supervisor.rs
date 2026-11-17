@@ -134,6 +134,33 @@ fn helper_confinement(
     }
 }
 
+/// How often Tor's state file is copied to the key volume while it runs (Tor
+/// itself rewrites it at most about hourly, and at exit).
+const TOR_STATE_SAVE_EVERY: f64 = 600.0;
+
+/// Copy Tor's state file to (`save`) or from (`load`) the key directory of
+/// service `name`, as the tor user. `Ok(false)`: nothing to copy yet.
+fn tor_state(ctx: &Ctx, root: bool, op: &str, name: &str) -> Result<bool, String> {
+    if !root {
+        return match crate::torstate::helper(op, name) {
+            0 => Ok(true),
+            3 => Ok(false),
+            _ => Err("the copy failed".into()),
+        };
+    }
+    let c = ctx.confined(
+        "hiddenforge",
+        &["__tor-state", op, name],
+        &landlock::watcher_rules(),
+    );
+    match privs::run_timeout(c.cmd, Duration::from_secs(30)) {
+        Ok((Some(0), _, _)) => Ok(true),
+        Ok((Some(3), _, _)) => Ok(false),
+        Ok((_, _, err)) => Err(String::from_utf8_lossy(&err).trim().to_string()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
 /// Make `cmd` fail at spawn (EPERM) without running anything: every caller
 /// already handles a spawn error.
 fn refuse_spawn(cmd: &mut std::process::Command) {
@@ -600,6 +627,29 @@ pub fn run() -> i32 {
         Err(e) => println!("Note: Landlock not applied ({e}); continuing with the capability, seccomp and sandbox layers."),
     }
 
+    // ── Tor's guards: restore the state file Tor saved last time ────────────
+    let state_home = names.iter().min().cloned();
+    if let Some(n) = state_home.as_deref() {
+        match tor_state(&ctx, root, "load", n) {
+            Ok(true) => println!(
+                "Restored Tor's saved state (its entry guards) from {}/{n}.",
+                torrc::KEYS_ROOT
+            ),
+            Ok(false) => {}
+            Err(e) => println!(
+                "Warning: could not restore Tor's saved state: {e}. Tor starts with fresh guards."
+            ),
+        }
+    }
+    let save_state = |why: &str| {
+        if let Some(n) = state_home.as_deref() {
+            if let Err(e) = tor_state(&ctx, root, "save", n) {
+                println!("Warning: could not save Tor's state ({why}): {e}");
+            }
+        }
+    };
+    let mut next_state_save = TOR_STATE_SAVE_EVERY;
+
     // ── Start Tor ───────────────────────────────────────────────────────────
     println!("Starting Tor...");
     let mut tor = match privs::command("tor", None, &["-f", TORRC_PATH], ctx.tor, &ctx.home).spawn()
@@ -686,6 +736,7 @@ pub fn run() -> i32 {
         if sig != 0 {
             println!("Received signal {sig}, shutting down...");
             shutdown(&ctx, &mut watcher, &mut guards, &mut tor);
+            save_state("at shutdown");
             return 0;
         }
 
@@ -735,6 +786,7 @@ pub fn run() -> i32 {
             privs::kill_proc(&mut guards, "Vanguards", Duration::from_secs(5), &|p, s| {
                 ctx.signal_as_tor(p, s)
             });
+            save_state("after Tor exited");
             return if rc != 0 { rc } else { 1 };
         }
 
@@ -796,10 +848,15 @@ pub fn run() -> i32 {
                 ),
             }
             shutdown(&ctx, &mut watcher, &mut guards, &mut tor);
+            save_state("before restarting");
             return 1;
         }
 
         let now = now_s(start);
+        if now >= next_state_save {
+            next_state_save = now + TOR_STATE_SAVE_EVERY;
+            save_state("periodic");
+        }
         let mut probe: Option<bool> = None;
         let ready = |probe: &mut Option<bool>| *probe.get_or_insert_with(|| socket_ready(&ctx));
 

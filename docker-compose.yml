@@ -5,7 +5,7 @@
 #      which appears twice, and the backend image)
 #   2. mkdir -p ./tor-keys
 #   3. docker compose up -d
-#   4. docker compose exec tor cat /var/lib/tor/hidden_service/myapp/hostname
+#   4. docker compose exec tor hiddenforge show --name myapp
 #      (replace "myapp" with whatever you used in step 1)
 #
 # All security flags are pre-configured. Do not remove them.
@@ -36,8 +36,8 @@ services:
       - CHOWN        # transfer ownership of hidden_service dir to the tor user
       - DAC_OVERRIDE # create service subdirs inside the host-owned bind mount
       - FOWNER       # chmod service dirs that are owned by the host user
-      - SETUID       # su-exec: drop from root to tor to run the Tor daemon
-      - SETGID       # su-exec: drop from root to the tor group to run the Tor daemon
+      - SETUID       # drop from root to the tor user to run the Tor daemon
+      - SETGID       # drop from root to the tor group to run the Tor daemon
     security_opt:
       - no-new-privileges:true     # prevent privilege escalation via setuid
       # NO seccomp=unconfined. Tor's Sandbox 1 is an IN-PROCESS filter covering
@@ -52,7 +52,7 @@ services:
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=64m
       - /etc/tor:rw,noexec,nosuid,nodev,size=8m
-      # uid=100,gid=101: Tor process runs as the tor user (uid 100) after su-exec drops
+      # uid=100,gid=101: Tor process runs as the tor user (uid 100) after the supervisor drops
       # privileges; the DataDirectory must be owned by that user or Tor refuses to start.
       - /var/lib/tor:rw,noexec,nosuid,nodev,size=64m,uid=100,gid=101,mode=0700
       # Note: the bind mount below overlays /var/lib/tor/hidden_service so keys persist.
@@ -72,7 +72,7 @@ services:
       # NOTE: `nproc` is deliberately NOT set here. RLIMIT_NPROC is counted per
       # HOST uid, and the tor user is uid 100, which other containers share
       # (i2pforge's i2pd is also uid 100). On a host already running >= the
-      # limit as uid 100, su-exec's setuid() fails with EAGAIN ("Resource
+      # limit as uid 100, the drop to the tor user (setuid) fails with EAGAIN ("Resource
       # temporarily unavailable") and Tor never starts. The only symptom is a
       # restart loop with no logs. Fork-bomb containment comes from
       # `pids_limit` instead, which is a per-container cgroup and does not
@@ -85,7 +85,7 @@ services:
     # healthcheck at all for the published image, so a wedged Tor or a dead
     # guard monitor was never reported. Compose-level healthchecks work on both.
     healthcheck:
-      test: ["CMD", "su-exec", "tor", "python3", "/usr/local/bin/healthcheck.py"]
+      test: ["CMD", "hiddenforge", "healthcheck"]
       interval: 60s
       timeout: 10s
       start_period: 120s

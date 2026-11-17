@@ -2,15 +2,12 @@
 //!
 //! What it does depends on the name it is started as:
 //!
-//!   entrypoint.py        the image ENTRYPOINT: an operator subcommand
+//!   hiddenforge          the in-image operator CLI; `hiddenforge run` is the
+//!                        image ENTRYPOINT: an operator subcommand
 //!                        (`docker run <image> show ...`), else PID 1 (boot Tor)
-//!   hiddenforge          the in-image operator CLI
 //!   hiddenforge-guards   bandguards + rendguard (started by the supervisor)
-//!   healthcheck.py       the healthcheck (also reached as `python3 <path>`)
-//!   vanity.py            the vanity-address generator
-//!   su-exec, python3, cat, sh, test, true
-//!                        the exact 2.x forms that compose files, deploy
-//!                        scripts and older CLIs run; nothing else (compat.rs)
+//!   su-exec              only the healthcheck command earlier compose files
+//!                        carry; nothing else (compat.rs)
 mod cli;
 mod clientauth;
 mod compat;
@@ -25,6 +22,7 @@ mod sealed;
 mod sha3;
 mod supervisor;
 mod torrc;
+mod torstate;
 mod vanguards;
 
 use py::Json;
@@ -83,7 +81,7 @@ fn healthcheck(args: &[String]) -> i32 {
             Duration::from_secs(60),
         ),
         _ => {
-            eprintln!("usage: healthcheck.py [-h] [--json] [--watch-uploads]");
+            eprintln!("usage: hiddenforge healthcheck [--json] [--watch-uploads]");
             2
         }
     }
@@ -103,9 +101,11 @@ fn hiddenforge(args: &[String]) -> i32 {
             .as_slice(),
     ) {
         ("__true", []) => 0,
-        ("__is-socket", [p]) => compat::test(&["-S".into(), (*p).to_string()]),
+        ("__is-socket", [p]) => compat::is_socket(p),
         // Run as the tor user by the supervisor: the public hostname file only.
         ("__keys", [op, name]) => sealed::helper(op, name),
+        // Run as the tor user by the supervisor: Tor's state file to and from the key volume.
+        ("__tor-state", [op, name]) => torstate::helper(op, name),
         ("__read-hostname", [p]) if hostname_path_ok(p) => {
             match fsops::read_small_regular_file(p, fsops::ADDRESS_FILE_MAX) {
                 Ok(d) => {
@@ -122,7 +122,24 @@ fn hiddenforge(args: &[String]) -> i32 {
             None => 2,
         },
         ("torrc-preview", []) => torrc_preview(),
-        ("healthcheck", _) => healthcheck(rest),
+        ("run", _) => entrypoint(rest),
+        // The healthcheck reads the tor-owned control socket and DataDirectory,
+        // which root cannot enter without DAC_OVERRIDE (rootless Podman), so it
+        // always runs as tor, the way the engine's healthcheck always ran it.
+        ("healthcheck", _) => match compat::become_tor_if_root() {
+            Ok(()) => healthcheck(rest),
+            Err(e) => {
+                eprintln!("error: cannot switch to the tor user: {e}");
+                2
+            }
+        },
+        ("inspect", ["--json"]) => match compat::become_tor_if_root() {
+            Ok(()) => inspect(),
+            Err(e) => {
+                eprintln!("error: cannot switch to the tor user: {e}");
+                2
+            }
+        },
         _ => {
             if AS_TOR.contains(&cmd.as_str()) && privs::is_root() && root_cannot_reach_keys() {
                 // Rootless Podman without DAC_OVERRIDE: root cannot traverse the
@@ -171,36 +188,71 @@ fn keys_unreachable(keys: &str) -> bool {
     matches!(fsops::lstat(keys), Err(e) if e.errno == Some(libc::EACCES))
 }
 
-fn python(args: &[String]) -> i32 {
-    match args.split_first() {
-        Some((script, rest)) if script == "/usr/local/bin/healthcheck.py" => healthcheck(rest),
-        Some((script, rest)) if script == "/usr/local/bin/vanity.py" => {
-            cli::run("vanity", rest).unwrap_or(2)
+/// `hiddenforge inspect --json`: what the host CLI's `status` and `doctor`
+/// read from inside a running container, as one document. Run as tor.
+fn inspect() -> i32 {
+    let read = |p: &str, cap: usize| {
+        fsops::read_small_regular_file(p, cap)
+            .ok()
+            .map(|d| String::from_utf8_lossy(&d).into_owned())
+    };
+    let torrc = read("/etc/tor/torrc", 1 << 20);
+    let mut hostnames = Vec::new();
+    for line in torrc.as_deref().unwrap_or("").lines() {
+        let mut f = line.split_whitespace();
+        if f.next() != Some("HiddenServiceDir") {
+            continue;
         }
-        Some((script, rest)) if script == "/usr/local/bin/entrypoint.py" => entrypoint(rest),
-        _ => {
-            eprintln!(
-                "python3: HiddenForge 3.0 has no Python in the image; this form is not one it answers: {}",
-                py::safe_str(&args.join(" "))
-            );
-            127
-        }
+        let Some(dir) = f.next() else { continue };
+        let name = dir.trim_end_matches('/').rsplit('/').next().unwrap_or("");
+        let path = format!("{}/hostname", dir.trim_end_matches('/'));
+        let onion = if hostname_path_ok(&path) {
+            read(&path, fsops::ADDRESS_FILE_MAX).map(|s| s.trim().to_string())
+        } else {
+            None
+        };
+        hostnames.push((name.to_string(), onion.map_or(Json::Null, Json::Str)));
     }
+    let trimmed = |p: &str| read(p, 4096).map(|s| s.trim().to_string());
+    let capbnd = read("/proc/1/status", 1 << 16).and_then(|s| {
+        s.lines()
+            .find_map(|l| l.strip_prefix("CapBnd:").map(|v| v.trim().to_string()))
+    });
+    let host_swaps = read("/proc/swaps", 1 << 16).map(|s| s.lines().skip(1).count());
+    let opt = |v: Option<String>| v.map_or(Json::Null, Json::Str);
+    let doc = Json::obj()
+        .with("ok", true.into())
+        .with("torrc", opt(torrc))
+        .with(
+            "dropped_mappings",
+            opt(read("/var/lib/tor/dropped-mappings", 1 << 20)),
+        )
+        .with("hostnames", Json::Obj(hostnames))
+        .with("swap_max", opt(trimmed("/sys/fs/cgroup/memory.swap.max")))
+        .with("pids_max", opt(trimmed("/sys/fs/cgroup/pids.max")))
+        .with("capbnd", opt(capbnd))
+        .with(
+            "host_swaps",
+            host_swaps.map_or(Json::Null, |n| Json::Int(n as i64)),
+        );
+    println!("{}", py::dumps(&doc, false, None));
+    0
 }
 
-/// Dispatch by program name (also used by the su-exec form).
+/// Dispatch by program name.
 fn by_name(name: &str, args: &[String]) -> i32 {
     match name {
         "hiddenforge" | "hiddenforge-upload-watch" => hiddenforge(args),
-        "healthcheck.py" => healthcheck(args),
-        "vanity.py" => cli::run("vanity", args).unwrap_or(2),
-        "python3" | "python" | "python3.12" => python(args),
-        "cat" => compat::cat(args),
-        "sh" => compat::sh(args),
-        "test" => compat::test(args),
-        "true" => 0,
-        "su-exec" => compat::su_exec(args, &by_name),
-        "entrypoint.py" | "entrypoint" => entrypoint(args),
+        "su-exec" => match compat::legacy_healthcheck(args) {
+            Some(json) => match compat::become_tor_if_root() {
+                Ok(()) => health::main_check(json),
+                Err(e) => {
+                    eprintln!("error: cannot switch to the tor user: {e}");
+                    2
+                }
+            },
+            None => compat::refuse("su-exec", args),
+        },
         other => {
             // Never boot a second supervisor under an unexpected name.
             eprintln!(

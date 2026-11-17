@@ -156,6 +156,13 @@ identity. The README has the operational version of this list.
   (L2, no L3). `HIDDENFORGE_VANGUARDS=full` with `TOR_SANDBOX=0` pins both
   layers natively and gives up the Tor-specific filter. The operator picks which
   risk to carry; neither choice is free.
+- **Entry guards persist; the in-memory DataDirectory does not.** Tor's
+  `state` file (its chosen entry guards) is saved to the key volume as
+  `tor-state` and restored at start, so a restart, which HiddenForge causes on
+  purpose, no longer forces a new guard choice. The file is in plaintext even
+  under key encryption at rest: someone holding the volume learns the service's
+  guards, which narrows where to watch, but not its key. Everything else in the
+  DataDirectory (the consensus, descriptors) is still fetched fresh at start.
 - **Key encryption at rest is opt-in.** Off by default because it needs a
   passphrase at every start, and HiddenForge restarts itself on purpose. See
   "Key encryption at rest" below for what it does and does not protect.
@@ -380,9 +387,9 @@ next restart.
 ### No shell in the image
 
 The runtime image has no shell, no busybox and no package manager. Someone who
-gets code execution in the container finds no tools to build on. The names 2.x
-commands use (`sh`, `cat`, `su-exec`, `python3`, `test`, `true`) are the
-`hiddenforge` binary, and each answers only the exact forms 2.x ran.
+gets code execution in the container finds no tools to build on. The one
+extra name, `su-exec`, is the `hiddenforge` binary and runs only the
+healthcheck that older compose files declare.
 
 ## How to check these claims
 
@@ -392,7 +399,7 @@ commands use (`sh`, `cat`, `su-exec`, `python3`, `test`, `true`) are the
 hiddenforge doctor --json                 # caps, read-only, modes, torrc directives
 hiddenforge status --json                 # readiness + dropped_mappings
 hiddenforge verify-image --json           # both signatures, against the PINNED keys
-docker exec <c> su-exec tor tor --verify-config -f /etc/tor/torrc   # Tor accepts it
+docker exec <c> hiddenforge inspect --json      # the torrc Tor runs with (Tor refuses to start on one it rejects)
 python3 scripts/build_inputs.py verify <inputs dir>   # the build inputs are the locked ones
 .venv/bin/pytest -q                       # the host unit/property suite
 HIDDENFORGE_E2E=1 .venv/bin/pytest tests/test_e2e_live.py   # live acceptance

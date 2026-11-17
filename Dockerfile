@@ -125,19 +125,18 @@ RUN --network=none cp -a /out/. /stage/; \
     done; \
     mkdir -p /delta/lib/apk/db; cp -a /rt/lib/apk/db/installed /delta/lib/apk/db/installed; \
     cp -a /stage/. /delta/; \
-    # The tor user: uid 100, gid 101, exactly as 2.x (live key volumes depend on it).
+    # The tor user: uid 100, gid 101, as in every earlier release (live key volumes depend on it).
     mkdir -p /delta/etc; \
     { cat /rt/etc/passwd; echo 'tor:x:100:101:tor:/var/lib/tor:/sbin/nologin'; } > /delta/etc/passwd; \
     { cat /rt/etc/group; echo 'tor:x:101:tor'; } > /delta/etc/group; \
     chmod 0644 /delta/etc/passwd /delta/etc/group; \
-    # One binary, many names: the image ENTRYPOINT, the CLI, and the exact 2.x
-    # forms (healthcheck.py, su-exec, python3, cat, sh, test, true). Each name
-    # answers only what 2.x ran; see hiddenforge-rs/src/compat.rs.
+    # One other name for the binary: su-exec, only because compose files
+    # already on operators' hosts declare the healthcheck as
+    # `su-exec tor python3 /usr/local/bin/healthcheck.py`, which an image update
+    # cannot change. That exact command runs the native healthcheck; nothing
+    # else answers to it (hiddenforge-rs/src/compat.rs).
     cd /delta; \
-    for l in usr/local/bin/entrypoint.py usr/local/bin/healthcheck.py usr/local/bin/vanity.py \
-             sbin/su-exec usr/bin/python3 bin/cat bin/sh usr/bin/test bin/true; do \
-      mkdir -p "$(dirname "$l")"; ln -s /usr/local/bin/hiddenforge "$l"; \
-    done; \
+    mkdir -p sbin; ln -s /usr/local/bin/hiddenforge sbin/su-exec; \
     mkdir -p var/lib/tor/hidden_service etc/tor tmp; \
     chown 100:101 var/lib/tor; chmod 0700 var/lib/tor; chmod 1777 tmp; \
     # Every directory must be enterable by the tor user, except the two that
@@ -151,7 +150,7 @@ FROM runtime
 ARG SOURCE_DATE_EPOCH=0
 LABEL org.opencontainers.image.title="HiddenForge" \
       org.opencontainers.image.description="Hardened Tor v3 onion service container" \
-      org.opencontainers.image.version="3.0.0" \
+      org.opencontainers.image.version="3.0.1" \
       org.opencontainers.image.source="https://sambent.dev/sam/HiddenForge" \
       org.opencontainers.image.licenses="GPL-3.0-only" \
       org.opencontainers.image.base.name="dhi.io/static:20261020-musl-alpine3.23" \
@@ -169,5 +168,5 @@ ENV HOME=/var/lib/tor \
 USER 0
 VOLUME ["/var/lib/tor/hidden_service/"]
 HEALTHCHECK --interval=60s --timeout=10s --start-period=120s --retries=3 \
-    CMD ["su-exec", "tor", "python3", "/usr/local/bin/healthcheck.py"]
-ENTRYPOINT ["/usr/local/bin/entrypoint.py"]
+    CMD ["hiddenforge", "healthcheck"]
+ENTRYPOINT ["/usr/local/bin/hiddenforge", "run"]

@@ -88,7 +88,7 @@ The two shipped files differ on purpose:
 |---|---|---|---|
 | Tor `restart` | `unless-stopped` | `always` | After a reboot Podman's boot service starts only `always` containers |
 | Tor capabilities | `CHOWN`, `DAC_OVERRIDE`, `FOWNER`, `SETUID`, `SETGID` | `CHOWN`, `SETUID`, `SETGID` | In rootless Podman container root already owns the key bind mount |
-| Tor healthcheck | `healthcheck.py` every 60 s | none | Rootless Podman 4.9 never restarts a container that has one when no systemd user manager is reachable |
+| Tor healthcheck | `hiddenforge healthcheck` every 60 s | none | Rootless Podman 4.9 never restarts a container that has one when no systemd user manager is reachable |
 | Tor `apparmor` | `docker-default` | not set | Rootless Podman often cannot load `docker-default` and applies its own |
 | `/var/lib/tor` tmpfs | `uid=100,gid=101,mode=0700` | no owner options | Those tmpfs options are Docker-specific; the entrypoint chowns the directory |
 | Backend capabilities | adds `DAC_OVERRIDE` | adds `NET_BIND_SERVICE` instead | Rootless Podman cannot bind ports below 1024 without it |
@@ -205,14 +205,14 @@ count through `healthy`. The fields:
 | `running` | the container is up |
 | `healthy` | the healthcheck passes: bootstrapped, a circuit established, every service holding established introduction points with its descriptor uploaded to the network by this Tor, and Vanguards alive. Under Podman no engine healthcheck is set (rootless Podman 4.9 does not restart a container that has one when no systemd user session is reachable), so `health_status` is empty and `status` runs the same check itself |
 | `tor_bootstrapped` | Tor reports `PROGRESS=100` |
-| `hidden_service_published` | every configured service has a valid `hostname` (2.1.x under rootless Podman did not write the published `<name>.onion` file; 3.0 does) |
+| `hidden_service_published` | every configured service has a valid `hostname` and its published `<name>.onion` file |
 | `vanguards` | the guard-protection addon is alive |
 
 `status --json` exits `0` when ready, `4` when not, and `2` if the container is not found. Inside the container the same
 state is available granularly:
 
 ```bash
-docker exec <container> su-exec tor python3 /usr/local/bin/healthcheck.py --json
+docker exec <container> hiddenforge healthcheck --json
 ```
 
 ---
@@ -353,7 +353,7 @@ Exit `1` on any failure, `0` otherwise, `2` if the container cannot be inspected
 Inside the container (no docker socket):
 
 ```bash
-docker exec <container> su-exec tor hiddenforge doctor --keys-only --json
+docker exec <container> hiddenforge doctor --keys-only --json
 ```
 
 ---
@@ -514,5 +514,5 @@ print(addr["onion"], addr["key_path"])
 - **`show` says the key volume cannot be enumerated**: that is intentional; the
   volume is `0751` (traverse, not list). Pass `--name <service>`.
 - **rootless Podman**: use `podman-compose.yml`, and read the `.onion` with
-  `podman-compose exec tor su-exec tor cat /var/lib/tor/hidden_service/<name>/hostname`
-  (the `su-exec tor` is required; see the rootless notes in the README).
+  `podman-compose exec tor hiddenforge show --name <name>` (it reads as the
+  tor user; see the rootless notes in the README).

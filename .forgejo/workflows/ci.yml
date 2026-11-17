@@ -191,13 +191,21 @@ jobs:
             --tmpfs /tmp:uid=65532 --tmpfs /var/lib/tor:uid=65532,mode=0700 --user 65532 \
             sambent.dev/sam/hiddenforge:ci --verify-config -f /t
 
-      - name: 2.x compatibility forms still answer (no shell, no Python in the image)
+      - name: only the healthcheck older compose files declare still answers (no shell, no Python)
         run: |
           set -euo pipefail
           img=sambent.dev/sam/hiddenforge:ci
-          docker run --rm --entrypoint su-exec "$img" tor true
-          # `! cmd` never trips `set -e`, so a shell that answered would pass
-          # silently. Test the refusal explicitly.
+          # Compose files already on operators' hosts declare this healthcheck;
+          # it must run the native one. Tor is not running here, so it reports
+          # not ready, as JSON.
+          out=$(docker run --rm --entrypoint su-exec "$img" \
+            tor python3 /usr/local/bin/healthcheck.py --json || true)
+          printf '%s' "$out" | python3 -c 'import json,sys; assert "ready" in json.load(sys.stdin)'
+          # `! cmd` never trips `set -e`, so a command that answered would pass
+          # silently. Test each refusal explicitly.
+          if docker run --rm --entrypoint su-exec "$img" tor true; then
+            echo "FAIL: su-exec ran a command other than the old healthcheck"; exit 1
+          fi
           if docker run --rm --entrypoint sh "$img" -c id; then
             echo "FAIL: sh -c answered: the image has a general-purpose shell"; exit 1
           fi
@@ -295,8 +303,8 @@ jobs:
       - name: semgrep (security-audit + dockerfile)
         run: |
           # The only excluded rule is the accepted root-at-PID1 design: the
-          # container MUST start as root to chown the key mount and su-exec to
-          # tor. See SECURITY.md. Everything else must be clean.
+          # container MUST start as root to chown the key mount and then drop
+          # to tor. See SECURITY.md. Everything else must be clean.
           docker run --rm -v "$PWD:/src" sambent.dev/sambent/hf-tools-semgrep@sha256:7acf76eaa621465588fdfcc84f46fd7ea1e8337ebb1aa1ed6f4685f6eedaec25 semgrep \
             --config=p/security-audit --config=p/dockerfile \
             --exclude-rule=dockerfile.security.missing-user-entrypoint.missing-user-entrypoint \

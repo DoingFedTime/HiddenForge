@@ -703,7 +703,7 @@ fn not_ready_error(keys: &str, name: &str) -> String {
     }
     if !access(&d, libc::R_OK | libc::X_OK) {
         return format!(
-            "address not published yet: {d} exists but is not readable by this user, and {} does not exist. Under Docker it appears once the service is reachable. Under rootless Podman, 2.1.x never writes it (3.0 does); pass --container <name> to read the address from inside the container.",
+            "address not published yet: {d} exists but is not readable by this user, and {} does not exist. It appears once the service is reachable; pass --container <name> to read the address from inside the container sooner.",
             join(keys, &format!("{name}.onion"))
         );
     }
@@ -926,7 +926,7 @@ fn cmd_doctor(a: &Args) -> i32 {
         checks.push(check(
             false,
             &format!("key modes for {name}"),
-            "the service directory belongs to the container's tor user and the container could not be asked; run `docker exec <container> su-exec tor hiddenforge doctor --keys-only`",
+            "the service directory belongs to the container's tor user and the container could not be asked; run `docker exec <container> hiddenforge doctor --keys-only`",
             "warn",
         ));
     }
@@ -1159,7 +1159,7 @@ fn render_compose(services: &Services, o: &SetupOpts) -> String {
     let healthcheck = if o.runtime == "podman" {
         String::new()
     } else {
-        "    healthcheck:\n      test: [\"CMD\", \"su-exec\", \"tor\", \"python3\", \"/usr/local/bin/healthcheck.py\"]\n      interval: 60s\n      timeout: 10s\n      start_period: 120s\n      retries: 3\n".to_string()
+        "    healthcheck:\n      test: [\"CMD\", \"hiddenforge\", \"healthcheck\"]\n      interval: 60s\n      timeout: 10s\n      start_period: 120s\n      retries: 3\n".to_string()
     };
     let example = &svc[0].0;
     let mut header = format!(
@@ -1336,7 +1336,7 @@ for svc in {names}; do
     onion=""
     for _ in $(seq 1 180); do
         onion=$({up} -f "$BASE" -f compose.service.yml exec -T {container_q} \
-            su-exec tor cat /var/lib/tor/hidden_service/$svc/hostname 2>/dev/null || true)
+            hiddenforge show --name "$svc" 2>/dev/null | awk '/\.onion$/{{print $2}}' || true)
         if [ -n "$onion" ]; then break; fi
         sleep 1
     done
@@ -2312,7 +2312,7 @@ fn cmd_vanity(argv: &[String]) -> i32 {
         },
         o("--json", Kind::Flag),
     ];
-    let a = match parse("vanity.py", &specs, argv) {
+    let a = match parse("hiddenforge vanity", &specs, argv) {
         Ok(a) => a,
         Err(rc) => return rc,
     };

@@ -2,7 +2,7 @@
 
 The binary is one multi-call executable chosen by argv0. These tests start it
 under each name and check who answered. Nothing here may boot the supervisor
-(an unknown argument to entrypoint.py would) and nothing signals a process the
+(an unknown argument to `hiddenforge run` would) and nothing signals a process the
 test did not start itself.
 """
 
@@ -53,91 +53,71 @@ def run(argv0, args, cwd, **kw):
 
 
 def test_version_text_and_json(scratch):
-    for argv0, args in (
-        ("hiddenforge", ["version"]),
-        ("entrypoint.py", ["version"]),
-        ("python3", ["/usr/local/bin/entrypoint.py", "version"]),
-    ):
-        r = run(argv0, args, scratch)
-        assert (r.rc, r.out, r.err) == (0, f"hiddenforge {VERSION} (contract 1)\n", ""), argv0
-        r = run(argv0, [*args, "--json"], scratch)
+    for args in (["version"], ["run", "version"]):
+        r = run("hiddenforge", args, scratch)
+        assert (r.rc, r.out, r.err) == (0, f"hiddenforge {VERSION} (contract 1)\n", ""), args
+        r = run("hiddenforge", [*args, "--json"], scratch)
         assert r.rc == 0 and json.loads(r.out) == {
             "ok": True,
             "exit_code": 0,
             "name": "hiddenforge",
             "version": VERSION,
             "contract_version": 1,
-        }, argv0
+        }, args
 
 
 @pytest.mark.parametrize("cmd", SUBCOMMANDS)
-@pytest.mark.parametrize(
-    "argv0,prefix",
-    [
-        ("hiddenforge", ""),
-        ("entrypoint.py", ""),
-        ("entrypoint", ""),
-        ("python3", "/usr/local/bin/entrypoint.py"),
-    ],
-)
-def test_every_operator_command_is_reached_by_name(scratch, cmd, argv0, prefix):
-    args = ([prefix] if prefix else []) + [cmd, "-h"]
-    r = run(argv0, args, scratch)
-    prog = "vanity.py" if cmd == "vanity" else f"hiddenforge {cmd}"
+@pytest.mark.parametrize("prefix", [[], ["run"]], ids=["cli", "entrypoint"])
+def test_every_operator_command_is_reached(scratch, cmd, prefix):
+    """`hiddenforge <cmd>` in the container, and `docker run <image> <cmd>`,
+    which the image ENTRYPOINT (`hiddenforge run`) receives as `run <cmd>`."""
+    r = run("hiddenforge", [*prefix, cmd, "-h"], scratch)
     if cmd == "client-auth":  # needs an operation first: its own usage error, as JSON
         assert (
             r.rc == 2
             and "usage: hiddenforge client-auth {add,remove,list}" in json.loads(r.out)["error"]
         )
     else:
-        assert r.rc == 0 and r.out.startswith(f"usage: {prog} [-h]"), (r.out, r.err)
+        assert r.rc == 0 and r.out.startswith(f"usage: hiddenforge {cmd} [-h]"), (r.out, r.err)
 
 
-def test_vanity_py_and_the_python_form_reach_the_generator(scratch):
-    for argv0, args in (
-        ("vanity.py", ["-h"]),
-        ("python3", ["/usr/local/bin/vanity.py", "-h"]),
-        ("python", ["/usr/local/bin/vanity.py", "-h"]),
-        ("python3.12", ["/usr/local/bin/vanity.py", "-h"]),
-    ):
-        r = run(argv0, args, scratch)
-        assert r.rc == 0 and r.out.startswith("usage: vanity.py [-h] --prefix PREFIX"), argv0
-    r = run("vanity.py", [], scratch)
-    assert r.rc == 2 and "the following arguments are required: --prefix" in r.err
-
-
-def test_the_python_form_answers_only_three_scripts(scratch):
-    for args in (
-        [],
-        ["other.py"],
-        ["-c", "print(1)"],
-        ["/usr/local/bin/entrypoint.py.bak"],
-        ["/tmp/healthcheck.py"],  # noqa: S108  (a path the binary must refuse, never opened)
-        ["healthcheck.py"],
-    ):
-        r = run("python3", args, scratch)
-        assert r.rc == 127 and r.out == ""
-        assert r.err == (
-            "python3: HiddenForge 3.0 has no Python in the image; this form is "
-            f"not one it answers: {' '.join(args)}\n"
-        ), args
-
-
-def test_the_python_form_reaches_the_healthcheck(scratch):
-    r = run("python3", ["/usr/local/bin/healthcheck.py", "--bogus"], scratch)
-    assert (r.rc, r.err) == (2, "usage: healthcheck.py [-h] [--json] [--watch-uploads]\n")
-    r = run("healthcheck.py", ["--bogus"], scratch)
-    assert (r.rc, r.err) == (2, "usage: healthcheck.py [-h] [--json] [--watch-uploads]\n")
+def test_the_healthcheck_usage(scratch):
+    r = run("hiddenforge", ["healthcheck", "--bogus"], scratch)
+    assert (r.rc, r.err) == (2, "usage: hiddenforge healthcheck [--json] [--watch-uploads]\n")
 
 
 def test_healthcheck_json_and_plain_forms_differ(scratch):
-    a = run("healthcheck.py", ["--json"], scratch)
+    a = run("hiddenforge", ["healthcheck", "--json"], scratch)
     doc = json.loads(a.out)
     assert doc["ready"] in (True, False) and a.rc == doc["exit_code"]
-    b = run("hiddenforge", ["healthcheck", "--json"], scratch)
-    assert json.loads(b.out).keys() == doc.keys()
     plain = run("hiddenforge", ["healthcheck"], scratch)
     assert plain.out != a.out, "the plain form is not the JSON document"
+
+
+def test_the_one_command_older_compose_files_send_runs_the_healthcheck(scratch):
+    """Compose files on operators' hosts declare
+    `su-exec tor python3 /usr/local/bin/healthcheck.py`; an image update
+    cannot change them, so that exact command must keep working."""
+    native = json.loads(run("hiddenforge", ["healthcheck", "--json"], scratch).out)
+    legacy = run("su-exec", ["tor", "python3", "/usr/local/bin/healthcheck.py", "--json"],
+                 scratch)
+    assert legacy.rc == native["exit_code"] and json.loads(legacy.out).keys() == native.keys()
+    plain = run("su-exec", ["tor", "python3", "/usr/local/bin/healthcheck.py"], scratch)
+    native_plain = run("hiddenforge", ["healthcheck"], scratch)
+    assert (plain.rc, plain.out, plain.err) == (native_plain.rc, native_plain.out, native_plain.err)
+
+
+@pytest.mark.parametrize("args", [
+    [], ["tor"], ["root", "true"], ["tor", "true"], ["tor", "cat", "/etc/tor/torrc"],
+    ["tor", "sh", "-c", "id"], ["tor", "python3", "-c", "print(1)"],
+    ["tor", "python3", "/usr/local/bin/vanity.py", "-h"],
+    ["tor", "python3", "/usr/local/bin/healthcheck.py", "--watch-uploads"],
+    ["tor", "tor", "--version"],
+])
+def test_su_exec_runs_nothing_else(scratch, args):
+    r = run("su-exec", args, scratch)
+    assert r.rc == 127 and r.out == ""
+    assert r.err.startswith("su-exec: the HiddenForge image has no su-exec;"), r.err
 
 
 def test_the_upload_watcher_name_is_the_cli(scratch):
@@ -145,20 +125,24 @@ def test_the_upload_watcher_name_is_the_cli(scratch):
     assert (r.rc, r.out) == (0, f"hiddenforge {VERSION} (contract 1)\n")
 
 
-def test_unknown_names_do_nothing(scratch):
-    for name in ("frobnicate", "hiddenforge2", "su_exec", "Hiddenforge"):
-        r = run(name, ["version"], scratch)
-        assert r.rc == 2 and r.out == ""
-        assert r.err == f"hiddenforge: started under an unknown name {name}; nothing to do\n"
+@pytest.mark.parametrize("name", [
+    "frobnicate", "hiddenforge2", "su_exec", "Hiddenforge",
+    "entrypoint.py", "entrypoint", "healthcheck.py", "vanity.py",
+    "python3", "python", "cat", "sh", "test", "true",
+])
+def test_every_other_name_does_nothing(scratch, name):
+    r = run(name, ["version"], scratch)
+    assert r.rc == 2 and r.out == ""
+    assert r.err == f"hiddenforge: started under an unknown name {name}; nothing to do\n"
 
 
-def test_true_cat_sh_test_and_su_exec_forms(scratch):
-    assert run("true", ["anything"], scratch).rc == 0
-    assert run("test", ["-S", str(scratch)], scratch).rc == 1
-    assert run("su-exec", [], scratch).rc == 1
-    r = run("su-exec", ["root", "true"], scratch)
-    assert r.rc != 0 and r.out == ""
-    assert run("su-exec", ["tor"], scratch).err == "Usage: su-exec user-spec command [args]\n"
+def test_inspect_reports_what_the_host_cli_reads(scratch):
+    r = run("hiddenforge", ["inspect", "--json"], scratch)
+    doc = json.loads(r.out)
+    assert r.rc == 0 and doc["ok"] is True
+    assert set(doc) == {"ok", "torrc", "dropped_mappings", "hostnames", "swap_max",
+                        "pids_max", "capbnd", "host_swaps"}
+    assert isinstance(doc["hostnames"], dict)
 
 
 # ───────────────────────── the hiddenforge CLI proper ────────────────────────
@@ -180,11 +164,8 @@ def test_unknown_commands_are_refused(scratch):
 
 @pytest.mark.parametrize("cmd", ["status", "verify-image", "sbom"])
 def test_host_commands_say_so(scratch, cmd):
-    for argv0, args in (("hiddenforge", [cmd]), ("entrypoint.py", [cmd, "--json"])):
-        r = run(argv0, args, scratch)
-        if argv0 == "entrypoint.py":
-            # not an image subcommand: entrypoint.py would boot; it must not be asked
-            continue
+    for args in ([cmd],):
+        r = run("hiddenforge", args, scratch)
         doc = json.loads(r.out)
         assert r.rc == 2 and doc == {
             "ok": False,
@@ -243,9 +224,9 @@ def test_backup_and_restore_name_the_tools_they_accept(scratch, cmd, extra):
 
 @pytest.mark.parametrize("flag", ["--uid", "--gid", "--threads"])
 def test_vanity_integer_options_are_validated(scratch, flag):
-    r = run("vanity.py", ["--prefix", "a", flag, "x"], scratch)
+    r = run("hiddenforge", ["vanity", "--prefix", "a", flag, "x"], scratch)
     assert r.rc == 2 and r.err.splitlines()[-1] == (
-        f"vanity.py: error: argument {flag}: invalid int value: 'x'"
+        f"hiddenforge vanity: error: argument {flag}: invalid int value: 'x'"
     )
 
 

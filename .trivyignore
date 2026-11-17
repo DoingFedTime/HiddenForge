@@ -4,7 +4,7 @@
 #
 # AVD-DS-0002 / DS002: Dockerfile has no USER instruction.
 #   The container MUST start as root: the entrypoint chowns the operator's key
-#   bind mount and then drops to the `tor` user via su-exec. A non-root USER
+#   bind mount and then drops to the `tor` user. A non-root USER
 #   makes both impossible. The network-facing processes run as `tor`; `doctor`
 #   verifies the capability set and no-new-privileges. See SECURITY.md.
 AVD-DS-0002 exp:2027-03-01

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-kWsjIkWSGlkXcPR3LmBdP3VXhxEHjxB/k7WHjVpL2Z4='; style-src 'sha256-LAY216Fef1ocDljku/kTA1a6ygJANlE11o7wo6akqFw='; img-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'; object-src 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-Y9sU7K+8luITLTwE8/D+acVyZFWC7pY04LIXHJ5ZhWI='; style-src 'sha256-LAY216Fef1ocDljku/kTA1a6ygJANlE11o7wo6akqFw='; img-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'; object-src 'none'">
 <meta name="referrer" content="no-referrer">
 <title>HiddenForge setup (offline)</title>
 <style>
@@ -104,7 +104,7 @@ footer { color: var(--muted); font: 11px var(--mono); margin-top: 30px; text-ali
 <div class="hf-root">
   <header>
     <div class="term"><span class="prompt">$ </span><span id="typed"></span>
-      <div class="sub">offline setup wizard · HiddenForge 3.0.0 · this page makes no network request</div>
+      <div class="sub">offline setup wizard · HiddenForge 3.0.1 · this page makes no network request</div>
     </div>
   </header>
   <main id="app"></main>
@@ -120,7 +120,7 @@ footer { color: var(--muted); font: 11px var(--mono); margin-top: 30px; text-ali
 (function (root) {
   "use strict";
 
-  var VERSION = "3.0.0";
+  var VERSION = "3.0.1";
   var CONTRACT_VERSION = 1;
   var SECRET_FILE = "hs_ed25519_secret_key";
 
@@ -275,7 +275,7 @@ footer { color: var(--muted); font: 11px var(--mono); margin-top: 30px; text-ali
     var composeCmd = o.runtime === "podman" ? "podman-compose" : "docker compose";
     var restart = o.runtime === "podman" ? "always" : "unless-stopped";
     var healthcheck = o.runtime === "podman" ? "" :
-      '    healthcheck:\n      test: ["CMD", "su-exec", "tor", "python3", "/usr/local/bin/healthcheck.py"]\n' +
+      '    healthcheck:\n      test: ["CMD", "hiddenforge", "healthcheck"]\n' +
       "      interval: 60s\n      timeout: 10s\n      start_period: 120s\n      retries: 3\n";
     var header = "# hiddenforge compose fragment (hiddenforge v" + VERSION + ", contract " + CONTRACT_VERSION + ").";
     if (o.noRoot) header += "\n# No-root mode: the container runs as the tor user (100:101) with no capabilities at all.";
@@ -368,7 +368,7 @@ footer { color: var(--muted); font: 11px var(--mono); margin-top: 30px; text-ali
       "for svc in " + names + "; do\n" +
       '    onion=""\n    for _ in $(seq 1 180); do\n' +
       "        onion=$(" + up + ' -f "$BASE" -f compose.service.yml exec -T ' + containerQ + " \\\n" +
-      "            su-exec tor cat /var/lib/tor/hidden_service/$svc/hostname 2>/dev/null || true)\n" +
+      "            hiddenforge show --name \"$svc\" 2>/dev/null | awk '/\\.onion$/{print $2}' || true)\n" +
       '        if [ -n "$onion" ]; then break; fi\n        sleep 1\n    done\n    echo\n' +
       '    echo "================================================================="\n' +
       '    if [ -n "$onion" ]; then\n        echo "$svc .onion: $onion"\n' +
