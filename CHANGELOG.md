@@ -9,7 +9,7 @@ image of its own: its changes ship with 2.1.0.
 
 ---
 
-## [3.0.1] - unreleased
+## [3.0.1] - 2026-11-17
 
 Two Tor settings that should have been there from the start, and every command
 inside the container is now `hiddenforge <command>`. Pull and recreate: compose

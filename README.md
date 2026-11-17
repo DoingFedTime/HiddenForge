@@ -1,6 +1,6 @@
 # HiddenForge
 
-**Latest release: [3.0.0](https://sambent.dev/sam/HiddenForge/releases/tag/v3.0.0).**
+**Latest release: [3.0.1](https://sambent.dev/sam/HiddenForge/releases/tag/v3.0.1).**
 
 I run my own services as onion services, and I wanted one container that gets
 the Tor side right and that anyone can check: pinned inputs, signed releases and
@@ -177,8 +177,8 @@ The only two edits you need to make are flagged with `<-- EDIT`.
 > no longer include the old IP, it exits and the restart policy starts the
 > container again with a fresh lookup. The `.onion` address does not change.
 >
-> Measured on 3.0.0: after the backend moved to a new IP the container restarted
-> 61 seconds later and served the same address again at 72 seconds, and a backend
+> Measured on 3.0.1: after the backend moved to a new IP the container restarted
+> 61 seconds later and served the same address again at 77 seconds, and a backend
 > that was simply down for two and a half minutes caused no restart at all. A
 > backend whose name does not resolve when the container starts (after a host
 > reboot the runtime starts containers in no particular order) is watched the same
@@ -291,7 +291,7 @@ just starts Tor. The full list of changes is in the [CHANGELOG](CHANGELOG.md).
 | Issue | Status |
 |---|---|
 | 2.1.1 shipped `/opt/hiddenforge` and `/usr/local/bin/tests` as mode 0644 | Fixed in 2.1.2 and later. Do not deploy 2.1.1 |
-| 3.0.0 and 2.1.x have no hardware (SSH-FIDO2) signature | ML-DSA-65 only. `hiddenforge verify-image` needs `--allow-pq-only` and reports `complete: false` |
+| 3.0.x and 2.1.x have no hardware (SSH-FIDO2) signature | ML-DSA-65 only. `hiddenforge verify-image` needs `--allow-pq-only` and reports `complete: false` |
 | arm64 was tested in a full-system arm64 VM (real aarch64 kernel, emulated CPU) | Not tested on real ARM hardware |
 
 ## Not planned
@@ -338,7 +338,7 @@ you verify the image you pull.
 Releases are signed over the image digest with a post-quantum **ML-DSA-65**
 signature (FIPS 204) and, when the hardware key is available, an **SSH-FIDO2**
 YubiKey signature. Neither depends on an outside service or a transparency log.
-The files are in `signatures/`. **3.0.0 carries the ML-DSA-65 signature only.**
+The files are in `signatures/`. **3.0.1 carries the ML-DSA-65 signature only.**
 There is no hardware signature for it, so `hiddenforge verify-image` needs
 `--allow-pq-only` and reports `complete: false`.
 
@@ -384,9 +384,9 @@ serves the base and builder images and refuses anonymous pulls.
 
 ```bash
 docker login dhi.io
-git clone --branch v3.0.0 https://sambent.dev/sam/HiddenForge.git hf && cd hf
+git clone --branch v3.0.1 https://sambent.dev/sam/HiddenForge.git hf && cd hf
 python3 scripts/build_inputs.py fetch \
-  https://sambent.dev/api/packages/sam/generic/hiddenforge-inputs/3.0.0/hiddenforge-inputs-3.0.0.tar ./inputs
+  https://sambent.dev/api/packages/sam/generic/hiddenforge-inputs/3.0.1/hiddenforge-inputs-3.0.1.tar ./inputs
 docker buildx create --name hf-repro --driver docker-container \
   --driver-opt image=moby/buildkit@sha256:0168606be2315b7c807a03b3d8aa79beefdb31c98740cebdffdfeebf31190c9f
 docker buildx build --builder hf-repro --no-cache --provenance=false \
