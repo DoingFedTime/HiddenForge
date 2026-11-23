@@ -101,6 +101,7 @@ What 3.0.0 does not have, so that nobody assumes it does:
 
 ## Repository history
 
-On 2026-10-30 the repository history was rewritten to remove working files.
-Every release tag points to a commit with the same files as before, and no
-image digest or signature changed.
+The repository history was rewritten on 2026-10-30 and again on 2026-11-23, so
+commit ids quoted in the documents of older tags no longer resolve. Every
+release tag points to a commit with the same release-image inputs as before
+(the files copied into each image), and no image digest or signature changed.
