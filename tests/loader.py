@@ -18,11 +18,11 @@ from pathlib import Path
 def repo_root(from_file) -> Path:
     """Find the repository root by walking up to the directory with scripts/hiddenforge.
 
-    Tests must not assume they run from the repo root: mutmut copies the tree
-    into `mutants/` and runs the suite there, where `Path(__file__).parent.parent`
-    is `mutants/` and `mutants/scripts/hiddenforge` does not exist. That made
-    every test error at setup, which is why mutation testing reported 789
-    mutants and 0 checked. Walking up finds the real root in both cases.
+    Tests must not assume they run from the repo root: mutation testing copies
+    the tree and runs the suite in the copy, where `Path(__file__).parent.parent`
+    is the copy and `scripts/hiddenforge` does not exist. That made every test
+    error at setup, which is why a run reported 789 mutants and 0 checked.
+    Walking up finds the real root in both cases.
     """
     here = Path(from_file).resolve()
     for parent in here.parents:
@@ -34,11 +34,11 @@ def repo_root(from_file) -> Path:
 def source_path(from_file, relative) -> Path:
     """Locate a source file, preferring the copy in the tree the tests are IN.
 
-    `repo_root` deliberately walks out of `mutants/` to find the real repository,
+    `repo_root` deliberately walks out of the copy to find the real repository,
     because scripts/hiddenforge is not copied there. That is exactly the wrong
-    answer for a file mutmut DID rewrite: loading /repo/vanity.py while the
-    mutant lives at /repo/mutants/vanity.py runs unmutated code, and every one of
-    its mutants survives while the report calls it tested.
+    answer for a file the copy DID rewrite: loading /repo/vanity.py while the
+    mutated file lives in the copy runs unmutated code, and every one of its
+    mutants survives while the report calls it tested.
 
     So: take the sibling copy when there is one, and fall back to the real root
     when there is not. Under a normal pytest run the two are the same directory.

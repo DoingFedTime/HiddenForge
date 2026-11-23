@@ -16,8 +16,8 @@ import pytest
 
 from loader import repo_root
 
-# repo_root, not parents[1]: mutmut runs the suite from a copy of the tree in
-# mutants/, which has no scripts/ directory.
+# repo_root, not parents[1]: mutation testing runs the suite from a copy of the
+# tree, which has no scripts/ directory.
 SCRIPT = repo_root(__file__) / "scripts" / "build_inputs.py"
 
 

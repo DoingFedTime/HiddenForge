@@ -49,7 +49,7 @@ def mkp224o(tmp_path, monkeypatch):
     """Point vanity.py at the fake generator and return a mode setter.
 
     A shell wrapper rather than the .py directly: mkp224o_path() requires the
-    executable bit, and a file copied into mutants/ by mutmut does not
+    executable bit, and a file copied into a mutation-testing tree does not
     necessarily keep one.
     """
     wrapper = tmp_path / "mkp224o"

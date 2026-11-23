@@ -242,8 +242,8 @@ def test_prepare_hs_dir_chmods_before_chown(tmp_path, monkeypatch):
     chowned by root -- a privileged escape.
 
     Tested behaviourally. The previous version of this test read the source text
-    of generate_basic_torrc and passed in CI, but broke mutation testing: mutmut
-    replaces the function body with a trampoline, so the source no longer
+    of generate_basic_torrc and passed in CI, but broke mutation testing: the
+    mutation wrapper replaces the function body, so the source no longer
     contained the call and every mutant run aborted at setup.
     """
     target = tmp_path / "outside"

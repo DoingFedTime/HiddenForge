@@ -54,7 +54,7 @@ def disagreement(found: dict) -> str:
 
 
 def _need_full_tree() -> None:
-    """mutmut runs the tests from a partial copy of the tree; skip there."""
+    """Mutation testing runs the tests from a partial copy of the tree; skip there."""
     if not (REPO / "manifest.json").exists():
         import pytest
 

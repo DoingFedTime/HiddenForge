@@ -12,8 +12,8 @@ import pytest
 from loader import repo_root, source_path
 
 REPO = repo_root(__file__)
-# source_path, not REPO/: vanity.py is a file mutmut rewrites, and loading the
-# unmutated original would make every one of its mutants survive.
+# source_path, not REPO/: vanity.py is a file the mutation copy rewrites, and
+# loading the unmutated original would make every one of its mutants survive.
 VANITY_PATH = source_path(__file__, "vanity.py")
 
 VECTOR_PUB_HEX = "04c6e8afdf77a1f03511d419b92f1c25de8de2d596973b6ecbeef24c9b0271f2"
@@ -29,7 +29,7 @@ def _load(path: Path, name: str):
 
 @pytest.fixture(scope="module")
 def v():
-    # Loaded under its real module name: mutmut's trampoline compares
+    # Loaded under its real module name: the mutation wrapper compares
     # `orig.__module__` against the mutant name, so any other name silently
     # disables every mutant in this file.
     return _load(VANITY_PATH, "vanity")

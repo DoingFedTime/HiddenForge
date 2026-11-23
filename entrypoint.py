@@ -611,9 +611,8 @@ def _prepare_hs_dir(hs_dir, tor_pw):
     hs_dir is a symlink to a directory, so the O_NOFOLLOW chmod is what actually
     rejects a tampered key volume before the recursive chown runs. This is split
     out of generate_basic_torrc so the ordering can be tested BEHAVIOURALLY: a
-    test that read the source text passed in CI but broke mutation testing,
-    because mutmut replaces the function body with a trampoline and the source
-    no longer contains the call.
+    test that read the source text broke as soon as the function body was
+    instrumented or rewritten, because the source no longer contained the call.
     """
     # Named before anything else touches it: mkdir(exist_ok=True) would pass
     # through a symlink, and the old failure for a link or a file here was a

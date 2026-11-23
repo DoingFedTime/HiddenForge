@@ -26,18 +26,18 @@ import pytest
 
 from loader import load_file, source_path
 
-# source_path, not repo_root: healthcheck.py is mutated in place under mutants/,
-# and loading the original from the real repository root would report every one
-# of its mutants as survived.
+# source_path, not repo_root: healthcheck.py is mutated in the copy of the tree
+# the suite runs in, and loading the original from the real repository root
+# would report every one of its mutants as survived.
 HEALTHCHECK_PATH = source_path(__file__, "healthcheck.py")
 
 
 @pytest.fixture(scope="module")
 def hc():
-    # The module name is load-bearing under mutation testing: mutmut's trampoline
-    # activates a mutant only when `orig.__module__` matches the name in
-    # MUTANT_UNDER_TEST, so loading this as anything but "healthcheck" would run
-    # the original body for every mutant and report the file as fully covered.
+    # The module name is load-bearing under mutation testing: the mutation
+    # wrapper activates a mutant only when `orig.__module__` matches the mutant
+    # under test, so loading this as anything but "healthcheck" would run the
+    # original body for every mutant and report the file as fully covered.
     return load_file(HEALTHCHECK_PATH, "healthcheck")
 
 

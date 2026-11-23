@@ -37,10 +37,11 @@ def disposable_cwd(tmp_path_factory, monkeypatch):
     the working directory instead and applies the operation there.
 
     That is not hypothetical. `vanity._harden` with `dir_fd = None` chmods every
-    entry of the working directory to 0600, and under mutmut that directory is
-    the generated `mutants/` tree: it made `mutants/tests` unreadable, and the
-    265 tests that ran afterwards failed at conftest load, scoring as kills. A
-    whole run was thrown away twice before the cause was found.
+    entry of the working directory to 0600, and under mutation testing that
+    directory is the generated copy of the tree: it made the copy's tests
+    unreadable, and the 265 tests that ran afterwards failed at conftest load,
+    scoring as kills. A whole run was thrown away twice before the cause was
+    found.
 
     Mutation testing deliberately produces destructive code. Where the working
     directory is the blast radius, the containment belongs here, once, rather
