@@ -1,7 +1,7 @@
 # Production readiness: 3.0.0
 
 What was checked on 3.0.0, how, and what each check showed. It covers tag
-`v3.0.0` (commit `56d13bc`) and the image built from it, whose index digest is
+`v3.0.0` and the image built from it, whose index digest is
 `sha256:5024c341017525b404882e4501c0181eeaddefa3ebab791129a4bb8c893b895b`. This
 record is for 3.0.0 and has not been rewritten for 3.0.1. Everything below was measured on that image
 on 2026-11-15 unless a row says otherwise. A sentence here is not evidence: the automatable rows are produced as raw output by

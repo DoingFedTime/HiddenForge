@@ -36,24 +36,28 @@ first, so a release's signatures are committed after its tag. A checkout of
 `v3.0.1` therefore still holds the 3.0.0 signature files, which do not match the
 3.0.1 digest. That mismatch means "look on master", not "tampered with".
 
-The 3.0.0 signature (digest `sha256:5024c341017525b404882e4501c0181eeaddefa3ebab791129a4bb8c893b895b`,
-ML-DSA-65; superseded by 3.0.1) is in git history at commit `da3e592`.
-The 2.1.6 signature (digest `sha256:1127470c84f461004dbca2f35e45c20e5fb669dddde05b13d433ce040692979c`,
-ML-DSA-65; superseded by 3.0.0) is in git history at the last commit before
-3.0.1's signatures. The 2.1.5 signature (digest `sha256:6eb375ecdfd1c7fbbd08517308c15708668d890e81ced8729141190c57d24a1d`,
-ML-DSA-65; superseded by 2.1.6, see the CHANGELOG) is in git history at commit
-`dc46389`. The 2.1.4 signature (digest `sha256:7732c01f505ba7826b422e2579d56f20c3f5ae11950336fb83507c1a35419582`,
-ML-DSA-65; superseded by 2.1.5) is in git history at commit
-`2ad14fd`. The 2.1.3 signature (digest `sha256:a9c985da5ceffa601da5d6aab17a6bbdacb4bb9a3e301b1c157d4f2ff04f27ad`,
-ML-DSA-65; superseded by 2.1.4) is in git history at commit
-`f1dbf20`. The 2.1.2 signature (digest `sha256:cc6c215d0a85b94ff7724951b2d6176111f508030235733afbb40116a93c3f05`,
-ML-DSA-65; superseded by 2.1.3) is in git history at commit
-`634b461`. The 2.1.1 signature (digest `sha256:889da0a9d21d7d3af87cba102e1c6ff5ea4b2618c46ea4cec26785a43ed89645`,
-ML-DSA-65; superseded by 2.1.2) is in git history at commit
-`d97c46b`. The 2.1.0 signature (digest `sha256:183a5df347fcf0cb84136b1f1f79f5f8bd29ba6f236662e744e47d1ffc2d1190`,
-ML-DSA-65) is in git history at the commit that adds it (`cbcc1a1`). The 2.0.4
-signatures (digest `sha256:063d824c3e56205bea5a3bfeb3d2d991de7dea88439cf6ebda8bb4b17ecce0ca`,
-both halves) remain in the `v2.0.4` tag and in git history.
+Earlier signatures stay in git history, committed with the digest they sign.
+To find the commit that added a digest, and read the signature files as they were
+at that commit:
+
+```sh
+git log --all --reverse -S'sha256:<digest>' -- signatures/hiddenforge.digest
+git show <commit>:signatures/hiddenforge.digest.mldsa
+```
+
+The first commit listed is the one that added it. The digests are:
+
+| Release | Index digest | Signature |
+|---|---|---|
+| 3.0.0 | `sha256:5024c341017525b404882e4501c0181eeaddefa3ebab791129a4bb8c893b895b` | ML-DSA-65; superseded by 3.0.1 |
+| 2.1.6 | `sha256:1127470c84f461004dbca2f35e45c20e5fb669dddde05b13d433ce040692979c` | ML-DSA-65; superseded by 3.0.0 |
+| 2.1.5 | `sha256:6eb375ecdfd1c7fbbd08517308c15708668d890e81ced8729141190c57d24a1d` | ML-DSA-65; superseded by 2.1.6, see the CHANGELOG |
+| 2.1.4 | `sha256:7732c01f505ba7826b422e2579d56f20c3f5ae11950336fb83507c1a35419582` | ML-DSA-65; superseded by 2.1.5 |
+| 2.1.3 | `sha256:a9c985da5ceffa601da5d6aab17a6bbdacb4bb9a3e301b1c157d4f2ff04f27ad` | ML-DSA-65; superseded by 2.1.4 |
+| 2.1.2 | `sha256:cc6c215d0a85b94ff7724951b2d6176111f508030235733afbb40116a93c3f05` | ML-DSA-65; superseded by 2.1.3 |
+| 2.1.1 | `sha256:889da0a9d21d7d3af87cba102e1c6ff5ea4b2618c46ea4cec26785a43ed89645` | ML-DSA-65; superseded by 2.1.2 |
+| 2.1.0 | `sha256:183a5df347fcf0cb84136b1f1f79f5f8bd29ba6f236662e744e47d1ffc2d1190` | ML-DSA-65 |
+| 2.0.4 | `sha256:063d824c3e56205bea5a3bfeb3d2d991de7dea88439cf6ebda8bb4b17ecce0ca` | both halves; also in the `v2.0.4` tag |
 
 ### Which digest to compare
 
